@@ -1,0 +1,146 @@
+{
+  "schema": "media-interlock.docs-index/v1",
+  "project": {
+    "name": "MediaInterlock",
+    "status": "design-documented-preimplementation"
+  },
+  "budgets": {
+    "permanent_markdown": {
+      "max_files": 12,
+      "max_bytes": 163840
+    },
+    "work_markdown": {
+      "max_active_by_kind": {
+        "spec": 1,
+        "slice": 1,
+        "plan": 1
+      },
+      "max_bytes_by_kind": {
+        "spec": 65536,
+        "slice": 24576,
+        "plan": 32768
+      }
+    }
+  },
+  "program": {
+    "id": "MEDIAINTERLOCK",
+    "status": "active",
+    "specification": "docs/work/specs/2026-08-06-media-interlock-design.md",
+    "slice_catalog": "docs/work/slices/media-interlock-bootstrap.md",
+    "active_plan": null,
+    "units": [
+      {
+        "id": "MI-00",
+        "status": "completed"
+      },
+      {
+        "id": "MI-01",
+        "status": "pending"
+      },
+      {
+        "id": "MI-02",
+        "status": "pending"
+      },
+      {
+        "id": "MI-03",
+        "status": "pending"
+      },
+      {
+        "id": "MI-04",
+        "status": "pending"
+      },
+      {
+        "id": "MI-05",
+        "status": "pending"
+      }
+    ]
+  },
+  "documents": [
+    {
+      "path": "README.md",
+      "class": "permanent",
+      "owner": "public project entry point and status summary",
+      "load_when": ["always"]
+    },
+    {
+      "path": "AGENTS.md",
+      "class": "permanent",
+      "owner": "agent routing and development lifecycle",
+      "load_when": ["always"]
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "class": "permanent",
+      "owner": "human contribution workflow",
+      "load_when": ["contributing or reviewing a change"]
+    },
+    {
+      "path": "SECURITY.md",
+      "class": "permanent",
+      "owner": "security support and reporting boundary",
+      "load_when": ["handling vulnerabilities, secrets, trust boundaries, or supported versions"]
+    },
+    {
+      "path": "docs/AGENTS.md",
+      "class": "permanent",
+      "owner": "documentation lifecycle and budget",
+      "load_when": ["changing documentation"]
+    },
+    {
+      "path": "docs/current/architecture.md",
+      "class": "permanent",
+      "owner": "cross-component architecture and contracts",
+      "load_when": ["changing component boundaries, adapters, IPC, configuration, packaging, or deployment model"]
+    },
+    {
+      "path": "docs/current/state.md",
+      "class": "permanent",
+      "owner": "current implementation and release truth",
+      "load_when": ["always"]
+    },
+    {
+      "path": "docs/current/operations.md",
+      "class": "permanent",
+      "owner": "operator-facing deployment and runtime contract",
+      "load_when": ["changing CLI, configuration, health, metrics, sockets, deployment, or downstream adoption"]
+    },
+    {
+      "path": "docs/current/acceptance.md",
+      "class": "permanent",
+      "owner": "test layers, CI budgets, release gates, and proof limits",
+      "load_when": ["planning tests, CI, review, releases, compatibility, or acceptance claims"]
+    },
+    {
+      "path": "docs/current/domains/reconciler.md",
+      "class": "permanent",
+      "owner": "reconciler responsibility and behavior",
+      "load_when": ["changing eligibility, search policy, Radarr or Sonarr behavior, or reconciliation state"]
+    },
+    {
+      "path": "docs/current/domains/publisher.md",
+      "class": "permanent",
+      "owner": "publisher responsibility and behavior",
+      "load_when": ["changing file verification, canonical publication, catalog delivery, Jellyfin, Bazarr, or Seerr behavior"]
+    },
+    {
+      "path": "docs/current/domains/fence.md",
+      "class": "permanent",
+      "owner": "fence responsibility and behavior",
+      "load_when": ["changing acquisition admission, qBittorrent, Prowlarr, capacity, concurrency, or seeding behavior"]
+    },
+    {
+      "path": "docs/work/specs/2026-08-06-media-interlock-design.md",
+      "class": "work",
+      "kind": "spec",
+      "owner": "candidate target design while the initial program remains pending",
+      "load_when": ["planning or implementing any pending MEDIAINTERLOCK slice"]
+    },
+    {
+      "path": "docs/work/slices/media-interlock-bootstrap.md",
+      "class": "work",
+      "kind": "slice",
+      "owner": "ordered vertical-slice program",
+      "load_when": ["selecting, planning, or completing a MEDIAINTERLOCK slice"]
+    }
+  ]
+}
