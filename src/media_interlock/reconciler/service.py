@@ -38,6 +38,42 @@ class ReconcilerService:
     def _persist(self) -> None:
         self._store.save(self._state)
 
+    def recover(self, *, now: int) -> list[str]:
+        """Observe possible Arr effects first; never replay a durable POST intent."""
+        results: list[str] = []
+        for intent in self._state.intents():
+            if self._state.observed(intent.operation_id) or not self._state.grab_attempted(intent.operation_id):
+                continue
+            try:
+                grab = self._state.grab_intent(intent.operation_id)
+            except KeyError:
+                continue
+            adapter = self._adapters.get(intent.source)
+            if adapter is None:
+                results.append("unavailable")
+                continue
+            release = ArrRelease(dict(grab.release_resource), grab.selector_fingerprint, grab.expected_bytes)
+            try:
+                observation = adapter.observe_grab(intent.entity_id, release, watermark=grab.watermark)
+            except Exception:
+                results.append("unavailable")
+                continue
+            if observation.kind != "observed" or observation.download_id is None:
+                results.append("pending")
+                continue
+            try:
+                bound = self._fence.bind_grab(intent.operation_id, observation.download_id)
+            except Exception:
+                results.append("unavailable")
+                continue
+            if not bound:
+                results.append("pending")
+                continue
+            self._state.mark_observed(intent.operation_id, completed=True, now=now)
+            self._persist()
+            results.append("bound")
+        return results
+
     def execute(self, intent: SearchIntent, *, now: int) -> str:
         """Perform at most one durable release handoff; pending is never success."""
         try:

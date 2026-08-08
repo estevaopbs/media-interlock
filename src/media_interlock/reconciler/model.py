@@ -108,6 +108,12 @@ class ReconciliationState:
     def intent(self, operation_id: str) -> SearchIntent:
         return self._intents[operation_id]
 
+    def intents(self) -> tuple[SearchIntent, ...]:
+        return tuple(self._intents.values())
+
+    def observed(self, operation_id: str) -> bool:
+        return operation_id in self._completed
+
     def record_grab_intent(self, intent: GrabIntent) -> GrabIntent:
         search = self.intent(intent.operation_id)
         if (search.source, search.entity_id) != (intent.source, intent.entity_id):

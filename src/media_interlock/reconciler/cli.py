@@ -29,22 +29,27 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(arguments.config)
         if config.reconciler is None or config.fence is None:
             raise ConfigError("Reconciler requires reconciler and fence components")
-        arr_config = config.adapters[arguments.source]
-        adapter_class = RadarrAdapter if arguments.source == "radarr" else SonarrAdapter
-        adapter = adapter_class(arr_config.base_url, arr_config.secrets["api_key"], staging_root=config.fence.staging_root)
+        adapters = {}
+        for source, adapter_class in (("radarr", RadarrAdapter), ("sonarr", SonarrAdapter)):
+            arr_config = config.adapters.get(source)
+            if arr_config is not None:
+                adapters[source] = adapter_class(arr_config.base_url, arr_config.secrets["api_key"], staging_root=config.fence.staging_root)
+        if arguments.source not in adapters:
+            raise ConfigError(f"Reconciler requires a configured {arguments.source} adapter")
         store = ReconcilerStore.open(config.reconciler.state_dir)
     except (ConfigError, KeyError, OSError) as exc:
         print(render_result("invalid_contract", str(exc), as_json=arguments.json))
         return 2
     try:
         state = store.load()
+        service = ReconcilerService(state, store, adapters, UnixFenceClient(config.fence.socket_path), config.fence.categories)
+        service.recover(now=0)
         policy_config = config.reconciler.movie if arguments.source == "radarr" else config.reconciler.episode
         policy = AttemptPolicy(policy_config.cooldown_seconds, policy_config.max_attempts)
         if not state.eligible(arguments.source, arguments.entity, policy, now=0, force=arguments.force):
             result = "pending"
         else:
             intent = SearchIntent(str(uuid.uuid4()), arguments.source, arguments.entity, arguments.force, arguments.checkpoint)
-            service = ReconcilerService(state, store, {arguments.source: adapter}, UnixFenceClient(config.fence.socket_path), config.fence.categories)
             result = service.execute(intent, now=0)
     except (OSError, ValueError):
         result = "unavailable"
