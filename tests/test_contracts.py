@@ -60,6 +60,7 @@ class ContractTests(unittest.TestCase):
             upstream_id="grab-42",
             media_id="movie-42",
             bytes_reserved=4096,
+            download_id="a" * 40,
         )
 
         decoded = Envelope.decode(envelope.encode())
@@ -67,6 +68,14 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(envelope, decoded)
         self.assertNotIn("path", envelope.body)
         self.assertEqual(StatusCode.OK, StatusCode.OK)
+        with self.assertRaises(ContractError):
+            Envelope("v1", "terminal_acquisition", OPERATION_ID, {
+                "bytes_reserved": 4096,
+                "fence_reservation_id": "fence-r-1",
+                "media_id": "movie-42",
+                "source": "radarr",
+                "upstream_id": "grab-42",
+            })
 
     def test_acquisition_intent_keeps_locator_transient_and_binds_its_fingerprint(self) -> None:
         locator = "magnet:?xt=urn:btih:fixture"

@@ -90,7 +90,7 @@ class PublisherService:
         publication = self._state.publication(operation_id)
         if publication.state.name != "CUSTODY_RESERVED":
             return False
-        relative_path = correlation.candidate_relative_path(publication.upstream_id, publication.media_id)
+        relative_path = correlation.candidate_relative_path(publication.download_id, publication.media_id)
         if relative_path is None:
             return False
         try:
@@ -107,7 +107,7 @@ class PublisherService:
         derive = getattr(correlation, "candidate_identity", None)
         if not callable(derive):
             return False
-        identity = derive(publication.upstream_id, publication.media_id)
+        identity = derive(publication.download_id, publication.media_id)
         if not isinstance(identity, ArrCandidate):
             return False
         try:

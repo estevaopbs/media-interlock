@@ -29,6 +29,7 @@ class PublisherCustodyTests(unittest.TestCase):
             upstream_id="grab-42",
             media_id="movie-42",
             bytes_reserved=400,
+            download_id="grab-42",
         )
 
     def test_terminal_adoption_is_idempotent_and_returns_exact_receipt(self) -> None:
@@ -52,6 +53,7 @@ class PublisherCustodyTests(unittest.TestCase):
             upstream_id="grab-42",
             media_id="movie-other",
             bytes_reserved=400,
+            download_id="grab-42",
         )
 
         with self.assertRaisesRegex(ContractError, "conflicts"):
@@ -378,7 +380,7 @@ class PublisherCustodyTests(unittest.TestCase):
         state.adopt_terminal(terminal_acquisition(
             operation_id=second_operation,
             fence_reservation_id="fence:12345678-1234-4678-9234-567812345679",
-            source="radarr", upstream_id="grab-43", media_id="43", bytes_reserved=400,
+            source="radarr", upstream_id="grab-43", media_id="43", bytes_reserved=400, download_id="b" * 40,
         ))
         state.mark_candidate_verified(second_operation, "movie.mkv", 5, "a" * 64)
         state.bind_asset_identity(second_operation, "radarr:tmdb-42", "Movie", {"Tmdb": "42"})
@@ -767,6 +769,7 @@ class CandidateFilesystemTests(unittest.TestCase):
                 upstream_id="grab-42",
                 media_id="movie-42",
                 bytes_reserved=400,
+                download_id="grab-42",
             )
             state.adopt_terminal(terminal)
             state.mark_candidate_verified(OPERATION_ID, verified.relative_path, verified.bytes_verified, verified.sha256)

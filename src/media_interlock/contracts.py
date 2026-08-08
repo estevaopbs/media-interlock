@@ -91,11 +91,10 @@ class Envelope:
             if set(normalized) != {"download_id"} or not isinstance(normalized.get("download_id"), str) or len(normalized["download_id"]) != 40 or any(char not in "0123456789abcdef" for char in normalized["download_id"]):
                 raise ContractError("acquisition grab binding fields are invalid")
         elif self.kind == "terminal_acquisition":
-            expected = {"bytes_reserved", "fence_reservation_id", "media_id", "source", "upstream_id"}
-            extended = expected | {"download_id"}
-            if set(normalized) != expected and set(normalized) != extended:
+            expected = {"bytes_reserved", "download_id", "fence_reservation_id", "media_id", "source", "upstream_id"}
+            if set(normalized) != expected:
                 raise ContractError("unknown terminal acquisition fields")
-            if not isinstance(normalized["source"], str) or normalized["source"] not in {"radarr", "sonarr"} or not all(isinstance(normalized[name], str) and normalized[name] for name in expected - {"bytes_reserved", "source"}) or ("download_id" in normalized and (not isinstance(normalized["download_id"], str) or not normalized["download_id"])) or isinstance(normalized["bytes_reserved"], bool) or not isinstance(normalized["bytes_reserved"], int) or normalized["bytes_reserved"] <= 0:
+            if not isinstance(normalized["source"], str) or normalized["source"] not in {"radarr", "sonarr"} or not all(isinstance(normalized[name], str) and normalized[name] for name in expected - {"bytes_reserved", "source"}) or isinstance(normalized["bytes_reserved"], bool) or not isinstance(normalized["bytes_reserved"], int) or normalized["bytes_reserved"] <= 0:
                 raise ContractError("terminal acquisition fields are invalid")
         elif self.kind == "custody_receipt":
             expected = {"fence_reservation_id", "publisher_reservation_id"}
@@ -153,10 +152,8 @@ def acquisition_grab_binding(*, operation_id: str, download_id: str) -> Envelope
     return Envelope(CONTRACT_VERSION, "acquisition_grab_binding", _operation_id(operation_id), {"download_id": download_id})
 
 
-def terminal_acquisition(*, operation_id: str, fence_reservation_id: str, source: str, upstream_id: str, media_id: str, bytes_reserved: int, download_id: str | None = None) -> Envelope:
-    body: dict[str, object] = {"bytes_reserved": bytes_reserved, "fence_reservation_id": fence_reservation_id, "media_id": media_id, "source": source, "upstream_id": upstream_id}
-    if download_id is not None:
-        body["download_id"] = download_id
+def terminal_acquisition(*, operation_id: str, fence_reservation_id: str, source: str, upstream_id: str, media_id: str, bytes_reserved: int, download_id: str) -> Envelope:
+    body: dict[str, object] = {"bytes_reserved": bytes_reserved, "download_id": download_id, "fence_reservation_id": fence_reservation_id, "media_id": media_id, "source": source, "upstream_id": upstream_id}
     return Envelope(CONTRACT_VERSION, "terminal_acquisition", _operation_id(operation_id), body)
 
 

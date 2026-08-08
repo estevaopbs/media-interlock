@@ -102,6 +102,7 @@ class PublisherVerticalIntegrationTests(unittest.TestCase):
             upstream_id="grab-42",
             media_id="42",
             bytes_reserved=400,
+            download_id="grab-42",
         )
         store = PublisherStore.open(Path(self.temporary.name) / "publisher-state")
         self.addCleanup(store.close)

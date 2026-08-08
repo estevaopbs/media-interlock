@@ -22,7 +22,7 @@ class PublisherDaemonTests(unittest.IsolatedAsyncioTestCase):
 
         state = PublisherState()
         daemon = PublisherDaemon(PublisherService(state, Store()), PublisherObservability(state), readiness=lambda: True)
-        terminal = terminal_acquisition(operation_id="12345678-1234-4678-9234-567812345678", fence_reservation_id="fence:12345678-1234-4678-9234-567812345678", source="radarr", upstream_id="grab-42", media_id="movie-42", bytes_reserved=400)
+        terminal = terminal_acquisition(operation_id="12345678-1234-4678-9234-567812345678", fence_reservation_id="fence:12345678-1234-4678-9234-567812345678", source="radarr", upstream_id="grab-42", media_id="movie-42", bytes_reserved=400, download_id="a" * 40)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "publisher.sock"
             server = await asyncio.start_unix_server(daemon.handle, path=path)
@@ -57,7 +57,7 @@ class PublisherDaemonTests(unittest.IsolatedAsyncioTestCase):
 
         state = PublisherState()
         daemon = PublisherDaemon(PublisherService(state, Store()), PublisherObservability(state), readiness=lambda: False)
-        terminal = terminal_acquisition(operation_id="12345678-1234-4678-9234-567812345678", fence_reservation_id="fence:12345678-1234-4678-9234-567812345678", source="radarr", upstream_id="grab-42", media_id="movie-42", bytes_reserved=400)
+        terminal = terminal_acquisition(operation_id="12345678-1234-4678-9234-567812345678", fence_reservation_id="fence:12345678-1234-4678-9234-567812345678", source="radarr", upstream_id="grab-42", media_id="movie-42", bytes_reserved=400, download_id="a" * 40)
 
         response = daemon._dispatch(terminal)
 
@@ -73,7 +73,7 @@ class PublisherDaemonTests(unittest.IsolatedAsyncioTestCase):
         seen: list[str] = []
         state = PublisherState()
         daemon = PublisherDaemon(PublisherService(state, Store()), PublisherObservability(state), readiness=lambda: True, process=seen.append)
-        terminal = terminal_acquisition(operation_id="12345678-1234-4678-9234-567812345678", fence_reservation_id="fence:12345678-1234-4678-9234-567812345678", source="radarr", upstream_id="grab-42", media_id="movie-42", bytes_reserved=400)
+        terminal = terminal_acquisition(operation_id="12345678-1234-4678-9234-567812345678", fence_reservation_id="fence:12345678-1234-4678-9234-567812345678", source="radarr", upstream_id="grab-42", media_id="movie-42", bytes_reserved=400, download_id="a" * 40)
 
         receipt = daemon._dispatch(terminal)
 

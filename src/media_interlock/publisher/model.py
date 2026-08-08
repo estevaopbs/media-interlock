@@ -25,6 +25,7 @@ class Publication:
     publisher_reservation_id: str
     source: str
     upstream_id: str
+    download_id: str
     media_id: str
     bytes_reserved: int
     state: PublicationState
@@ -55,9 +56,9 @@ class PublisherState:
             raise ContractError("Publisher accepts only terminal acquisition observations")
         existing = self._publications.get(terminal.operation_id)
         body = terminal.body
-        fields = (body["fence_reservation_id"], body["source"], body["upstream_id"], body["media_id"], body["bytes_reserved"])
+        fields = (body["fence_reservation_id"], body["source"], body["upstream_id"], body["download_id"], body["media_id"], body["bytes_reserved"])
         if existing is not None:
-            if fields != (existing.fence_reservation_id, existing.source, existing.upstream_id, existing.media_id, existing.bytes_reserved):
+            if fields != (existing.fence_reservation_id, existing.source, existing.upstream_id, existing.download_id, existing.media_id, existing.bytes_reserved):
                 raise ContractError("terminal acquisition conflicts with durable Publisher custody")
             return custody_receipt(existing.operation_id, existing.fence_reservation_id, existing.publisher_reservation_id)
         reservation_id = f"publisher:{terminal.operation_id}"
@@ -67,6 +68,7 @@ class PublisherState:
             reservation_id,
             str(body["source"]),
             str(body["upstream_id"]),
+            str(body["download_id"]),
             str(body["media_id"]),
             int(body["bytes_reserved"]),
             PublicationState.CUSTODY_RESERVED,
@@ -153,7 +155,7 @@ class PublisherState:
     @classmethod
     def from_records(cls, records: Iterable[Mapping[str, object]]) -> "PublisherState":
         state = cls()
-        expected = {"operation_id", "fence_reservation_id", "publisher_reservation_id", "source", "upstream_id", "media_id", "bytes_reserved", "state", "candidate_relative_path", "candidate_bytes", "candidate_sha256", "generation_id", "previous_generation_id", "asset_slot", "item_type", "provider_ids", "notification_attempted", "catalog_item_id", "catalog_media_source_id"}
+        expected = {"operation_id", "fence_reservation_id", "publisher_reservation_id", "source", "upstream_id", "download_id", "media_id", "bytes_reserved", "state", "candidate_relative_path", "candidate_bytes", "candidate_sha256", "generation_id", "previous_generation_id", "asset_slot", "item_type", "provider_ids", "notification_attempted", "catalog_item_id", "catalog_media_source_id"}
         for record in records:
             if set(record) != expected:
                 raise ContractError("durable Publisher publication has unknown fields")
@@ -164,6 +166,7 @@ class PublisherState:
                     publisher_reservation_id=record["publisher_reservation_id"],
                     source=record["source"],
                     upstream_id=record["upstream_id"],
+                    download_id=record["download_id"],
                     media_id=record["media_id"],
                     bytes_reserved=record["bytes_reserved"],
                     state=PublicationState(record["state"]),
@@ -181,7 +184,7 @@ class PublisherState:
                 )
             except (TypeError, ValueError) as exc:
                 raise ContractError("durable Publisher publication is invalid") from exc
-            string_fields = (publication.operation_id, publication.fence_reservation_id, publication.publisher_reservation_id, publication.source, publication.upstream_id, publication.media_id)
+            string_fields = (publication.operation_id, publication.fence_reservation_id, publication.publisher_reservation_id, publication.source, publication.upstream_id, publication.download_id, publication.media_id)
             progressed = publication.state is not PublicationState.CUSTODY_RESERVED
             has_generation = publication.state in {PublicationState.GENERATION_INTENT, PublicationState.CATALOG_PENDING, PublicationState.DELIVERED}
             previous_is_valid = publication.previous_generation_id is None or _generation_id(publication.previous_generation_id) and publication.previous_generation_id != publication.operation_id

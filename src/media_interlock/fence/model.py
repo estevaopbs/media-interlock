@@ -178,7 +178,7 @@ class FenceState:
         if intent.bytes_reserved <= 0 or not intent.source_fingerprint or self.reserved_bytes + intent.bytes_reserved > self._policy.capacity_bytes:
             return AdmissionDecision(False, "capacity_exhausted")
         try:
-            terminal_acquisition(operation_id=intent.operation_id, fence_reservation_id=f"fence:{intent.operation_id}", source=intent.source, upstream_id=intent.upstream_id, media_id=intent.media_id, bytes_reserved=intent.bytes_reserved)
+            terminal_acquisition(operation_id=intent.operation_id, fence_reservation_id=f"fence:{intent.operation_id}", source=intent.source, upstream_id=intent.upstream_id, media_id=intent.media_id, bytes_reserved=intent.bytes_reserved, download_id=intent.upstream_id)
         except ContractError:
             return AdmissionDecision(False, "invalid_intent")
         self._reservations[intent.operation_id] = Reservation(intent.operation_id, f"fence:{intent.operation_id}", intent.source, intent.upstream_id, intent.media_id, intent.bytes_reserved, intent.bytes_reserved, intent.source_fingerprint, ReservationState.INTENT_RECORDED)
@@ -231,7 +231,7 @@ class FenceState:
         reservation = self.reservation(operation_id)
         if reservation.state is not ReservationState.TERMINAL:
             raise ContractError("terminal acquisition is unavailable")
-        return terminal_acquisition(operation_id=reservation.operation_id, fence_reservation_id=reservation.reservation_id, source=reservation.source, upstream_id=reservation.upstream_id, media_id=reservation.media_id, bytes_reserved=reservation.bytes_reserved)
+        return terminal_acquisition(operation_id=reservation.operation_id, fence_reservation_id=reservation.reservation_id, source=reservation.source, upstream_id=reservation.upstream_id, media_id=reservation.media_id, bytes_reserved=reservation.bytes_reserved, download_id=reservation.download_id or reservation.upstream_id)
 
     def accept_custody(self, receipt: Envelope) -> bool:
         reservation = self._reservations.get(receipt.operation_id)
