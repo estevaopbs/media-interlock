@@ -10,6 +10,8 @@ under observed, durable capacity and concurrency constraints.
   category, priority, and concurrency policy.
 - Persist owner-bound intent before external effects and adopt or repeat an
   effect only after observing its exact postcondition.
+- Bind each admitted torrent to its qBittorrent hash, Fence-only category,
+  reservation tag, and configured staging root before Fence resumes it.
 - Observe qBittorrent transfer and seeding state through its adapter without
   treating cached or incomplete responses as authority.
 - Maintain reservations after transfer completion, emit a terminal acquisition
@@ -22,13 +24,21 @@ under observed, durable capacity and concurrency constraints.
   or download.
 
 Prowlarr is a Fence-owned optional readiness capability. Its adapter may report
-configured indexer availability to inhibit new admission, but cannot rank a
+health plus at least one enabled configured indexer to inhibit new admission,
+but cannot rank a
 release, initiate a search, or prove a download outcome.
 
 Unknown or ambiguous state closes new admission. Fence unavailability must not
 stop playback of an already published generation. Recovery reconciles its own
 durable intent with observed qBittorrent effects and never opens admission merely
 because a generic timeout elapsed.
+
+Fence's local socket accepts canonical version-1 acquisition intents, custody
+receipts, status, metrics, and explicit transfer-observation requests. An intent
+locator is checked against its SHA-256 fingerprint and is not retained in the
+durable reservation. Terminal observations are persisted before the socket
+returns them. Status and metrics report only aggregate reservation counts and
+bytes.
 
 Fence readiness requires every configured download client to add work stopped,
 qBittorrent automatic resume to be disabled, and no competing start/resume

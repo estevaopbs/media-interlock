@@ -38,10 +38,12 @@ crash therefore fails conservatively instead of losing accounting. If Publisher
 is unavailable or rejects ambiguity, Fence retains the hold and backpressures
 new admission according to available capacity.
 
-The observation contains stable operation and upstream correlation identities,
-not an authoritative external path. Exact envelope fields and push-versus-pull
-transport remain MI-01 planning choices, but custody ownership and ordering are
-product invariants.
+An acquisition intent carries a transient locator plus its SHA-256 fingerprint;
+Fence persists the fingerprint and correlation identities, never the locator.
+Fence binds qBittorrent work to one observed lowercase torrent hash, its Fence
+category, and its configured staging root before resuming it. Terminal
+observation contains stable operation and upstream correlation identities, not
+an authoritative external path.
 
 ## Repository boundary
 
@@ -92,7 +94,9 @@ candidate correlation through independently configured clients. The exact
 allocation of optional Prowlarr, Bazarr, and Seerr capabilities is provisional
 until their vertical slices prove the smallest useful contract.
 
-Adapters use documented public upstream APIs. If an essential capability is
+Adapters use documented public upstream APIs. Fence's qBittorrent adapter uses
+the authenticated WebUI cookie API; Prowlarr is limited to health plus at least
+one enabled configured indexer. If an essential capability is
 missing, prefer an upstream contribution. A Jellyfin plugin or private API is
 not part of the initial architecture and requires a new design decision.
 

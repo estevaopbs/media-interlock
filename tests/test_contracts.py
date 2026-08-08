@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import uuid
+import hashlib
 
 import _source_tree  # noqa: F401
 
@@ -10,6 +11,7 @@ from media_interlock.contracts import (
     CustodyLedger,
     Envelope,
     StatusCode,
+    acquisition_intent,
     custody_receipt,
     terminal_acquisition,
 )
@@ -34,6 +36,14 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(envelope, decoded)
         self.assertNotIn("path", envelope.body)
         self.assertEqual(StatusCode.OK, StatusCode.OK)
+
+    def test_acquisition_intent_keeps_locator_transient_and_binds_its_fingerprint(self) -> None:
+        locator = "magnet:?xt=urn:btih:fixture"
+        envelope = acquisition_intent(operation_id=OPERATION_ID, source="radarr", source_locator=locator, upstream_id="grab-42", media_id="movie-42", bytes_reserved=4096, source_fingerprint=hashlib.sha256(locator.encode()).hexdigest())
+
+        self.assertEqual(envelope, Envelope.decode(envelope.encode()))
+        with self.assertRaises(ContractError):
+            acquisition_intent(operation_id=OPERATION_ID, source="radarr", source_locator=locator, upstream_id="grab-42", media_id="movie-42", bytes_reserved=4096, source_fingerprint="not-a-hash")
 
     def test_contract_rejects_unknown_fields_incompatible_versions_and_invalid_ids(self) -> None:
         with self.assertRaisesRegex(ContractError, "unknown envelope fields"):

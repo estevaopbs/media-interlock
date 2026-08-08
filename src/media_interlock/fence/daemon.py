@@ -1,0 +1,58 @@
+"""Versioned local Unix-socket surface for the Fence daemon."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+
+from ..contracts import ContractError, Envelope, StatusCode, metrics_response, status_response
+from .model import AcquisitionIntent
+from .observability import FenceObservability
+from .service import FenceService
+
+
+class FenceDaemon:
+    def __init__(self, service: FenceService, observability: FenceObservability, *, readiness: Callable[[], tuple[bool, bool, bool]]) -> None:
+        self._service = service
+        self._observability = observability
+        self._readiness = readiness
+
+    async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            envelope = Envelope.decode(await reader.readuntil(b"\n"))
+            response = self._dispatch(envelope)
+            writer.write(response.encode())
+            await writer.drain()
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ContractError):
+            pass
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    def _dispatch(self, envelope: Envelope) -> Envelope:
+        if envelope.kind == "acquisition_intent":
+            body = envelope.body
+            intent = AcquisitionIntent(envelope.operation_id, str(body["source"]), str(body["upstream_id"]), str(body["media_id"]), int(body["bytes_reserved"]), str(body["source_fingerprint"]))
+            _, _, publisher_ready = self._readiness()
+            decision = self._service.admit(intent, source=str(body["source_locator"]), publisher_ready=publisher_ready)
+            return status_response(envelope.operation_id, StatusCode.OK if decision.admitted else StatusCode.INHIBITED if decision.reason not in {"conflict", "source_fingerprint_mismatch"} else StatusCode.CONFLICT, decision.reason)
+        if envelope.kind == "observe":
+            terminal = self._service.observe(envelope.operation_id)
+            return terminal if terminal is not None else status_response(envelope.operation_id, StatusCode.OK, "no terminal acquisition")
+        if envelope.kind == "custody_receipt":
+            accepted = self._service.accept_custody(envelope)
+            return status_response(envelope.operation_id, StatusCode.OK if accepted else StatusCode.CONFLICT, "custody receipt accepted" if accepted else "custody receipt rejected")
+        if envelope.kind == "status":
+            qbittorrent_ready, prowlarr_ready, publisher_ready = self._readiness()
+            status = self._observability.status(qbittorrent_ready=qbittorrent_ready, prowlarr_ready=prowlarr_ready, publisher_ready=publisher_ready)
+            return status_response(envelope.operation_id, StatusCode.OK if status["status"] == "ready" else StatusCode.INHIBITED, str(status["status"]))
+        if envelope.kind == "metrics":
+            return metrics_response(envelope.operation_id, self._observability.metrics())
+        return status_response(envelope.operation_id, StatusCode.INVALID_CONTRACT, "unsupported Fence message")
+
+    def status(self) -> dict[str, object]:
+        qbittorrent_ready, prowlarr_ready, publisher_ready = self._readiness()
+        return self._observability.status(qbittorrent_ready=qbittorrent_ready, prowlarr_ready=prowlarr_ready, publisher_ready=publisher_ready)
+
+    def recover(self) -> None:
+        self._service.recover()

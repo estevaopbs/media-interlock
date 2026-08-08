@@ -17,6 +17,9 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
 ]
 
+[project.scripts]
+media-interlock-fence = "media_interlock.fence.cli:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

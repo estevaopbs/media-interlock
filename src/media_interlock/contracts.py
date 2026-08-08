@@ -69,7 +69,7 @@ class Envelope:
     def __post_init__(self) -> None:
         if not isinstance(self.version, str) or self.version != CONTRACT_VERSION:
             raise ContractError("unsupported contract version")
-        if not isinstance(self.kind, str) or self.kind not in {"status", "terminal_acquisition", "custody_receipt"}:
+        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_intent", "terminal_acquisition", "custody_receipt", "metrics", "observe"}:
             raise ContractError("unknown contract kind")
         _operation_id(self.operation_id)
         normalized = _json_body(self.body)
@@ -77,16 +77,26 @@ class Envelope:
             expected = {"code", "message"}
             if set(normalized) != expected or not isinstance(normalized["code"], str) or normalized["code"] not in {code.value for code in StatusCode} or not isinstance(normalized["message"], str):
                 raise ContractError("invalid status fields")
+        elif self.kind == "acquisition_intent":
+            expected = {"bytes_reserved", "media_id", "source", "source_fingerprint", "source_locator", "upstream_id"}
+            fingerprint = normalized.get("source_fingerprint")
+            if set(normalized) != expected or normalized.get("source") not in {"radarr", "sonarr"} or not all(isinstance(normalized[name], str) and normalized[name] for name in expected - {"bytes_reserved", "source"}) or not isinstance(fingerprint, str) or len(fingerprint) != 64 or any(char not in "0123456789abcdef" for char in fingerprint) or isinstance(normalized["bytes_reserved"], bool) or not isinstance(normalized["bytes_reserved"], int) or normalized["bytes_reserved"] <= 0:
+                raise ContractError("acquisition intent fields are invalid")
         elif self.kind == "terminal_acquisition":
             expected = {"bytes_reserved", "fence_reservation_id", "media_id", "source", "upstream_id"}
             if set(normalized) != expected:
                 raise ContractError("unknown terminal acquisition fields")
             if not isinstance(normalized["source"], str) or normalized["source"] not in {"radarr", "sonarr"} or not all(isinstance(normalized[name], str) and normalized[name] for name in expected - {"bytes_reserved", "source"}) or isinstance(normalized["bytes_reserved"], bool) or not isinstance(normalized["bytes_reserved"], int) or normalized["bytes_reserved"] <= 0:
                 raise ContractError("terminal acquisition fields are invalid")
-        else:
+        elif self.kind == "custody_receipt":
             expected = {"fence_reservation_id", "publisher_reservation_id"}
             if set(normalized) != expected or not all(isinstance(normalized[name], str) and normalized[name] for name in expected):
                 raise ContractError("invalid custody receipt fields")
+        elif self.kind == "metrics":
+            if normalized and (set(normalized) != {"text"} or not isinstance(normalized["text"], str)):
+                raise ContractError("invalid metrics fields")
+        elif normalized:
+            raise ContractError("observe request has fields")
         object.__setattr__(self, "body", normalized)
 
     @classmethod
@@ -130,8 +140,22 @@ def terminal_acquisition(*, operation_id: str, fence_reservation_id: str, source
     return Envelope(CONTRACT_VERSION, "terminal_acquisition", _operation_id(operation_id), {"bytes_reserved": bytes_reserved, "fence_reservation_id": fence_reservation_id, "media_id": media_id, "source": source, "upstream_id": upstream_id})
 
 
+def acquisition_intent(*, operation_id: str, source: str, source_locator: str, upstream_id: str, media_id: str, bytes_reserved: int, source_fingerprint: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "acquisition_intent", _operation_id(operation_id), {"bytes_reserved": bytes_reserved, "media_id": media_id, "source": source, "source_fingerprint": source_fingerprint, "source_locator": source_locator, "upstream_id": upstream_id})
+
+
+def metrics_response(operation_id: str, text: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "metrics", _operation_id(operation_id), {"text": text})
+
+
 def custody_receipt(operation_id: str, fence_reservation_id: str, publisher_reservation_id: str) -> Envelope:
     return Envelope(CONTRACT_VERSION, "custody_receipt", _operation_id(operation_id), {"fence_reservation_id": fence_reservation_id, "publisher_reservation_id": publisher_reservation_id})
+
+
+def status_response(operation_id: str, code: StatusCode, message: str) -> Envelope:
+    if not isinstance(message, str):
+        raise ContractError("status message must be a string")
+    return Envelope(CONTRACT_VERSION, "status", _operation_id(operation_id), {"code": code.value, "message": message})
 
 
 @dataclass(frozen=True)

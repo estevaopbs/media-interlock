@@ -1,7 +1,7 @@
 # Operations
 
-There is no runnable release yet. This page defines the operator contract that
-implementation and packaging must satisfy; it is not an installation guide.
+There is no runnable release yet. Fence is implemented as a local daemon, but
+this page is not an installation guide and no live deployment has been tested.
 
 ## Processes
 
@@ -28,7 +28,7 @@ integrated as declared in the current release profile.
 Validated TOML has one shared runtime section plus optional component and
 adapter sections; each process reads only its owned typed projection.
 Configuration files contain no secret values. Secret references use `env:` or
-`file:` forms, resolve only at process startup, and are redacted from
+`file:` forms, resolve only when an adapter first needs them, and are redacted from
 diagnostics.
 
 Startup fails before side effects when configuration is unknown, ambiguous, or
@@ -38,7 +38,10 @@ unready rather than silently degrading to unsafe behavior.
 
 Operational readiness also requires disjoint staging/canonical roots,
 publisher-only canonical write access, read-only playback mounts, paused-on-add
-qBittorrent behavior, and fence-only resume authority. MediaInterlock validates
+qBittorrent behavior, a dedicated configured qBittorrent category, and
+fence-only resume authority. Fence accepts a stopped add only after it observes
+its exact hash, category, reservation tag, and staging root; it persists resume
+intent before the resume call. MediaInterlock validates
 the paths and observable upstream settings; deployment manifests, identities,
 mounts, ACLs, and credentials enforce the parts outside the process. Both are
 required, and negative probes belong to downstream acceptance.

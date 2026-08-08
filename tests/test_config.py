@@ -18,6 +18,7 @@ runtime_dir = "/run/media-interlock"
 state_dir = "/var/lib/media-interlock/fence"
 socket_path = "/run/media-interlock/fence.sock"
 staging_root = "/srv/staging"
+qbittorrent_category = "media-interlock"
 capacity_bytes = 1000000
 max_inflight = 2
 
@@ -55,7 +56,7 @@ class ConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "must be disjoint"):
             load_config(self.write(VALID_CONFIG.replace('canonical_root = "/srv/library"', 'canonical_root = "/srv/staging/library"')))
         with self.assertRaisesRegex(ConfigError, "must be disjoint"):
-            load_config(self.write(VALID_CONFIG.replace('staging_root = "/srv/staging"\ncapacity_bytes', 'staging_root = "/srv/library/downloads"\ncapacity_bytes')))
+            load_config(self.write(VALID_CONFIG.replace('staging_root = "/srv/staging"', 'staging_root = "/srv/library/downloads"', 1)))
         with self.assertRaisesRegex(ConfigError, "must use env: or file:"):
             load_config(self.write(VALID_CONFIG.replace("env:PROWLARR_API_KEY", "plaintext-secret")))
         with self.assertRaisesRegex(ConfigError, "must not contain credentials"):
@@ -96,3 +97,18 @@ class ConfigurationTests(unittest.TestCase):
         secret = config.adapters["prowlarr"].secrets["api_key"]
         self.assertEqual("actual-secret-value", secret.resolve())
         self.assertNotIn("actual-secret-value", repr(config))
+
+    def test_qbittorrent_uses_distinct_username_and_password_references(self) -> None:
+        content = VALID_CONFIG + """
+[adapters.qbittorrent]
+base_url = "https://qbittorrent.example.invalid"
+username = "env:QBITTORRENT_USERNAME"
+password = "file:/run/secrets/qbittorrent-password"
+"""
+
+        config = load_config(self.write(content))
+
+        self.assertEqual({"username", "password"}, set(config.adapters["qbittorrent"].secrets))
+        self.assertEqual("env:<redacted>", config.redacted()["adapters"]["qbittorrent"]["username"])
+        with self.assertRaisesRegex(ConfigError, "missing required key: adapters.qbittorrent.password"):
+            load_config(self.write(content.replace('password = "file:/run/secrets/qbittorrent-password"\n', "")))

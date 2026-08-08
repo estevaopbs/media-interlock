@@ -1,14 +1,16 @@
 # Current state
 
-MediaInterlock has implemented its first shared safety slice. It contains a
-strict TOML configuration loader, non-persisted secret references, version-1
-Unix contract envelopes, private durable-state and atomic-I/O primitives, and
-stable human/JSON result conventions. It does not yet contain a component
-daemon, adapter implementation, OCI image, release, or installation procedure.
+MediaInterlock has implemented its shared safety slice and the Fence vertical.
+Fence has a private durable reservation store, version-1 local Unix endpoint,
+bounded health/metrics, exact qBittorrent control, optional configured-indexer
+Prowlarr readiness, terminal observation, conservative custody receipts, and
+restart reconciliation. Its qBittorrent and Prowlarr behavior is contract-tested
+only against disposable HTTP services.
 
 Consequently:
 
-- none of the seven planned upstream adapters is implemented or qualified;
+- qBittorrent and the Fence-owned Prowlarr readiness capability are implemented
+  against their pinned development versions; the other five adapters are pending;
 - no live, hardware, filesystem, container, or upstream-service acceptance has
   been performed;
 - no downstream deployment should consume this repository yet.

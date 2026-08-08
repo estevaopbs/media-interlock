@@ -72,6 +72,7 @@ class ComponentConfig:
 @dataclass(frozen=True)
 class FenceConfig(ComponentConfig):
     staging_root: Path
+    qbittorrent_category: str
     capacity_bytes: int
     max_inflight: int
 
@@ -154,6 +155,16 @@ def _required_positive(table: Mapping[str, object], name: str, location: str, ma
     return value
 
 
+def _required_category(table: Mapping[str, object], name: str, location: str) -> str:
+    try:
+        value = table[name]
+    except KeyError as exc:
+        raise ConfigError(f"missing required key: {location}.{name}") from exc
+    if not isinstance(value, str) or not value or len(value) > 128 or any(char in value for char in "\\x00/\\\\"):
+        raise ConfigError(f"{location}.{name} must be a safe qBittorrent category")
+    return value
+
+
 def _component(table: Mapping[str, object], name: str, runtime_dir: Path) -> ComponentConfig:
     socket_path = _required_path(table, "socket_path", name)
     if socket_path.parent != runtime_dir:
@@ -175,10 +186,10 @@ def _validate_disjoint(first: Path, second: Path, first_name: str, second_name: 
 
 
 def _adapter(name: str, table: Mapping[str, object]) -> AdapterConfig:
-    _require_keys(table, {"base_url", "api_key"}, f"adapters.{name}")
+    secret_fields = ("username", "password") if name == "qbittorrent" else ("api_key",)
+    _require_keys(table, {"base_url", *secret_fields}, f"adapters.{name}")
     try:
         base_url = table["base_url"]
-        api_key = table["api_key"]
     except KeyError as exc:
         raise ConfigError(f"missing required key: adapters.{name}.{exc.args[0]}") from exc
     if not isinstance(base_url, str):
@@ -194,7 +205,13 @@ def _adapter(name: str, table: Mapping[str, object]) -> AdapterConfig:
         parsed.port
     except ValueError as exc:
         raise ConfigError(f"adapters.{name}.base_url must be a valid HTTP(S) authority") from exc
-    return AdapterConfig(name, base_url.rstrip("/"), {"api_key": SecretReference.parse(api_key, f"adapters.{name}.api_key")})
+    secrets: dict[str, SecretReference] = {}
+    for field in secret_fields:
+        try:
+            secrets[field] = SecretReference.parse(table[field], f"adapters.{name}.{field}")
+        except KeyError as exc:
+            raise ConfigError(f"missing required key: adapters.{name}.{field}") from exc
+    return AdapterConfig(name, base_url.rstrip("/"), secrets)
 
 
 def load_config(path: Path) -> ProductConfig:
@@ -215,10 +232,10 @@ def load_config(path: Path) -> ProductConfig:
     fence: FenceConfig | None = None
     if components["fence"] is not None:
         table = _table(document["fence"], "fence")
-        _require_keys(table, {"state_dir", "socket_path", "staging_root", "capacity_bytes", "max_inflight"}, "fence")
+        _require_keys(table, {"state_dir", "socket_path", "staging_root", "qbittorrent_category", "capacity_bytes", "max_inflight"}, "fence")
         base = components["fence"]
         assert base is not None
-        fence = FenceConfig(base.name, base.state_dir, base.socket_path, _required_path(table, "staging_root", "fence"), _required_positive(table, "capacity_bytes", "fence", 2**63 - 1), _required_positive(table, "max_inflight", "fence", 100_000))
+        fence = FenceConfig(base.name, base.state_dir, base.socket_path, _required_path(table, "staging_root", "fence"), _required_category(table, "qbittorrent_category", "fence"), _required_positive(table, "capacity_bytes", "fence", 2**63 - 1), _required_positive(table, "max_inflight", "fence", 100_000))
     publisher: PublisherConfig | None = None
     if components["publisher"] is not None:
         table = _table(document["publisher"], "publisher")
