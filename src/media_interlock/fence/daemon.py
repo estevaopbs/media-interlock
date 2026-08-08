@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable
 
 from ..contracts import ContractError, Envelope, StatusCode, metrics_response, status_response
-from .model import AcquisitionIntent
+from .model import AcquisitionIntent, PreAdmissionIntent
 from .observability import FenceObservability
 from .service import FenceService
 
@@ -30,6 +30,15 @@ class FenceDaemon:
             await writer.wait_closed()
 
     def _dispatch(self, envelope: Envelope) -> Envelope:
+        if envelope.kind == "acquisition_pre_admission":
+            body = envelope.body
+            _, _, publisher_ready = self._readiness()
+            intent = PreAdmissionIntent(envelope.operation_id, str(body["source"]), str(body["media_id"]), str(body["selector_fingerprint"]), int(body["expected_bytes"]), str(body["watermark"]))
+            decision = self._service.pre_admit(intent, publisher_ready=publisher_ready)
+            return status_response(envelope.operation_id, StatusCode.OK if decision.admitted else StatusCode.INHIBITED if decision.reason != "conflict" else StatusCode.CONFLICT, decision.reason)
+        if envelope.kind == "acquisition_grab_binding":
+            bound = self._service.bind_grab(envelope.operation_id, str(envelope.body["download_id"]))
+            return status_response(envelope.operation_id, StatusCode.OK if bound else StatusCode.INHIBITED, "grab bound" if bound else "grab pending")
         if envelope.kind == "acquisition_intent":
             body = envelope.body
             intent = AcquisitionIntent(envelope.operation_id, str(body["source"]), str(body["upstream_id"]), str(body["media_id"]), int(body["bytes_reserved"]), str(body["source_fingerprint"]))

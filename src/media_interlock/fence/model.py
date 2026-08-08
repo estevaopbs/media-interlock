@@ -16,6 +16,7 @@ def _torrent_hash(value: object) -> bool:
 class ReservationState(StrEnum):
     PRE_ADMITTED = "pre_admitted"
     GRAB_BOUND = "grab_bound"
+    TAG_INTENT_RECORDED = "tag_intent_recorded"
     INTENT_RECORDED = "intent_recorded"
     QBITTORRENT_STOPPED = "qbittorrent_stopped"
     RESUME_INTENT_RECORDED = "resume_intent_recorded"
@@ -135,6 +136,23 @@ class FenceState:
         reservation.download_id = download_id
         reservation.torrent_hash = torrent_hash
         reservation.state = ReservationState.GRAB_BOUND
+
+    def request_tag(self, operation_id: str) -> None:
+        reservation = self.reservation(operation_id)
+        if reservation.state is not ReservationState.GRAB_BOUND or not reservation.torrent_hash or not reservation.download_id:
+            raise ContractError("qBittorrent tag intent transition is invalid")
+        reservation.state = ReservationState.TAG_INTENT_RECORDED
+
+    def mark_qbittorrent_tagged(self, operation_id: str, *, observed_bytes: int) -> bool:
+        reservation = self.reservation(operation_id)
+        if reservation.state is not ReservationState.TAG_INTENT_RECORDED or not reservation.torrent_hash:
+            raise ContractError("qBittorrent tag observation transition is invalid")
+        if isinstance(observed_bytes, bool) or not isinstance(observed_bytes, int) or observed_bytes <= 0:
+            raise ContractError("qBittorrent size observation is invalid")
+        if observed_bytes > reservation.bytes_reserved:
+            reservation.bytes_reserved = observed_bytes
+        reservation.state = ReservationState.QBITTORRENT_STOPPED
+        return self.within_capacity
 
     def admit(self, intent: AcquisitionIntent, *, qbittorrent_ready: bool, prowlarr_ready: bool, publisher_ready: bool) -> AdmissionDecision:
         existing = self._reservations.get(intent.operation_id)
@@ -280,8 +298,8 @@ class FenceState:
                 )
             except (TypeError, ValueError) as exc:
                 raise ContractError("durable Fence reservation is invalid") from exc
-            new_state = item.state in {ReservationState.PRE_ADMITTED, ReservationState.GRAB_BOUND}
-            if not isinstance(item.bytes_reserved, int) or isinstance(item.bytes_reserved, bool) or item.bytes_reserved <= 0 or not isinstance(item.requested_bytes, int) or isinstance(item.requested_bytes, bool) or item.requested_bytes <= 0 or item.bytes_reserved < item.requested_bytes or (item.publisher_reservation_id is not None and not isinstance(item.publisher_reservation_id, str)) or (item.torrent_hash is not None and not _torrent_hash(item.torrent_hash)) or (item.selector_fingerprint is not None and (not isinstance(item.selector_fingerprint, str) or len(item.selector_fingerprint) != 64 or any(character not in "0123456789abcdef" for character in item.selector_fingerprint))) or (item.watermark is not None and (not isinstance(item.watermark, str) or not item.watermark)) or (item.download_id is not None and (not isinstance(item.download_id, str) or not item.download_id)) or (new_state and (not item.selector_fingerprint or not item.watermark)) or (item.state is ReservationState.PRE_ADMITTED and (item.torrent_hash is not None or item.download_id is not None)) or (item.state is ReservationState.GRAB_BOUND and (not item.torrent_hash or not item.download_id)) or (item.state in {ReservationState.QBITTORRENT_STOPPED, ReservationState.RESUME_INTENT_RECORDED, ReservationState.QBITTORRENT_ACTIVE, ReservationState.TERMINAL, ReservationState.RELEASED} and not item.torrent_hash) or (item.state is ReservationState.RELEASED and not item.publisher_reservation_id):
+            new_state = item.state in {ReservationState.PRE_ADMITTED, ReservationState.GRAB_BOUND, ReservationState.TAG_INTENT_RECORDED}
+            if not isinstance(item.bytes_reserved, int) or isinstance(item.bytes_reserved, bool) or item.bytes_reserved <= 0 or not isinstance(item.requested_bytes, int) or isinstance(item.requested_bytes, bool) or item.requested_bytes <= 0 or item.bytes_reserved < item.requested_bytes or (item.publisher_reservation_id is not None and not isinstance(item.publisher_reservation_id, str)) or (item.torrent_hash is not None and not _torrent_hash(item.torrent_hash)) or (item.selector_fingerprint is not None and (not isinstance(item.selector_fingerprint, str) or len(item.selector_fingerprint) != 64 or any(character not in "0123456789abcdef" for character in item.selector_fingerprint))) or (item.watermark is not None and (not isinstance(item.watermark, str) or not item.watermark)) or (item.download_id is not None and (not isinstance(item.download_id, str) or not item.download_id)) or (new_state and (not item.selector_fingerprint or not item.watermark)) or (item.state is ReservationState.PRE_ADMITTED and (item.torrent_hash is not None or item.download_id is not None)) or (item.state in {ReservationState.GRAB_BOUND, ReservationState.TAG_INTENT_RECORDED} and (not item.torrent_hash or not item.download_id)) or (item.state in {ReservationState.QBITTORRENT_STOPPED, ReservationState.RESUME_INTENT_RECORDED, ReservationState.QBITTORRENT_ACTIVE, ReservationState.TERMINAL, ReservationState.RELEASED} and not item.torrent_hash) or (item.state is ReservationState.RELEASED and not item.publisher_reservation_id):
                 raise ContractError("durable Fence reservation is invalid")
             if item.operation_id in result._reservations:
                 raise ContractError("durable Fence reservation operation is duplicated")

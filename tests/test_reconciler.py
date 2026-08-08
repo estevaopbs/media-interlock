@@ -3,11 +3,13 @@ from __future__ import annotations
 import unittest
 import uuid
 import tempfile
+import hashlib
+import json
 from pathlib import Path
 
 import _source_tree  # noqa: F401
 
-from media_interlock.reconciler.model import AttemptPolicy, ReconciliationState, SearchIntent
+from media_interlock.reconciler.model import AttemptPolicy, GrabIntent, ReconciliationState, SearchIntent
 from media_interlock.reconciler.store import ReconcilerStore
 
 
@@ -83,3 +85,29 @@ class ReconciliationModelTests(unittest.TestCase):
             restarted = ReconcilerStore.open(Path(directory) / "reconciler")
             self.addCleanup(restarted.close)
             self.assertEqual(intent, restarted.load().intent(intent.operation_id))
+
+    def test_grab_intent_is_durable_before_release_effect_and_exact_on_restart(self) -> None:
+        operation_id = str(uuid.uuid4())
+        resource = {"approved": True, "protocol": "torrent", "guid": "release-42", "title": "fixture.movie.2026", "size": 400, "downloadUrl": "https://indexer.invalid/release"}
+        fingerprint = hashlib.sha256(json.dumps(resource, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        search = SearchIntent(operation_id, "radarr", "42", False, "checkpoint-a")
+        grab = GrabIntent(operation_id, "radarr", "42", fingerprint, 400, 7, resource)
+        state = ReconciliationState()
+        state.record_intent(search, now=100)
+
+        self.assertEqual(grab, state.record_grab_intent(grab))
+        restored = ReconciliationState.from_records(state.records())
+
+        self.assertEqual(grab, restored.grab_intent(operation_id))
+
+    def test_grab_effect_is_marked_before_post_and_persists_across_restart(self) -> None:
+        operation_id = str(uuid.uuid4())
+        resource = {"approved": True, "protocol": "torrent", "guid": "release-42", "title": "fixture.movie.2026", "size": 400, "downloadUrl": "https://indexer.invalid/release"}
+        fingerprint = hashlib.sha256(json.dumps(resource, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        state = ReconciliationState()
+        state.record_intent(SearchIntent(operation_id, "radarr", "42", False, "checkpoint-a"))
+        state.record_grab_intent(GrabIntent(operation_id, "radarr", "42", fingerprint, 400, 7, resource))
+
+        state.mark_grab_attempted(operation_id)
+
+        self.assertTrue(ReconciliationState.from_records(state.records()).grab_attempted(operation_id))

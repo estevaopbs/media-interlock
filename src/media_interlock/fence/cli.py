@@ -50,12 +50,12 @@ def _runtime(config: ProductConfig) -> tuple[FenceStore, FenceDaemon, FenceObser
         qbittorrent_config = config.adapters["qbittorrent"]
     except KeyError as exc:
         raise ConfigError("Fence requires a configured qBittorrent adapter") from exc
-    qbittorrent = QbittorrentAdapter(qbittorrent_config.base_url, qbittorrent_config.secrets["username"], qbittorrent_config.secrets["password"], staging_root=config.fence.staging_root, category=config.fence.qbittorrent_category)
+    qbittorrent = QbittorrentAdapter(qbittorrent_config.base_url, qbittorrent_config.secrets["username"], qbittorrent_config.secrets["password"], staging_root=config.fence.staging_root, category=config.fence.categories["radarr"])
     prowlarr_config = config.adapters.get("prowlarr")
     prowlarr = None if prowlarr_config is None else ProwlarrAdapter(prowlarr_config.base_url, prowlarr_config.secrets["api_key"])
     store = FenceStore.open(config.fence.state_dir)
     state = store.load(FencePolicy(config.fence.capacity_bytes, config.fence.max_inflight))
-    service = FenceService(state, store, qbittorrent, prowlarr)
+    service = FenceService(state, store, qbittorrent, prowlarr, categories=config.fence.categories)
     observability = FenceObservability(state)
     daemon = FenceDaemon(service, observability, readiness=lambda: (qbittorrent.ready(), prowlarr is None or prowlarr.ready(), config.publisher is not None and _component_ready(config.publisher.socket_path)))
     return store, daemon, observability

@@ -8,6 +8,7 @@ class SonarrAdapter(ArrHistoryAdapter):
     source_name = "sonarr"
     item_type = "Episode"
     release_entity_key = "episodeId"
+    category_field_name = "tvCategory"
 
     def search_episode(self, episode_id: str) -> str | None:
         return self._submit_command("EpisodeSearch", "episodeIds", episode_id)

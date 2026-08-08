@@ -31,11 +31,20 @@ class ArrRelease:
     expected_bytes: int
 
 
+@dataclass(frozen=True)
+class ArrGrabObservation:
+    """One bounded public Arr observation; never an inference from absence."""
+
+    kind: str
+    download_id: str | None = None
+
+
 class ArrHistoryAdapter:
     media_keys: tuple[str, ...] = ()
     source_name = ""
     item_type = ""
     release_entity_key = ""
+    category_field_name = ""
     def __init__(self, base_url: str, api_key: SecretReference, *, staging_root: Path, secret_resolver: Callable[[SecretReference], str] | None = None, timeout_seconds: float = 5.0) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -97,8 +106,8 @@ class ArrHistoryAdapter:
                 continue
             if resource.get("protocol") != "torrent":
                 return None
-            guid, locator, size = resource.get("guid"), resource.get("downloadUrl"), resource.get("size")
-            if not isinstance(guid, str) or not guid or not isinstance(locator, str) or not locator or isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            guid, title, locator, size = resource.get("guid"), resource.get("title"), resource.get("downloadUrl"), resource.get("size")
+            if not isinstance(guid, str) or not guid or not isinstance(title, str) or not title or not isinstance(locator, str) or not locator or isinstance(size, bool) or not isinstance(size, int) or size <= 0:
                 return None
             try:
                 encoded = json.dumps(resource, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -122,6 +131,108 @@ class ArrHistoryAdapter:
         except (HTTPError, URLError, OSError, RuntimeError):
             return False
         return status == 200
+
+    def _paged(self, endpoint: str) -> list[dict[str, object]] | None:
+        records: list[dict[str, object]] = []
+        for page in range(1, 11):
+            query = urlencode({"page": page, "pageSize": 100})
+            request = Request(f"{self._base_url}/api/v3/{endpoint}?{query}", headers={"X-Api-Key": self._resolve(self._api_key)})
+            try:
+                status, body = request_bytes(request, timeout=self._timeout)
+                response = json.loads(body.decode("utf-8"))
+            except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
+                return None
+            page_records = response.get("records") if isinstance(response, dict) else None
+            if status != 200 or not isinstance(page_records, list) or not all(isinstance(record, dict) for record in page_records):
+                return None
+            records.extend(page_records)
+            total = response.get("totalRecords")
+            if not isinstance(total, int) or isinstance(total, bool) or total < len(records):
+                return None
+            if len(records) >= total:
+                return records
+        return None
+
+    def history_watermark(self) -> int | None:
+        """Return the highest observed public history identity before a grab."""
+        history = self._paged("history")
+        if history is None:
+            return None
+        identifiers = [record.get("id") for record in history]
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in identifiers):
+            return None
+        return max(identifiers, default=0)
+
+    def observe_grab(self, entity_id: str, release: ArrRelease, *, watermark: int) -> ArrGrabObservation:
+        """Correlate exactly one later Arr grab and queue entry without guessing."""
+        public_id = _public_id(int(entity_id)) if entity_id.isdecimal() else None
+        if public_id != entity_id or not isinstance(release, ArrRelease) or isinstance(watermark, bool) or not isinstance(watermark, int) or watermark < 0:
+            return ArrGrabObservation("unknown")
+        title = release.resource.get("title")
+        if not isinstance(title, str) or not title:
+            return ArrGrabObservation("unknown")
+        history = self._paged("history")
+        if history is None:
+            return ArrGrabObservation("unknown")
+        matches: list[str] = []
+        for record in history:
+            record_id, download_id = record.get("id"), record.get("downloadId")
+            if record.get("eventType") != "grabbed" or _public_id(record.get(self.release_entity_key)) != entity_id or record.get("sourceTitle") != title:
+                continue
+            if isinstance(record_id, bool) or not isinstance(record_id, int) or record_id <= watermark or not isinstance(download_id, str) or not download_id:
+                return ArrGrabObservation("unknown")
+            matches.append(download_id)
+        if not matches:
+            return ArrGrabObservation("absent")
+        if len(matches) != 1:
+            return ArrGrabObservation("ambiguous")
+        queue = self._paged("queue")
+        if queue is None:
+            return ArrGrabObservation("unknown")
+        download_id = matches[0]
+        queue_matches = [
+            record for record in queue
+            if _public_id(record.get(self.release_entity_key)) == entity_id
+            and record.get("title") == title
+            and record.get("downloadId") == download_id
+            and record.get("protocol") == "torrent"
+            and not isinstance(record.get("size"), bool)
+            and isinstance(record.get("size"), (int, float))
+            and record.get("size") == release.expected_bytes
+        ]
+        if len(queue_matches) == 1:
+            return ArrGrabObservation("observed", download_id)
+        if not queue_matches:
+            return ArrGrabObservation("absent")
+        return ArrGrabObservation("ambiguous")
+
+    def stopped_qbittorrent_client(self, category: str) -> bool:
+        """Require one enabled Arr qBittorrent client that adds this source stopped."""
+        if not self.category_field_name or not isinstance(category, str) or not category:
+            return False
+        request = Request(f"{self._base_url}/api/v3/downloadclient", headers={"X-Api-Key": self._resolve(self._api_key)})
+        try:
+            status, body = request_bytes(request, timeout=self._timeout)
+            clients = json.loads(body.decode("utf-8"))
+        except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        if status != 200 or not isinstance(clients, list):
+            return False
+        matches = 0
+        for client in clients:
+            if not isinstance(client, dict) or client.get("enable") is not True or client.get("protocol") != "torrent" or client.get("implementation") != "QBittorrent":
+                continue
+            fields = client.get("fields")
+            if not isinstance(fields, list):
+                return False
+            values: dict[str, object] = {}
+            for field in fields:
+                if not isinstance(field, dict) or set(field) - {"name", "value"} or not isinstance(field.get("name"), str) or field["name"] in values:
+                    return False
+                values[field["name"]] = field.get("value")
+            if values.get("initialState") == 2 and values.get(self.category_field_name) == category:
+                matches += 1
+        return matches == 1
 
     def _matched_import(self, download_id: str, media_id: str) -> tuple[str, str] | None:
         if not download_id or not media_id:

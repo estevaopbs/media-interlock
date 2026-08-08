@@ -147,6 +147,46 @@ class QbittorrentAdapter:
             return None
         return self.observe_stopped(reservation_id)
 
+    def observe_existing_stopped(self, torrent_hash: str, category: str) -> int | None:
+        """Observe an Arr-added torrent before Fence mutates its tag or state."""
+        if not self._login() or not _torrent_hash(torrent_hash) or not isinstance(category, str) or not category:
+            return None
+        try:
+            torrents = self._get_json(f"/api/v2/torrents/info?{urlencode({'hashes': torrent_hash, 'category': category})}")
+        except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(torrents, list) or len(torrents) != 1 or not isinstance(torrents[0], dict):
+            return None
+        torrent = torrents[0]
+        size, state = torrent.get("size"), torrent.get("state")
+        if torrent.get("hash") != torrent_hash or torrent.get("category") != category or torrent.get("save_path") != self._staging_root or isinstance(size, bool) or not isinstance(size, int) or size <= 0 or not isinstance(state, str):
+            return None
+        return size if state.startswith("paused") or state.startswith("stopped") else None
+
+    def apply_reservation_tag(self, torrent_hash: str, reservation_id: str) -> bool:
+        if not self._login() or not _torrent_hash(torrent_hash) or not isinstance(reservation_id, str) or not reservation_id:
+            return False
+        try:
+            self._post("/api/v2/torrents/addTags", {"hashes": torrent_hash, "tags": reservation_id})
+        except (HTTPError, URLError, OSError, RuntimeError):
+            return False
+        return True
+
+    def observe_tagged_stopped(self, torrent_hash: str, category: str, reservation_id: str) -> int | None:
+        if not self._login() or not _torrent_hash(torrent_hash) or not isinstance(category, str) or not category or not isinstance(reservation_id, str) or not reservation_id:
+            return None
+        try:
+            torrents = self._get_json(f"/api/v2/torrents/info?{urlencode({'hashes': torrent_hash, 'category': category, 'tag': reservation_id})}")
+        except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(torrents, list) or len(torrents) != 1 or not isinstance(torrents[0], dict):
+            return None
+        torrent = torrents[0]
+        tags = torrent.get("tags")
+        if not isinstance(tags, str) or reservation_id not in {tag.strip() for tag in tags.split(",")}:
+            return None
+        return self.observe_existing_stopped(torrent_hash, category)
+
     def resume(self, torrent_hash: str) -> bool:
         if not self._login() or not _torrent_hash(torrent_hash):
             return False

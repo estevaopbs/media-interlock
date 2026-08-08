@@ -20,7 +20,9 @@ class ArrCorrelationTests(unittest.TestCase):
         self.entity_payload: object = {"id": 42, "tmdbId": 42}
         self.request: tuple[str, str | None] | None = None
         self.command_request: tuple[str, str | None, object] | None = None
-        self.release_payload: object = [{"approved": True, "protocol": "torrent", "guid": "release-42", "size": 400, "downloadUrl": "https://indexer.invalid/release"}]
+        self.release_payload: object = [{"approved": True, "protocol": "torrent", "guid": "release-42", "title": "fixture.movie.2026", "size": 400, "downloadUrl": "https://indexer.invalid/release"}]
+        self.queue_payload: object = {"records": []}
+        self.download_clients: object = []
         self.release_post: object | None = None
         outer = self
 
@@ -41,6 +43,18 @@ class ArrCorrelationTests(unittest.TestCase):
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
                     self.wfile.write(json.dumps(outer.payload).encode())
+                    return
+                if self.path.startswith("/api/v3/queue?"):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(outer.queue_payload).encode())
+                    return
+                if self.path == "/api/v3/downloadclient":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(outer.download_clients).encode())
                     return
                 if self.path == "/api/v3/movie/42":
                     self.send_response(200)
@@ -130,7 +144,7 @@ class ArrCorrelationTests(unittest.TestCase):
         self.assertEqual(("/api/v3/command", "fixture-key", {"name": "EpisodeSearch", "episodeIds": [42]}), self.command_request)
 
     def test_interactive_first_approved_torrent_is_selected_and_posted_intact(self) -> None:
-        expected = {"approved": True, "protocol": "torrent", "guid": "release-42", "size": 400, "downloadUrl": "https://indexer.invalid/release"}
+        expected = {"approved": True, "protocol": "torrent", "guid": "release-42", "title": "fixture.movie.2026", "size": 400, "downloadUrl": "https://indexer.invalid/release"}
         adapter = self.adapter(RadarrAdapter)
         release = adapter.first_approved_release("42")
         self.assertIsNotNone(release)
@@ -143,12 +157,57 @@ class ArrCorrelationTests(unittest.TestCase):
 
     def test_interactive_selection_never_skips_an_invalid_first_approved_decision(self) -> None:
         adapter = self.adapter(RadarrAdapter)
-        valid = {"approved": True, "protocol": "torrent", "guid": "later", "size": 400, "downloadUrl": "https://indexer.invalid/later"}
+        valid = {"approved": True, "protocol": "torrent", "guid": "later", "title": "fixture.later", "size": 400, "downloadUrl": "https://indexer.invalid/later"}
         for first in (
-            {"approved": True, "protocol": "usenet", "guid": "first", "size": 400, "downloadUrl": "https://indexer.invalid/first"},
-            {"approved": True, "protocol": "torrent", "guid": "first", "size": 0, "downloadUrl": "https://indexer.invalid/first"},
-            {"approved": True, "protocol": "torrent", "guid": "first", "size": 400},
+            {"approved": True, "protocol": "usenet", "guid": "first", "title": "fixture.first", "size": 400, "downloadUrl": "https://indexer.invalid/first"},
+            {"approved": True, "protocol": "torrent", "guid": "first", "title": "fixture.first", "size": 0, "downloadUrl": "https://indexer.invalid/first"},
+            {"approved": True, "protocol": "torrent", "guid": "first", "title": "fixture.first", "size": 400},
+            {"approved": True, "protocol": "torrent", "guid": "first", "size": 400, "downloadUrl": "https://indexer.invalid/first"},
         ):
             with self.subTest(first=first):
                 self.release_payload = [first, valid]
                 self.assertIsNone(adapter.first_approved_release("42"))
+
+    def test_post_grab_requires_one_later_history_and_queue_match(self) -> None:
+        adapter = self.adapter(RadarrAdapter)
+        release = adapter.first_approved_release("42")
+        assert release is not None
+        download_id = "a" * 40
+        self.payload = {"records": [{"id": 8, "eventType": "grabbed", "movieId": 42, "sourceTitle": "fixture.movie.2026", "downloadId": download_id}], "totalRecords": 1}
+        self.queue_payload = {"records": [{"id": 9, "movieId": 42, "title": "fixture.movie.2026", "downloadId": download_id, "protocol": "torrent", "size": 400}], "totalRecords": 1}
+
+        observation = adapter.observe_grab("42", release, watermark=7)
+
+        self.assertEqual("observed", observation.kind)
+        self.assertEqual(download_id, observation.download_id)
+
+    def test_grab_observation_never_converts_absence_or_ambiguity_to_a_grab(self) -> None:
+        adapter = self.adapter(RadarrAdapter)
+        release = adapter.first_approved_release("42")
+        assert release is not None
+        self.payload = {"records": [], "totalRecords": 0}
+        self.assertEqual("absent", adapter.observe_grab("42", release, watermark=7).kind)
+
+        self.payload = {"records": [
+            {"id": 8, "eventType": "grabbed", "movieId": 42, "sourceTitle": "fixture.movie.2026", "downloadId": "a" * 40},
+            {"id": 9, "eventType": "grabbed", "movieId": 42, "sourceTitle": "fixture.movie.2026", "downloadId": "b" * 40},
+        ], "totalRecords": 2}
+        self.assertEqual("ambiguous", adapter.observe_grab("42", release, watermark=7).kind)
+
+    def test_only_one_enabled_source_category_client_with_initial_state_stop_is_ready(self) -> None:
+        adapter = self.adapter(RadarrAdapter)
+        self.download_clients = [{
+            "enable": True,
+            "protocol": "torrent",
+            "implementation": "QBittorrent",
+            "fields": [{"name": "initialState", "value": 2}, {"name": "movieCategory", "value": "media-interlock-radarr"}],
+        }]
+        self.assertTrue(adapter.stopped_qbittorrent_client("media-interlock-radarr"))
+
+        self.download_clients = [{
+            "enable": True,
+            "protocol": "torrent",
+            "implementation": "QBittorrent",
+            "fields": [{"name": "initialState", "value": 0}, {"name": "movieCategory", "value": "media-interlock-radarr"}],
+        }]
+        self.assertFalse(adapter.stopped_qbittorrent_client("media-interlock-radarr"))

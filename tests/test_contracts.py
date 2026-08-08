@@ -12,6 +12,7 @@ from media_interlock.contracts import (
     Envelope,
     StatusCode,
     acquisition_intent,
+    acquisition_grab_binding,
     acquisition_pre_admission,
     custody_receipt,
     terminal_acquisition,
@@ -22,6 +23,14 @@ OPERATION_ID = str(uuid.UUID("12345678-1234-4678-9234-567812345678"))
 
 
 class ContractTests(unittest.TestCase):
+    def test_arr_observed_grab_binds_real_download_identity_without_locator(self) -> None:
+        binding = acquisition_grab_binding(
+            operation_id=OPERATION_ID,
+            download_id="0123456789abcdef0123456789abcdef01234567",
+        )
+
+        self.assertEqual(binding, Envelope.decode(binding.encode()))
+        self.assertEqual({"download_id"}, set(binding.body))
     def test_pre_admission_has_no_locator_and_terminal_carries_real_arr_download_id(self) -> None:
         pre_admission = acquisition_pre_admission(
             operation_id=OPERATION_ID,

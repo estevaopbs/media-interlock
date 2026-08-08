@@ -51,6 +51,20 @@ class FenceStateTests(unittest.TestCase):
         self.assertEqual("a" * 64, reservation.selector_fingerprint)
         self.assertEqual("watermark", reservation.watermark)
         self.assertEqual("download-42", reservation.download_id)
+
+    def test_bound_grab_requires_durable_tag_intent_and_tag_observation_before_resume(self) -> None:
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        state.pre_admit(PreAdmissionIntent(OPERATION_ID, "radarr", "42", "a" * 64, 400, "watermark"), qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True)
+        state.bind_observed_grab(OPERATION_ID, download_id="download-42", torrent_hash="b" * 40)
+
+        state.request_tag(OPERATION_ID)
+        self.assertEqual(ReservationState.TAG_INTENT_RECORDED, state.reservation(OPERATION_ID).state)
+        with self.assertRaises(ContractError):
+            state.request_resume(OPERATION_ID)
+        state.mark_qbittorrent_tagged(OPERATION_ID, observed_bytes=400)
+
+        self.assertEqual(ReservationState.QBITTORRENT_STOPPED, state.reservation(OPERATION_ID).state)
+        state.request_resume(OPERATION_ID)
     def test_admission_records_reservation_before_a_qbittorrent_effect(self) -> None:
         state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
         intent = AcquisitionIntent(OPERATION_ID, "radarr", "grab-42", "movie-42", 400, FINGERPRINT)
@@ -117,6 +131,46 @@ class FenceStoreTests(unittest.TestCase):
 
 
 class FenceServiceTests(unittest.TestCase):
+    def test_observed_arr_hash_is_tagged_and_confirmed_before_resume(self) -> None:
+        events: list[str] = []
+
+        class Store:
+            def save(self, _: FenceState) -> None:
+                events.append("save")
+
+        class Qbittorrent:
+            def ready(self) -> bool:
+                return True
+
+            def observe_existing_stopped(self, torrent_hash: str, category: str) -> int | None:
+                events.append(f"observe:{torrent_hash}:{category}")
+                return 400
+
+            def apply_reservation_tag(self, torrent_hash: str, reservation_id: str) -> bool:
+                events.append(f"tag:{torrent_hash}:{reservation_id}")
+                return True
+
+            def observe_tagged_stopped(self, torrent_hash: str, category: str, reservation_id: str) -> int | None:
+                events.append(f"tagged:{torrent_hash}:{category}:{reservation_id}")
+                return 400
+
+            def resume(self, torrent_hash: str) -> bool:
+                events.append(f"resume:{torrent_hash}")
+                return True
+
+            def observe_active(self, torrent_hash: str, reservation_id: str) -> bool:
+                events.append(f"active:{torrent_hash}:{reservation_id}")
+                return True
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, categories={"radarr": "media-interlock-radarr"})
+        service.pre_admit(PreAdmissionIntent(OPERATION_ID, "radarr", "42", "a" * 64, 400, "7"), publisher_ready=True)
+
+        self.assertTrue(service.bind_grab(OPERATION_ID, "a" * 40))
+
+        self.assertEqual(ReservationState.QBITTORRENT_ACTIVE, state.reservation(OPERATION_ID).state)
+        self.assertEqual(["save", "observe:" + "a" * 40 + ":media-interlock-radarr", "save", "save", "tag:" + "a" * 40 + ":fence:" + OPERATION_ID, "tagged:" + "a" * 40 + ":media-interlock-radarr:fence:" + OPERATION_ID, "save", "save", "resume:" + "a" * 40, "active:" + "a" * 40 + ":fence:" + OPERATION_ID, "save"], events)
+
     def test_intent_is_saved_before_stopped_qbittorrent_effect_and_observation(self) -> None:
         events: list[str] = []
 

@@ -108,3 +108,15 @@ class QbittorrentAdapterTests(unittest.TestCase):
         self.redirect_login = True
         self.assertFalse(self.adapter().ready())
         self.assertEqual([("POST", "/api/v2/auth/login", {"username": ["fixture-user"], "password": ["fixture-pass"]})], self.requests)
+
+    def test_existing_arr_torrent_must_be_exactly_stopped_before_fence_tagging(self) -> None:
+        adapter = self.adapter()
+        adapter._login = lambda: True  # type: ignore[method-assign]
+        adapter._get_json = lambda _: [{"tags": "", "category": "media-interlock", "save_path": "/staging", "hash": "a" * 40, "size": 400, "state": "pausedDL"}]  # type: ignore[method-assign]
+        posts: list[tuple[str, dict[str, str]]] = []
+        adapter._post = lambda path, fields: posts.append((path, fields)) or b"Ok."  # type: ignore[method-assign]
+
+        self.assertEqual(400, adapter.observe_existing_stopped("a" * 40, "media-interlock"))
+        self.assertTrue(adapter.apply_reservation_tag("a" * 40, "fence-r-1"))
+
+        self.assertEqual([("/api/v2/torrents/addTags", {"hashes": "a" * 40, "tags": "fence-r-1"})], posts)

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Protocol
+from typing import Mapping, Protocol
 
 from ..contracts import Envelope
-from .model import AcquisitionIntent, AdmissionDecision, FenceState, ReservationState
+from .model import AcquisitionIntent, AdmissionDecision, FenceState, PreAdmissionIntent, ReservationState
 
 
 class ReservationStore(Protocol):
@@ -32,15 +32,92 @@ class ProwlarrReadiness(Protocol):
 
 
 class FenceService:
-    def __init__(self, state: FenceState, store: ReservationStore, qbittorrent: QbittorrentControl, prowlarr: ProwlarrReadiness | None) -> None:
+    def __init__(self, state: FenceState, store: ReservationStore, qbittorrent: QbittorrentControl, prowlarr: ProwlarrReadiness | None, *, categories: Mapping[str, str] | None = None) -> None:
         self._state = state
         self._store = store
         self._qbittorrent = qbittorrent
         self._prowlarr = prowlarr
+        self._categories = dict(categories or {})
 
     def _persist(self, candidate: FenceState) -> None:
         self._store.save(candidate)
         self._state.replace_with(candidate)
+
+    def pre_admit(self, intent: PreAdmissionIntent, *, publisher_ready: bool) -> AdmissionDecision:
+        """Reserve capacity before Arr is allowed to issue the exact release grab."""
+        try:
+            qbittorrent_ready = self._qbittorrent.ready()
+            prowlarr_ready = self._prowlarr is None or self._prowlarr.ready()
+        except Exception:
+            qbittorrent_ready = False
+            prowlarr_ready = False
+        candidate = self._state.clone()
+        decision = candidate.pre_admit(intent, qbittorrent_ready=qbittorrent_ready, prowlarr_ready=prowlarr_ready, publisher_ready=publisher_ready)
+        if decision.admitted and decision.reason == "admitted":
+            self._persist(candidate)
+        return decision
+
+    def bind_grab(self, operation_id: str, download_id: str) -> bool:
+        """Adopt one Arr-observed hash only after exact stopped qBittorrent proof."""
+        try:
+            reservation = self._state.reservation(operation_id)
+            category = self._categories[reservation.source]
+        except (KeyError, AttributeError):
+            return False
+        # qBittorrent identifies its torrent by the public Arr DownloadId in this
+        # stopped-client profile. A non-hash DownloadId is not adoptable.
+        try:
+            observed_bytes = self._qbittorrent.observe_existing_stopped(download_id, category)
+        except Exception:
+            return False
+        if observed_bytes is None:
+            return False
+        candidate = self._state.clone()
+        try:
+            candidate.bind_observed_grab(operation_id, download_id=download_id, torrent_hash=download_id)
+        except Exception:
+            return False
+        self._persist(candidate)
+        candidate = self._state.clone()
+        try:
+            candidate.request_tag(operation_id)
+        except Exception:
+            return False
+        self._persist(candidate)
+        try:
+            tagged = self._qbittorrent.apply_reservation_tag(download_id, reservation.reservation_id)
+            tagged_bytes = self._qbittorrent.observe_tagged_stopped(download_id, category, reservation.reservation_id) if tagged else None
+        except Exception:
+            return False
+        if tagged_bytes is None:
+            return False
+        candidate = self._state.clone()
+        try:
+            within_capacity = candidate.mark_qbittorrent_tagged(operation_id, observed_bytes=tagged_bytes)
+        except Exception:
+            return False
+        self._persist(candidate)
+        if not within_capacity:
+            return False
+        candidate = self._state.clone()
+        try:
+            candidate.request_resume(operation_id)
+        except Exception:
+            return False
+        self._persist(candidate)
+        try:
+            active = self._qbittorrent.resume(download_id) and self._qbittorrent.observe_active(download_id, reservation.reservation_id) is True
+        except Exception:
+            active = False
+        if not active:
+            return False
+        candidate = self._state.clone()
+        try:
+            candidate.mark_qbittorrent_active(operation_id)
+        except Exception:
+            return False
+        self._persist(candidate)
+        return True
 
     def admit(self, intent: AcquisitionIntent, *, source: str, publisher_ready: bool) -> AdmissionDecision:
         if hashlib.sha256(source.encode("utf-8")).hexdigest() != intent.source_fingerprint:

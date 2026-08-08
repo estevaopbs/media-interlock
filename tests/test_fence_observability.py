@@ -12,7 +12,7 @@ from media_interlock.fence.model import AcquisitionIntent, FencePolicy, FenceSta
 from media_interlock.fence.observability import FenceObservability
 from media_interlock.fence.daemon import FenceDaemon
 from media_interlock.fence.service import FenceService
-from media_interlock.contracts import Envelope, StatusCode, acquisition_intent, custody_receipt
+from media_interlock.contracts import Envelope, StatusCode, acquisition_intent, acquisition_pre_admission, custody_receipt
 
 
 class FenceObservabilityTests(unittest.TestCase):
@@ -31,6 +31,34 @@ class FenceObservabilityTests(unittest.TestCase):
 
 
 class FenceUnixDaemonTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pre_admission_over_unix_persists_only_a_reservation_before_arr_grab(self) -> None:
+        class Store:
+            def save(self, _: FenceState) -> None:
+                pass
+
+        class Qbittorrent:
+            def ready(self) -> bool:
+                return True
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None)
+        daemon = FenceDaemon(service, FenceObservability(state), readiness=lambda: (True, True, True))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fence.sock"
+            server = await asyncio.start_unix_server(daemon.handle, path=path)
+            try:
+                reader, writer = await asyncio.open_unix_connection(path)
+                writer.write(acquisition_pre_admission(operation_id="12345678-1234-4678-9234-567812345678", source="radarr", media_id="42", selector_fingerprint="a" * 64, expected_bytes=400, watermark="7").encode())
+                await writer.drain()
+                response = Envelope.decode(await reader.readuntil(b"\n"))
+                self.assertEqual(StatusCode.OK.value, response.body["code"])
+                self.assertEqual("pre_admitted", state.reservation(response.operation_id).state)
+                writer.close()
+                await writer.wait_closed()
+            finally:
+                server.close()
+                await server.wait_closed()
+
     async def test_acquisition_intent_drives_durable_fenced_admission(self) -> None:
         class Store:
             def save(self, _: FenceState) -> None:
