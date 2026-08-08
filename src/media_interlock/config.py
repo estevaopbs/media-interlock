@@ -88,8 +88,18 @@ class PublisherConfig(ComponentConfig):
 
 
 @dataclass(frozen=True)
+class ReconciliationPolicy:
+    minimum_age_days: int
+    terminal_horizon_days: int
+    cooldown_seconds: int
+    max_attempts: int
+    max_searches_per_run: int
+
+
+@dataclass(frozen=True)
 class ReconcilerConfig(ComponentConfig):
-    pass
+    movie: ReconciliationPolicy
+    episode: ReconciliationPolicy
 
 
 @dataclass(frozen=True)
@@ -159,6 +169,16 @@ def _required_positive(table: Mapping[str, object], name: str, location: str, ma
     return value
 
 
+def _required_nonnegative(table: Mapping[str, object], name: str, location: str, maximum: int) -> int:
+    try:
+        value = table[name]
+    except KeyError as exc:
+        raise ConfigError(f"missing required key: {location}.{name}") from exc
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > maximum:
+        raise ConfigError(f"{location}.{name} must be a bounded non-negative integer")
+    return value
+
+
 def _required_category(table: Mapping[str, object], name: str, location: str) -> str:
     try:
         value = table[name]
@@ -206,6 +226,21 @@ def _required_posix_prefix(table: Mapping[str, object], name: str, location: str
     if any(part in {"", ".", ".."} for part in parts[1:]) or "\x00" in value:
         raise ConfigError(f"{location}.{name} must be an absolute Jellyfin path prefix")
     return value.rstrip("/") or "/"
+
+
+def _reconciliation_policy(table: Mapping[str, object], location: str) -> ReconciliationPolicy:
+    _require_keys(table, {"minimum_age_days", "terminal_horizon_days", "cooldown_seconds", "max_attempts", "max_searches_per_run"}, location)
+    minimum_age_days = _required_nonnegative(table, "minimum_age_days", location, 36_500)
+    terminal_horizon_days = _required_positive(table, "terminal_horizon_days", location, 36_500)
+    if terminal_horizon_days < minimum_age_days:
+        raise ConfigError(f"{location}.terminal_horizon_days must not precede minimum_age_days")
+    return ReconciliationPolicy(
+        minimum_age_days,
+        terminal_horizon_days,
+        _required_nonnegative(table, "cooldown_seconds", location, 31_536_000),
+        _required_positive(table, "max_attempts", location, 1000),
+        _required_positive(table, "max_searches_per_run", location, 10_000),
+    )
 
 
 def _component(table: Mapping[str, object], name: str, runtime_dir: Path) -> ComponentConfig:
@@ -298,8 +333,15 @@ def load_config(path: Path) -> ProductConfig:
         _validate_disjoint(publisher.staging_root, publisher.canonical_root, "publisher.staging_root", "publisher.canonical_root")
     reconciler = components["reconciler"]
     if reconciler is not None:
-        _require_keys(_table(document["reconciler"], "reconciler"), {"state_dir", "socket_path"}, "reconciler")
-        reconciler = ReconcilerConfig(reconciler.name, reconciler.state_dir, reconciler.socket_path)
+        table = _table(document["reconciler"], "reconciler")
+        _require_keys(table, {"state_dir", "socket_path", "movie", "episode"}, "reconciler")
+        reconciler = ReconcilerConfig(
+            reconciler.name,
+            reconciler.state_dir,
+            reconciler.socket_path,
+            _reconciliation_policy(_table(table.get("movie"), "reconciler.movie"), "reconciler.movie"),
+            _reconciliation_policy(_table(table.get("episode"), "reconciler.episode"), "reconciler.episode"),
+        )
 
     configured = [component for component in (fence, publisher, reconciler) if component is not None]
     if len({component.state_dir for component in configured}) != len(configured):

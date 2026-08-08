@@ -31,6 +31,24 @@ jellyfin_library_id = "2f9e0f39-70de-4502-85ce-7ed03cd2f01f"
 namespace = "library"
 jellyfin_path_prefix = "/jellyfin/library"
 
+[reconciler]
+state_dir = "/var/lib/media-interlock/reconciler"
+socket_path = "/run/media-interlock/reconciler.sock"
+
+[reconciler.movie]
+minimum_age_days = 30
+terminal_horizon_days = 365
+cooldown_seconds = 86400
+max_attempts = 3
+max_searches_per_run = 5
+
+[reconciler.episode]
+minimum_age_days = 7
+terminal_horizon_days = 180
+cooldown_seconds = 3600
+max_attempts = 2
+max_searches_per_run = 10
+
 [adapters.prowlarr]
 base_url = "https://prowlarr.example.invalid"
 api_key = "env:PROWLARR_API_KEY"
@@ -51,6 +69,8 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual("/srv/library", str(config.publisher.canonical_root))
         self.assertEqual("library", config.publisher.namespace)
         self.assertEqual("/jellyfin/library", config.publisher.jellyfin_path_prefix)
+        self.assertEqual(30, config.reconciler.movie.minimum_age_days)
+        self.assertEqual(10, config.reconciler.episode.max_searches_per_run)
         self.assertEqual("env", config.adapters["prowlarr"].secrets["api_key"].source)
         self.assertNotIn("PROWLARR_API_KEY", repr(config.redacted()))
         self.assertEqual("env:<redacted>", config.redacted()["adapters"]["prowlarr"]["api_key"])
@@ -78,6 +98,14 @@ class ConfigurationTests(unittest.TestCase):
             load_config(self.write(VALID_CONFIG.replace('namespace = "library"', 'namespace = "library/nested"')))
         with self.assertRaisesRegex(ConfigError, "unknown key"):
             load_config(self.write(VALID_CONFIG + 'jellyfin_item_id = "manual-mapping"\n'))
+
+    def test_reconciler_policy_is_typed_bounded_and_separate_per_media_type(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "reconciler.movie.max_attempts"):
+            load_config(self.write(VALID_CONFIG.replace("max_attempts = 3", "max_attempts = 0", 1)))
+        with self.assertRaisesRegex(ConfigError, "terminal_horizon_days"):
+            load_config(self.write(VALID_CONFIG.replace("terminal_horizon_days = 365", "terminal_horizon_days = 29")))
+        with self.assertRaisesRegex(ConfigError, "unknown key"):
+            load_config(self.write(VALID_CONFIG.replace("max_searches_per_run = 5", "max_searches_per_run = 5\nmanual_item = 42", 1)))
 
     def test_rejects_existing_symlink_aliases_between_canonical_and_staging(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
