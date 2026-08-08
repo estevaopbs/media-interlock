@@ -49,6 +49,26 @@ class ArrHistoryAdapter:
             raise RuntimeError("unexpected Arr status")
         return json.loads(body.decode("utf-8"))
 
+    def _submit_command(self, name: str, field: str, entity_id: str) -> str | None:
+        public_id = _public_id(int(entity_id)) if entity_id.isdecimal() else None
+        if public_id != entity_id:
+            return None
+        body = json.dumps({"name": name, field: [int(entity_id)]}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        request = Request(
+            f"{self._base_url}/api/v3/command",
+            data=body,
+            headers={"X-Api-Key": self._resolve(self._api_key), "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            status, response = request_bytes(request, timeout=self._timeout)
+            decoded = json.loads(response.decode("utf-8"))
+        except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if status != 201 or not isinstance(decoded, dict) or set(decoded) - {"id", "name", "status", "body"}:
+            return None
+        return _public_id(decoded.get("id"))
+
     def _matched_import(self, download_id: str, media_id: str) -> tuple[str, str] | None:
         if not download_id or not media_id:
             return None

@@ -8,6 +8,9 @@ class SonarrAdapter(ArrHistoryAdapter):
     source_name = "sonarr"
     item_type = "Episode"
 
+    def search_episode(self, episode_id: str) -> str | None:
+        return self._submit_command("EpisodeSearch", "episodeIds", episode_id)
+
     def _entity_path(self, media_id: str) -> str:
         return f"/api/v3/episode/{media_id}"
 

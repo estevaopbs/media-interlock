@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import uuid
+from typing import Iterable, Mapping
 
 
 _SOURCES = frozenset({"radarr", "sonarr"})
@@ -49,6 +50,8 @@ class ReconciliationState:
         self._intents: dict[str, SearchIntent] = {}
         self._uncertain: set[tuple[str, str]] = set()
         self._observed_attempts: dict[tuple[str, str], list[int]] = {}
+        self._intent_times: dict[str, int] = {}
+        self._observed_times: dict[str, int] = {}
 
     def record_intent(self, intent: SearchIntent, *, now: int = 0) -> SearchIntent:
         if isinstance(now, bool) or not isinstance(now, int) or now < 0:
@@ -60,6 +63,7 @@ class ReconciliationState:
             return previous
         self._intents[intent.operation_id] = intent
         self._uncertain.add((intent.source, intent.entity_id))
+        self._intent_times[intent.operation_id] = now
         return intent
 
     def intent(self, operation_id: str) -> SearchIntent:
@@ -84,3 +88,40 @@ class ReconciliationState:
         self._uncertain.discard(key)
         if completed:
             self._observed_attempts.setdefault(key, []).append(now)
+        self._observed_times[operation_id] = now
+
+    def records(self) -> tuple[dict[str, object], ...]:
+        return tuple(
+            {
+                "operation_id": intent.operation_id,
+                "source": intent.source,
+                "entity_id": intent.entity_id,
+                "force": intent.force,
+                "checkpoint": intent.checkpoint,
+                "intent_at": self._intent_times[intent.operation_id],
+                "observed_at": self._observed_times.get(intent.operation_id),
+            }
+            for intent in self._intents.values()
+        )
+
+    @classmethod
+    def from_records(cls, records: Iterable[Mapping[str, object]]) -> ReconciliationState:
+        state = cls()
+        expected = {"operation_id", "source", "entity_id", "force", "checkpoint", "intent_at", "observed_at"}
+        for record in records:
+            if set(record) != expected:
+                raise ValueError("durable reconciliation record has unknown fields")
+            try:
+                intent = SearchIntent(
+                    record["operation_id"], record["source"], record["entity_id"], record["force"], record["checkpoint"]
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("durable reconciliation record is invalid") from exc
+            intent_at = record["intent_at"]
+            observed_at = record["observed_at"]
+            if isinstance(intent_at, bool) or not isinstance(intent_at, int) or intent_at < 0 or (observed_at is not None and (isinstance(observed_at, bool) or not isinstance(observed_at, int) or observed_at < intent_at)):
+                raise ValueError("durable reconciliation record is invalid")
+            state.record_intent(intent, now=intent_at)
+            if observed_at is not None:
+                state.mark_observed(intent.operation_id, completed=True, now=observed_at)
+        return state

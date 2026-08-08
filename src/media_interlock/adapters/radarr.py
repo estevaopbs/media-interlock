@@ -8,6 +8,9 @@ class RadarrAdapter(ArrHistoryAdapter):
     source_name = "radarr"
     item_type = "Movie"
 
+    def search_movie(self, movie_id: str) -> str | None:
+        return self._submit_command("MoviesSearch", "movieIds", movie_id)
+
     def _entity_path(self, media_id: str) -> str:
         return f"/api/v3/movie/{media_id}"
 

@@ -18,6 +18,7 @@ class ArrCorrelationTests(unittest.TestCase):
         self.payload: object = {"records": [{"eventType": "downloadFolderImported", "downloadId": "grab-42", "movieId": 42, "episodeId": 42, "data": {"importedPath": "/staging/movie.mkv"}}]}
         self.entity_payload: object = {"id": 42, "tmdbId": 42}
         self.request: tuple[str, str | None] | None = None
+        self.command_request: tuple[str, str | None, object] | None = None
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -45,6 +46,22 @@ class ArrCorrelationTests(unittest.TestCase):
                     self.wfile.write(json.dumps({"id": 42, "tvdbId": 99}).encode())
                     return
                 self.send_error(404)
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                try:
+                    body = json.loads(self.rfile.read(length).decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    self.send_error(400)
+                    return
+                outer.command_request = (self.path, self.headers.get("X-Api-Key"), body)
+                if self.path != "/api/v3/command":
+                    self.send_error(404)
+                    return
+                self.send_response(201)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"id":71}')
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever)
@@ -91,3 +108,9 @@ class ArrCorrelationTests(unittest.TestCase):
         self.assertEqual("sonarr:tvdb-99", identity.asset_slot)
         self.assertEqual("Episode", identity.item_type)
         self.assertEqual({"Tvdb": "99"}, identity.provider_ids)
+
+    def test_native_search_submits_exact_single_public_entity_command(self) -> None:
+        self.assertEqual("71", self.adapter(RadarrAdapter).search_movie("42"))
+        self.assertEqual(("/api/v3/command", "fixture-key", {"name": "MoviesSearch", "movieIds": [42]}), self.command_request)
+        self.assertEqual("71", self.adapter(SonarrAdapter).search_episode("42"))
+        self.assertEqual(("/api/v3/command", "fixture-key", {"name": "EpisodeSearch", "episodeIds": [42]}), self.command_request)

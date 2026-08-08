@@ -49,3 +49,12 @@ class ReconciliationModelTests(unittest.TestCase):
         state.mark_observed(first.operation_id, completed=True, now=200)
         self.assertFalse(state.eligible(first.source, first.entity_id, policy, now=201))
         self.assertTrue(state.eligible(first.source, first.entity_id, policy, now=201, force=True))
+
+    def test_durable_records_preserve_uncertain_intent_across_restart(self) -> None:
+        intent = SearchIntent(str(uuid.uuid4()), "sonarr", "42", False, "checkpoint-a")
+        state = ReconciliationState()
+        state.record_intent(intent, now=100)
+
+        restored = ReconciliationState.from_records(state.records())
+        self.assertEqual(intent, restored.intent(intent.operation_id))
+        self.assertFalse(restored.eligible("sonarr", "42", AttemptPolicy(0, 1), now=999, force=True))
