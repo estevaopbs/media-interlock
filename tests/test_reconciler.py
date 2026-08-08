@@ -62,6 +62,15 @@ class ReconciliationModelTests(unittest.TestCase):
         self.assertEqual(intent, restored.intent(intent.operation_id))
         self.assertFalse(restored.eligible("sonarr", "42", AttemptPolicy(0, 1), now=999, force=True))
 
+    def test_noncompleted_observation_does_not_become_completed_after_restart(self) -> None:
+        intent = SearchIntent(str(uuid.uuid4()), "radarr", "42", False, "checkpoint-a")
+        state = ReconciliationState()
+        state.record_intent(intent, now=100)
+        state.mark_observed(intent.operation_id, completed=False, now=200)
+
+        restored = ReconciliationState.from_records(state.records())
+        self.assertTrue(restored.eligible("radarr", "42", AttemptPolicy(0, 1), now=201))
+
     def test_private_store_restores_uncertain_intent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ReconcilerStore.open(Path(directory) / "reconciler")

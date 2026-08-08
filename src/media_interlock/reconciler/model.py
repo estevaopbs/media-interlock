@@ -52,6 +52,7 @@ class ReconciliationState:
         self._observed_attempts: dict[tuple[str, str], list[int]] = {}
         self._intent_times: dict[str, int] = {}
         self._observed_times: dict[str, int] = {}
+        self._completed: dict[str, bool] = {}
 
     def record_intent(self, intent: SearchIntent, *, now: int = 0) -> SearchIntent:
         if isinstance(now, bool) or not isinstance(now, int) or now < 0:
@@ -89,6 +90,7 @@ class ReconciliationState:
         if completed:
             self._observed_attempts.setdefault(key, []).append(now)
         self._observed_times[operation_id] = now
+        self._completed[operation_id] = completed
 
     def records(self) -> tuple[dict[str, object], ...]:
         return tuple(
@@ -100,6 +102,7 @@ class ReconciliationState:
                 "checkpoint": intent.checkpoint,
                 "intent_at": self._intent_times[intent.operation_id],
                 "observed_at": self._observed_times.get(intent.operation_id),
+                "completed": self._completed.get(intent.operation_id),
             }
             for intent in self._intents.values()
         )
@@ -107,7 +110,7 @@ class ReconciliationState:
     @classmethod
     def from_records(cls, records: Iterable[Mapping[str, object]]) -> ReconciliationState:
         state = cls()
-        expected = {"operation_id", "source", "entity_id", "force", "checkpoint", "intent_at", "observed_at"}
+        expected = {"operation_id", "source", "entity_id", "force", "checkpoint", "intent_at", "observed_at", "completed"}
         for record in records:
             if set(record) != expected:
                 raise ValueError("durable reconciliation record has unknown fields")
@@ -119,9 +122,10 @@ class ReconciliationState:
                 raise ValueError("durable reconciliation record is invalid") from exc
             intent_at = record["intent_at"]
             observed_at = record["observed_at"]
-            if isinstance(intent_at, bool) or not isinstance(intent_at, int) or intent_at < 0 or (observed_at is not None and (isinstance(observed_at, bool) or not isinstance(observed_at, int) or observed_at < intent_at)):
+            completed = record["completed"]
+            if isinstance(intent_at, bool) or not isinstance(intent_at, int) or intent_at < 0 or (observed_at is not None and (isinstance(observed_at, bool) or not isinstance(observed_at, int) or observed_at < intent_at)) or (observed_at is None and completed is not None) or (observed_at is not None and not isinstance(completed, bool)):
                 raise ValueError("durable reconciliation record is invalid")
             state.record_intent(intent, now=intent_at)
             if observed_at is not None:
-                state.mark_observed(intent.operation_id, completed=True, now=observed_at)
+                state.mark_observed(intent.operation_id, completed=completed, now=observed_at)
         return state
