@@ -15,7 +15,8 @@ class ArtifactDefinitionTests(unittest.TestCase):
     def test_oci_targets_are_nonroot_and_execute_only_declared_daemons(self) -> None:
         containerfile = (ROOT / "Containerfile").read_text(encoding="utf-8")
 
-        self.assertIn("FROM python:3.14.6-slim-bookworm AS build", containerfile)
+        self.assertIn("FROM docker.io/library/python@sha256:", containerfile)
+        self.assertIn("build==1.5.0 setuptools==80.9.0", containerfile)
         self.assertIn("FROM runtime AS fence", containerfile)
         self.assertIn("FROM runtime AS publisher", containerfile)
         self.assertIn("USER media-interlock", containerfile)
@@ -34,4 +35,5 @@ class ArtifactDefinitionTests(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("--oci-engine", result.stdout)
+        self.assertIn("--source-date-epoch", result.stdout)
         self.assertNotIn("push", result.stdout.lower())

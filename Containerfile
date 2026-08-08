@@ -1,11 +1,13 @@
-FROM python:3.14.6-slim-bookworm AS build
+FROM docker.io/library/python@sha256:ff83a535339812dd72e69c93b3c48ddf7c85a324d6330af5797c82a255dbeef4 AS build
 
 WORKDIR /build
+ARG SOURCE_DATE_EPOCH=0
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 COPY . .
-RUN python -m pip install --no-cache-dir build \
+RUN python -m pip install --no-cache-dir build==1.5.0 setuptools==80.9.0 \
  && python -m build --wheel --outdir /wheel
 
-FROM python:3.14.6-slim-bookworm AS runtime
+FROM docker.io/library/python@sha256:ff83a535339812dd72e69c93b3c48ddf7c85a324d6330af5797c82a255dbeef4 AS runtime
 
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin media-interlock
 COPY --from=build /wheel/*.whl /tmp/

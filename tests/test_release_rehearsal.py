@@ -4,14 +4,23 @@ import asyncio
 import hashlib
 import json
 import tempfile
+import threading
 import unittest
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import _source_tree  # noqa: F401
 
 from media_interlock.adapters.arr import ArrCandidate, ArrGrabObservation, ArrRelease
+from media_interlock.adapters.bazarr import BazarrAdapter
 from media_interlock.adapters.jellyfin import CatalogExpectation, CatalogObservation, CatalogSubmission
+from media_interlock.adapters.prowlarr import ProwlarrAdapter
+from media_interlock.adapters.qbittorrent import QbittorrentAdapter
+from media_interlock.adapters.radarr import RadarrAdapter
+from media_interlock.adapters.seerr import SeerrAdapter
+from media_interlock.adapters.sonarr import SonarrAdapter
+from media_interlock.config import SecretReference
 from media_interlock.contracts import Envelope
 from media_interlock.fence.daemon import FenceDaemon
 from media_interlock.fence.model import FencePolicy, FenceState, QbittorrentActivityObservation, QbittorrentObservation
@@ -31,6 +40,43 @@ from media_interlock.reconciler.service import ReconcilerService
 
 
 class ReleaseRehearsalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_all_declared_adapters_use_their_public_http_readiness_boundaries(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_: object) -> None: pass
+            def do_POST(self) -> None:
+                if self.path == "/api/v2/auth/login":
+                    self.send_response(200); self.end_headers(); self.wfile.write(b"Ok."); return
+                self.send_error(404)
+            def do_GET(self) -> None:
+                payload: object
+                if self.path == "/System/Info": payload = {"Version": "10.11.11"}
+                elif self.path == "/api/system/status": payload = {"data": {"bazarr_version": "1.6.0"}}
+                elif self.path == "/api/v1/settings/main": payload = {"applicationTitle": "fixture"}
+                elif self.path == "/api/v1/health": payload = []
+                elif self.path == "/api/v1/indexer": payload = [{"enable": True}]
+                elif self.path == "/api/v3/downloadclient": payload = [{"enable": True, "protocol": "torrent", "implementation": "QBittorrent", "fields": [{"name": "initialState", "value": 2}, {"name": "movieCategory", "value": "media-interlock-radarr"}, {"name": "tvCategory", "value": "media-interlock-sonarr"}]}]
+                elif self.path == "/api/v2/app/preferences": payload = {"start_paused_enabled": True}
+                elif self.path == "/api/v2/app/webapiVersion":
+                    self.send_response(200); self.end_headers(); self.wfile.write(b"2.11.3"); return
+                elif self.path == "/api/v2/app/version":
+                    self.send_response(200); self.end_headers(); self.wfile.write(b"v5.2.3"); return
+                else: self.send_error(404); return
+                self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(json.dumps(payload).encode())
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler); thread = threading.Thread(target=server.serve_forever); thread.start()
+        self.addCleanup(server.server_close); self.addCleanup(thread.join); self.addCleanup(server.shutdown)
+        host, port = server.server_address; base = f"http://{host}:{port}"; key = SecretReference("env", "FIXTURE")
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory)
+            self.assertTrue(RadarrAdapter(base, key, staging_root=staging, secret_resolver=lambda _: "fixture").stopped_qbittorrent_client("media-interlock-radarr"))
+            self.assertTrue(SonarrAdapter(base, key, staging_root=staging, secret_resolver=lambda _: "fixture").stopped_qbittorrent_client("media-interlock-sonarr"))
+            self.assertTrue(QbittorrentAdapter(base, key, key, staging_root=staging, secret_resolver=lambda _: "fixture").ready())
+        self.assertTrue(ProwlarrAdapter(base, key, secret_resolver=lambda _: "fixture").ready())
+        self.assertTrue(BazarrAdapter(base, key, secret_resolver=lambda _: "fixture").ready())
+        self.assertTrue(SeerrAdapter(base, key, secret_resolver=lambda _: "fixture").ready())
+        from media_interlock.adapters.jellyfin import JellyfinAdapter
+        self.assertTrue(JellyfinAdapter(base, key, secret_resolver=lambda _: "fixture").ready())
+
     async def test_reconciler_fence_and_publisher_complete_one_exact_unix_runtime_handoff(self) -> None:
         operation_id = str(uuid.uuid4())
         media = b"synthetic-release-media"
@@ -100,12 +146,18 @@ class ReleaseRehearsalTests(unittest.IsolatedAsyncioTestCase):
                 writer.write(terminal.encode()); await writer.drain()
                 receipt = Envelope.decode(await reader.readuntil(b"\n"))
                 writer.close(); await writer.wait_closed()
+                fence_reader, fence_writer = await asyncio.open_unix_connection(fence_path)
+                fence_writer.write(receipt.encode()); await fence_writer.drain()
+                receipt_status = Envelope.decode(await fence_reader.readuntil(b"\n"))
+                fence_writer.close(); await fence_writer.wait_closed()
             finally:
                 fence_server.close(); publisher_server.close()
                 await fence_server.wait_closed(); await publisher_server.wait_closed()
 
             self.assertEqual("custody_receipt", receipt.kind)
+            self.assertEqual("ok", receipt_status.body["code"])
             self.assertEqual(PublicationState.DELIVERED, publisher_store.load().publication(operation_id).state)
+            self.assertEqual("released", fence_state.reservation(operation_id).state)
             self.assertEqual(media, (canonical / "library" / "radarr-tmdb-42" / "payload.mkv").read_bytes())
         self.assertLess(events.index("arr-post"), events.index("resume:" + "a" * 40))
         self.assertLess(events.index("terminal:" + "a" * 40 + f":fence:{operation_id}:media-interlock-radarr"), events.index("catalog-submit:/jellyfin/library/radarr-tmdb-42/payload.mkv:created"))
