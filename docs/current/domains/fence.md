@@ -6,8 +6,9 @@ under observed, durable capacity and concurrency constraints.
 
 ## Responsibilities
 
-- Admit idempotent acquisition intents against bounded space, inflight,
-  category, priority, and concurrency policy.
+- Pre-admit idempotent Arr release intents against bounded space, inflight,
+  source-specific category, priority, and concurrency policy before a download
+  ID exists.
 - Persist owner-bound intent before external effects and adopt or repeat an
   effect only after observing its exact postcondition.
 - Bind each admitted torrent to its qBittorrent hash, Fence-only category,
@@ -33,12 +34,12 @@ stop playback of an already published generation. Recovery reconciles its own
 durable intent with observed qBittorrent effects and never opens admission merely
 because a generic timeout elapsed.
 
-Fence's local socket accepts canonical version-1 acquisition intents, custody
-receipts, status, metrics, and explicit transfer-observation requests. An intent
-locator is checked against its SHA-256 fingerprint and is not retained in the
-durable reservation. Terminal observations are persisted before the socket
-returns them. Status and metrics report only aggregate reservation counts and
-bytes.
+Fence's local socket accepts canonical version-1 pre-admission and observed
+grab intents, custody receipts, status, metrics, and explicit
+transfer-observation requests. It persists selector and observed identity
+fingerprints but no release locator. Terminal observations carry Arr's real
+download ID and are persisted before the socket returns them. Status and metrics
+report only aggregate reservation counts and bytes.
 
 Fence readiness requires every configured download client to add work stopped,
 qBittorrent automatic resume to be disabled, and no competing start/resume

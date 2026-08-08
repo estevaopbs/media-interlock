@@ -73,7 +73,7 @@ class ComponentConfig:
 @dataclass(frozen=True)
 class FenceConfig(ComponentConfig):
     staging_root: Path
-    qbittorrent_category: str
+    categories: Mapping[str, str]
     capacity_bytes: int
     max_inflight: int
 
@@ -310,10 +310,16 @@ def load_config(path: Path) -> ProductConfig:
     fence: FenceConfig | None = None
     if components["fence"] is not None:
         table = _table(document["fence"], "fence")
-        _require_keys(table, {"state_dir", "socket_path", "staging_root", "qbittorrent_category", "capacity_bytes", "max_inflight"}, "fence")
+        _require_keys(table, {"state_dir", "socket_path", "staging_root", "radarr_category", "sonarr_category", "capacity_bytes", "max_inflight"}, "fence")
         base = components["fence"]
         assert base is not None
-        fence = FenceConfig(base.name, base.state_dir, base.socket_path, _required_path(table, "staging_root", "fence"), _required_category(table, "qbittorrent_category", "fence"), _required_positive(table, "capacity_bytes", "fence", 2**63 - 1), _required_positive(table, "max_inflight", "fence", 100_000))
+        categories = {
+            "radarr": _required_category(table, "radarr_category", "fence"),
+            "sonarr": _required_category(table, "sonarr_category", "fence"),
+        }
+        if len(set(categories.values())) != len(categories):
+            raise ConfigError("fence source categories must be distinct")
+        fence = FenceConfig(base.name, base.state_dir, base.socket_path, _required_path(table, "staging_root", "fence"), categories, _required_positive(table, "capacity_bytes", "fence", 2**63 - 1), _required_positive(table, "max_inflight", "fence", 100_000))
     publisher: PublisherConfig | None = None
     if components["publisher"] is not None:
         table = _table(document["publisher"], "publisher")

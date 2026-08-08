@@ -79,6 +79,25 @@ no crash may leave the payload unowned.
 Version 1 has no TCP API. Bare-metal, Docker, and Podman deployments provide a
 shared runtime directory only for the sockets explicitly needed.
 
+### Arr release handoff and Fence ownership
+
+The Reconciler uses Arr's public interactive release observation, preserving
+Arr's ordered decisions and selecting only the first approved torrent when its
+identity is unambiguous. Before requesting that exact public release, it
+durably records the entity, selector fingerprint, causal watermark and expected
+size, then asks Fence for a pre-admission reservation. The reservation has no
+locator or download ID at that point.
+
+Radarr and Sonarr continue to authenticate to indexers, acquire and validate
+the torrent, track the grab, and import it. Their configured qBittorrent
+download clients must use `InitialState=Stop`, with a distinct configured
+category per source. Public Queue and History polling after the watermark binds
+one exact Arr grab and real download ID/hash to the reservation. Only Fence
+may tag and start or resume that stopped torrent after it observes the exact
+hash, source category, staging path and positive size. Missing, unknown or
+ambiguous observations never prove non-execution and never trigger a blind
+repeat of release, tag, or resume effects.
+
 ### Configuration without configurable safety
 
 TOML is parsed into typed component projections. Unknown keys and unsafe or

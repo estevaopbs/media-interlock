@@ -69,7 +69,7 @@ class Envelope:
     def __post_init__(self) -> None:
         if not isinstance(self.version, str) or self.version != CONTRACT_VERSION:
             raise ContractError("unsupported contract version")
-        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_intent", "terminal_acquisition", "custody_receipt", "metrics", "observe"}:
+        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_intent", "acquisition_pre_admission", "terminal_acquisition", "custody_receipt", "metrics", "observe"}:
             raise ContractError("unknown contract kind")
         _operation_id(self.operation_id)
         normalized = _json_body(self.body)
@@ -82,11 +82,17 @@ class Envelope:
             fingerprint = normalized.get("source_fingerprint")
             if set(normalized) != expected or normalized.get("source") not in {"radarr", "sonarr"} or not all(isinstance(normalized[name], str) and normalized[name] for name in expected - {"bytes_reserved", "source"}) or not isinstance(fingerprint, str) or len(fingerprint) != 64 or any(char not in "0123456789abcdef" for char in fingerprint) or isinstance(normalized["bytes_reserved"], bool) or not isinstance(normalized["bytes_reserved"], int) or normalized["bytes_reserved"] <= 0:
                 raise ContractError("acquisition intent fields are invalid")
+        elif self.kind == "acquisition_pre_admission":
+            expected = {"expected_bytes", "media_id", "selector_fingerprint", "source", "watermark"}
+            selector = normalized.get("selector_fingerprint")
+            if set(normalized) != expected or normalized.get("source") not in {"radarr", "sonarr"} or not all(isinstance(normalized[name], str) and normalized[name] for name in expected - {"expected_bytes", "source"}) or not isinstance(selector, str) or len(selector) != 64 or any(char not in "0123456789abcdef" for char in selector) or isinstance(normalized["expected_bytes"], bool) or not isinstance(normalized["expected_bytes"], int) or normalized["expected_bytes"] <= 0:
+                raise ContractError("acquisition pre-admission fields are invalid")
         elif self.kind == "terminal_acquisition":
             expected = {"bytes_reserved", "fence_reservation_id", "media_id", "source", "upstream_id"}
-            if set(normalized) != expected:
+            extended = expected | {"download_id"}
+            if set(normalized) != expected and set(normalized) != extended:
                 raise ContractError("unknown terminal acquisition fields")
-            if not isinstance(normalized["source"], str) or normalized["source"] not in {"radarr", "sonarr"} or not all(isinstance(normalized[name], str) and normalized[name] for name in expected - {"bytes_reserved", "source"}) or isinstance(normalized["bytes_reserved"], bool) or not isinstance(normalized["bytes_reserved"], int) or normalized["bytes_reserved"] <= 0:
+            if not isinstance(normalized["source"], str) or normalized["source"] not in {"radarr", "sonarr"} or not all(isinstance(normalized[name], str) and normalized[name] for name in expected - {"bytes_reserved", "source"}) or ("download_id" in normalized and (not isinstance(normalized["download_id"], str) or not normalized["download_id"])) or isinstance(normalized["bytes_reserved"], bool) or not isinstance(normalized["bytes_reserved"], int) or normalized["bytes_reserved"] <= 0:
                 raise ContractError("terminal acquisition fields are invalid")
         elif self.kind == "custody_receipt":
             expected = {"fence_reservation_id", "publisher_reservation_id"}
@@ -136,8 +142,15 @@ class Envelope:
         return envelope
 
 
-def terminal_acquisition(*, operation_id: str, fence_reservation_id: str, source: str, upstream_id: str, media_id: str, bytes_reserved: int) -> Envelope:
-    return Envelope(CONTRACT_VERSION, "terminal_acquisition", _operation_id(operation_id), {"bytes_reserved": bytes_reserved, "fence_reservation_id": fence_reservation_id, "media_id": media_id, "source": source, "upstream_id": upstream_id})
+def acquisition_pre_admission(*, operation_id: str, source: str, media_id: str, selector_fingerprint: str, expected_bytes: int, watermark: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "acquisition_pre_admission", _operation_id(operation_id), {"expected_bytes": expected_bytes, "media_id": media_id, "selector_fingerprint": selector_fingerprint, "source": source, "watermark": watermark})
+
+
+def terminal_acquisition(*, operation_id: str, fence_reservation_id: str, source: str, upstream_id: str, media_id: str, bytes_reserved: int, download_id: str | None = None) -> Envelope:
+    body: dict[str, object] = {"bytes_reserved": bytes_reserved, "fence_reservation_id": fence_reservation_id, "media_id": media_id, "source": source, "upstream_id": upstream_id}
+    if download_id is not None:
+        body["download_id"] = download_id
+    return Envelope(CONTRACT_VERSION, "terminal_acquisition", _operation_id(operation_id), body)
 
 
 def acquisition_intent(*, operation_id: str, source: str, source_locator: str, upstream_id: str, media_id: str, bytes_reserved: int, source_fingerprint: str) -> Envelope:

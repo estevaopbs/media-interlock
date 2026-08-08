@@ -18,7 +18,8 @@ runtime_dir = "/run/media-interlock"
 state_dir = "/var/lib/media-interlock/fence"
 socket_path = "/run/media-interlock/fence.sock"
 staging_root = "/srv/staging"
-qbittorrent_category = "media-interlock"
+radarr_category = "media-interlock-radarr"
+sonarr_category = "media-interlock-sonarr"
 capacity_bytes = 1000000
 max_inflight = 2
 
@@ -106,6 +107,13 @@ class ConfigurationTests(unittest.TestCase):
             load_config(self.write(VALID_CONFIG.replace("terminal_horizon_days = 365", "terminal_horizon_days = 29")))
         with self.assertRaisesRegex(ConfigError, "unknown key"):
             load_config(self.write(VALID_CONFIG.replace("max_searches_per_run = 5", "max_searches_per_run = 5\nmanual_item = 42", 1)))
+
+    def test_fence_source_categories_are_typed_and_must_be_distinct(self) -> None:
+        config = load_config(self.write(VALID_CONFIG))
+        self.assertEqual("media-interlock-radarr", config.fence.categories["radarr"])
+        self.assertEqual("media-interlock-sonarr", config.fence.categories["sonarr"])
+        with self.assertRaisesRegex(ConfigError, "must be distinct"):
+            load_config(self.write(VALID_CONFIG.replace('sonarr_category = "media-interlock-sonarr"', 'sonarr_category = "media-interlock-radarr"')))
 
     def test_rejects_existing_symlink_aliases_between_canonical_and_staging(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

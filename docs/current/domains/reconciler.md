@@ -11,8 +11,9 @@ without becoming a release indexer or quality-ranking engine.
 - Evaluate typed TOML rules for media type, age, release dates, cooldown,
   terminal horizon, language and quality constraints, budget, suppression, and
   explicit force requests.
-- Ask Radarr or Sonarr to perform native searches while preserving their release
-  ordering and selection authority.
+- Observe native interactive Radarr or Sonarr release decisions, preserve their
+  ordering, and request only the first approved torrent after Fence
+  pre-admission.
 - Record attempts, completed checkpoints, deferrals, suppressions, and stable
   reasons for rejection in its own store.
 - Emit human and versioned JSON results without titles, paths, credentials, or
@@ -27,8 +28,9 @@ guessing.
 
 The reconciler does not schedule itself, scrape trackers, rank releases,
 control qBittorrent, publish files, write publisher or fence state, edit
-Jellyfin, or migrate user data. It sends idempotent intents over owned adapter
-and Unix-socket contracts.
+Jellyfin, or migrate user data. It derives no download locator. It sends an
+exact Arr release resource only back to its owning Arr API and uses versioned
+Unix contracts for Fence pre-admission and observed-grab binding.
 
 Rules created to repair one deployment's provider metadata, virtual-library
 artifacts, user state, or catalog history do not belong here. Those are one-off

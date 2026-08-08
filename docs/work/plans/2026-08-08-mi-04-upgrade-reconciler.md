@@ -4,11 +4,12 @@
 typed movie and episode policies, persists attempts and checkpoints before
 native Arr search effects, and reports bounded machine-readable results.
 
-**Architecture:** Reconciler owns an isolated SQLite state and consumes only its
-typed configuration plus public Radarr/Sonarr API clients. It derives no file or
-Jellyfin identity, never releases Fence custody, and records a durable search
-intent before sending one native Arr command. Recovery re-observes the exact
-intent and never turns an uncertain effect into success.
+**Architecture:** Reconciler owns an isolated SQLite state and observes Arr's
+ordered interactive releases without local ranking. It writes entity, selector,
+size and causal-watermark intent before Fence pre-admission, posts only that
+exact release back to Arr, then uses bounded Queue/History polling to bind the
+real download ID/hash to Fence. Recovery observes before repeating no external
+effect and absence never proves non-execution.
 
 **Tech stack:** Python 3.14 standard library, existing strict configuration,
 durable SQLite helper, canonical Unix RPC helpers, and disposable HTTP/Unix
@@ -22,12 +23,30 @@ socket tests.
   secret values or per-item manual mappings.
 - Policy is typed TOML; unknown fields, ambiguous observations, unsupported
   schema, and missing required readiness inhibit work.
-- A native search acknowledgement is an attempted effect, never proof that a
-  candidate was acquired, published, or delivered.
+- A selected release POST is an attempted effect, never proof that a candidate
+  was acquired, published, or delivered.
 - Keep scheduling, stack lifecycle, direct database access, download-client
   control, catalog correction, and filesystem publication outside Reconciler.
 
-### Task 1: Typed configuration and policy model
+### Task 1: Correct the cross-component protocol before implementation
+
+**Files:**
+- Modify: `docs/work/specs/2026-08-06-media-interlock-design.md`
+- Modify: `docs/current/architecture.md`
+- Modify: `docs/current/domains/{reconciler,fence}.md`
+- Modify: `src/media_interlock/{contracts.py,fence/model.py,fence/service.py}`
+- Test: `tests/test_contracts.py`
+- Test: `tests/test_fence.py`
+
+- [ ] Write failing contract tests for owner-bound pre-admission, exact observed
+  Arr grab binding, real download ID terminal transfer, and distinct source
+  categories.
+- [ ] Replace locator-first admission with durable pre-admission, observed-grab,
+  tag-intent and resume-intent transitions. Model absent, unknown, ambiguous and
+  observed separately; recovery never treats absence as a negative result.
+- [ ] Run focused contract/Fence tests and commit the protocol correction.
+
+### Task 2: Typed configuration and causal Reconciler model
 
 **Files:**
 - Modify: `src/media_interlock/config.py`
@@ -52,7 +71,7 @@ socket tests.
 - [ ] Re-run the focused tests; then commit this independently testable policy
   foundation.
 
-### Task 2: Durable reconciliation intent and suppression state
+### Task 3: Durable reconciliation intent and suppression state
 
 **Files:**
 - Create: `src/media_interlock/reconciler/store.py`
@@ -74,7 +93,7 @@ socket tests.
   changed checkpoint as ineligible rather than guessing.
 - [ ] Re-run the focused test and commit the durable state layer.
 
-### Task 3: Narrow native Arr search adapters
+### Task 4: Interactive Arr and hardened qBittorrent adapters
 
 **Files:**
 - Modify: `src/media_interlock/adapters/radarr.py`
@@ -83,21 +102,20 @@ socket tests.
 - Test: `tests/test_sonarr_adapter.py`
 
 **Interfaces:**
-- Produces `RadarrAdapter.search_movie(movie_id: str) -> bool` using the
-  documented v3 movie-search command and
-  `SonarrAdapter.search_episode(episode_id: str) -> bool` using the documented
-  v3 episode-search command.
+- Produces bounded interactive `GET /api/v3/release` and exact
+  `POST /api/v3/release` methods plus public Queue/History polling for Radarr
+  and Sonarr. It verifies their qBittorrent clients use `InitialState=Stop`.
 
-- [ ] Write disposable-HTTP tests asserting the exact authenticated POST body
-  and fail-closed handling of a lost response, non-2xx, malformed JSON, and an
-  unexpected command response.
+- [ ] Write disposable-HTTP tests for first-approved torrent selection, release
+  selector identity, watermarked Queue/History correlation, configured stopped
+  clients, redirect/response bounds, and all mismatch/ambiguity cases.
 - [ ] Run each new adapter test; confirm it fails before methods exist.
-- [ ] Revalidate the command paths/body against the fixed upstream public API
-  source, then add only the two explicit command methods. Do not implement
-  generic command dispatch or upstream ranking.
+- [ ] Revalidate the release, queue, history and download-client paths/body
+  against fixed upstream public APIs; add only explicit methods and no generic
+  dispatch, local ranking, locator or magnet handling.
 - [ ] Re-run adapter tests and commit the adapter boundary.
 
-### Task 4: One-shot recovery and bounded JSON CLI
+### Task 5: One-shot recovery and bounded JSON CLI
 
 **Files:**
 - Create: `src/media_interlock/reconciler/cli.py`
@@ -110,10 +128,9 @@ socket tests.
 - Consumes only configured Radarr/Sonarr adapters and the private Reconciler
   store; it has no Unix listener and no Fence/Publisher store dependency.
 
-- [ ] Write failing disposable-service tests proving a CLI invocation writes an
-  intent before exactly one directed Arr command, reports only bounded JSON,
-  and on restart re-observes an uncertain intent without duplicating an
-  unacknowledged command.
+- [ ] Write failing disposable-service tests proving CLI writes intent and
+  watermark before pre-admission and release POST, then polls after a lost
+  response without duplicating grab, tag or resume.
 - [ ] Run `python -m unittest discover -s tests -p 'test_reconciler_cli.py' -v`
   and confirm the entrypoint is absent.
 - [ ] Add the smallest CLI that loads typed configuration, verifies required
@@ -122,7 +139,7 @@ socket tests.
   output fields.
 - [ ] Re-run the focused CLI test, then affected Reconciler tests and commit.
 
-### Task 5: Vertical proof, current docs, and MI-04 convergence
+### Task 6: Vertical proof, current docs, and MI-04 convergence
 
 **Files:**
 - Test: `tests/test_reconciler_integration.py`
@@ -133,10 +150,10 @@ socket tests.
 - Modify: `docs/index.json`
 - Delete: `docs/work/plans/2026-08-08-mi-04-upgrade-reconciler.md`
 
-- [ ] Write a failing disposable HTTP vertical test from typed one-shot CLI
-  through a persisted intent and exact native Arr search request; assert no
-  asserted search result is interpreted as acquisition, publication, or
-  delivery.
+- [ ] Write a failing disposable HTTP/Unix vertical test from typed CLI through
+  pre-admission, exact Arr release POST, causal polling, observed stopped
+  qBittorrent tag/resume, and real download-ID terminal handoff; assert no
+  grab acknowledgement is interpreted as acquisition, publication or delivery.
 - [ ] Run the integration test and confirm it fails before vertical wiring.
 - [ ] Complete only the wiring needed for that test, preserving the durable
   recovery and suppression semantics established above.

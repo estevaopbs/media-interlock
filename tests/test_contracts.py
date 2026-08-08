@@ -12,6 +12,7 @@ from media_interlock.contracts import (
     Envelope,
     StatusCode,
     acquisition_intent,
+    acquisition_pre_admission,
     custody_receipt,
     terminal_acquisition,
 )
@@ -21,6 +22,27 @@ OPERATION_ID = str(uuid.UUID("12345678-1234-4678-9234-567812345678"))
 
 
 class ContractTests(unittest.TestCase):
+    def test_pre_admission_has_no_locator_and_terminal_carries_real_arr_download_id(self) -> None:
+        pre_admission = acquisition_pre_admission(
+            operation_id=OPERATION_ID,
+            source="radarr",
+            media_id="42",
+            selector_fingerprint="a" * 64,
+            expected_bytes=4096,
+            watermark="2026-08-08T12:00:00Z",
+        )
+        self.assertEqual("acquisition_pre_admission", pre_admission.kind)
+        self.assertNotIn("source_locator", pre_admission.body)
+        terminal = terminal_acquisition(
+            operation_id=OPERATION_ID,
+            fence_reservation_id="fence:12345678-1234-4678-9234-567812345678",
+            source="radarr",
+            upstream_id="grab-42",
+            media_id="42",
+            download_id="0123456789abcdef0123456789abcdef01234567",
+            bytes_reserved=4096,
+        )
+        self.assertEqual("0123456789abcdef0123456789abcdef01234567", terminal.body["download_id"])
     def test_terminal_observation_round_trips_without_path_authority(self) -> None:
         envelope = terminal_acquisition(
             operation_id=OPERATION_ID,

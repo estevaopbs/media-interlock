@@ -38,12 +38,15 @@ crash therefore fails conservatively instead of losing accounting. If Publisher
 is unavailable or rejects ambiguity, Fence retains the hold and backpressures
 new admission according to available capacity.
 
-An acquisition intent carries a transient locator plus its SHA-256 fingerprint;
-Fence persists the fingerprint and correlation identities, never the locator.
-Fence binds qBittorrent work to one observed lowercase torrent hash, its Fence
-category, and its configured staging root before resuming it. Terminal
-observation contains stable operation and upstream correlation identities, not
-an authoritative external path.
+Reconciler persists an Arr release selector, causal watermark and expected size
+before Fence pre-admission, which deliberately has no locator or download ID.
+Arr then owns the authenticated release grab and download tracking with its
+configured qBittorrent client stopped. Fence polls public Arr Queue and History
+to bind one exact later grab to the reservation, then observes the real stopped
+torrent hash, source-specific category, staging root and positive size before
+it tags or resumes it. Terminal observation contains the real Arr download ID
+and stable operation correlation identities, not an authoritative external
+path.
 
 ## Repository boundary
 

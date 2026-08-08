@@ -8,8 +8,8 @@ from pathlib import Path
 
 import _source_tree  # noqa: F401
 
-from media_interlock.contracts import custody_receipt
-from media_interlock.fence.model import AcquisitionIntent, FencePolicy, FenceState, ReservationState
+from media_interlock.contracts import ContractError, custody_receipt
+from media_interlock.fence.model import AcquisitionIntent, FencePolicy, FenceState, PreAdmissionIntent, ReservationState
 from media_interlock.fence.store import FenceStore
 from media_interlock.fence.service import FenceService
 
@@ -25,6 +25,32 @@ def active(state: FenceState, operation_id: str = OPERATION_ID) -> None:
 
 
 class FenceStateTests(unittest.TestCase):
+    def test_pre_admission_binds_one_later_exact_arr_grab_without_locator(self) -> None:
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        intent = PreAdmissionIntent(OPERATION_ID, "radarr", "42", "a" * 64, 400, "2026-08-08T12:00:00Z")
+
+        admitted = state.pre_admit(intent, qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True)
+        self.assertTrue(admitted.admitted)
+        reservation = state.reservation(OPERATION_ID)
+        self.assertEqual(ReservationState.PRE_ADMITTED, reservation.state)
+        self.assertEqual("a" * 64, reservation.selector_fingerprint)
+        self.assertIsNone(reservation.download_id)
+        state.bind_observed_grab(OPERATION_ID, download_id="0123456789abcdef0123456789abcdef01234567", torrent_hash="b" * 40)
+        self.assertEqual("0123456789abcdef0123456789abcdef01234567", state.reservation(OPERATION_ID).download_id)
+        with self.assertRaises(ContractError):
+            state.bind_observed_grab(OPERATION_ID, download_id="0123456789abcdef0123456789abcdef01234568", torrent_hash="c" * 40)
+
+    def test_pre_admission_and_bound_grab_survive_durable_record_round_trip(self) -> None:
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        state.pre_admit(PreAdmissionIntent(OPERATION_ID, "sonarr", "42", "a" * 64, 400, "watermark"), qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True)
+        state.bind_observed_grab(OPERATION_ID, download_id="download-42", torrent_hash="b" * 40)
+
+        restored = FenceState.from_records(FencePolicy(capacity_bytes=1_000, max_inflight=1), state.records())
+        reservation = restored.reservation(OPERATION_ID)
+        self.assertEqual(ReservationState.GRAB_BOUND, reservation.state)
+        self.assertEqual("a" * 64, reservation.selector_fingerprint)
+        self.assertEqual("watermark", reservation.watermark)
+        self.assertEqual("download-42", reservation.download_id)
     def test_admission_records_reservation_before_a_qbittorrent_effect(self) -> None:
         state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
         intent = AcquisitionIntent(OPERATION_ID, "radarr", "grab-42", "movie-42", 400, FINGERPRINT)
