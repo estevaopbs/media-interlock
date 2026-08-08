@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from collections.abc import Callable
 from pathlib import Path
@@ -23,10 +24,18 @@ class ArrCandidate:
     provider_ids: dict[str, str]
 
 
+@dataclass(frozen=True)
+class ArrRelease:
+    resource: dict[str, object]
+    selector_fingerprint: str
+    expected_bytes: int
+
+
 class ArrHistoryAdapter:
     media_keys: tuple[str, ...] = ()
     source_name = ""
     item_type = ""
+    release_entity_key = ""
     def __init__(self, base_url: str, api_key: SecretReference, *, staging_root: Path, secret_resolver: Callable[[SecretReference], str] | None = None, timeout_seconds: float = 5.0) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -68,6 +77,51 @@ class ArrHistoryAdapter:
         if status != 201 or not isinstance(decoded, dict) or set(decoded) - {"id", "name", "status", "body"}:
             return None
         return _public_id(decoded.get("id"))
+
+    def first_approved_release(self, entity_id: str) -> ArrRelease | None:
+        public_id = _public_id(int(entity_id)) if entity_id.isdecimal() else None
+        if public_id != entity_id or not self.release_entity_key:
+            return None
+        request = Request(f"{self._base_url}/api/v3/release?{urlencode({self.release_entity_key: entity_id})}", headers={"X-Api-Key": self._resolve(self._api_key)})
+        try:
+            status, body = request_bytes(request, timeout=self._timeout)
+            releases = json.loads(body.decode("utf-8"))
+        except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if status != 200 or not isinstance(releases, list):
+            return None
+        for resource in releases:
+            if not isinstance(resource, dict):
+                return None
+            if resource.get("approved") is not True:
+                continue
+            if resource.get("protocol") != "torrent":
+                return None
+            guid, locator, size = resource.get("guid"), resource.get("downloadUrl"), resource.get("size")
+            if not isinstance(guid, str) or not guid or not isinstance(locator, str) or not locator or isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+                return None
+            try:
+                encoded = json.dumps(resource, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+            except (TypeError, ValueError):
+                return None
+            return ArrRelease(resource, hashlib.sha256(encoded).hexdigest(), size)
+        return None
+
+    def grab_release(self, release: ArrRelease) -> bool:
+        if not isinstance(release, ArrRelease):
+            return False
+        try:
+            body = json.dumps(release.resource, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError):
+            return False
+        if hashlib.sha256(body).hexdigest() != release.selector_fingerprint:
+            return False
+        request = Request(f"{self._base_url}/api/v3/release", data=body, headers={"X-Api-Key": self._resolve(self._api_key), "Content-Type": "application/json"}, method="POST")
+        try:
+            status, _ = request_bytes(request, timeout=self._timeout)
+        except (HTTPError, URLError, OSError, RuntimeError):
+            return False
+        return status == 200
 
     def _matched_import(self, download_id: str, media_id: str) -> tuple[str, str] | None:
         if not download_id or not media_id:

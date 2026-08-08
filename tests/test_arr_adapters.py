@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +20,8 @@ class ArrCorrelationTests(unittest.TestCase):
         self.entity_payload: object = {"id": 42, "tmdbId": 42}
         self.request: tuple[str, str | None] | None = None
         self.command_request: tuple[str, str | None, object] | None = None
+        self.release_payload: object = [{"approved": True, "protocol": "torrent", "guid": "release-42", "size": 400, "downloadUrl": "https://indexer.invalid/release"}]
+        self.release_post: object | None = None
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -27,6 +30,12 @@ class ArrCorrelationTests(unittest.TestCase):
 
             def do_GET(self) -> None:
                 outer.request = (self.path, self.headers.get("X-Api-Key"))
+                if self.path.startswith("/api/v3/release?"):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(outer.release_payload).encode())
+                    return
                 if self.path.startswith("/api/v3/history?"):
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
@@ -55,6 +64,11 @@ class ArrCorrelationTests(unittest.TestCase):
                     self.send_error(400)
                     return
                 outer.command_request = (self.path, self.headers.get("X-Api-Key"), body)
+                if self.path == "/api/v3/release":
+                    outer.release_post = body
+                    self.send_response(200)
+                    self.end_headers()
+                    return
                 if self.path != "/api/v3/command":
                     self.send_error(404)
                     return
@@ -114,3 +128,27 @@ class ArrCorrelationTests(unittest.TestCase):
         self.assertEqual(("/api/v3/command", "fixture-key", {"name": "MoviesSearch", "movieIds": [42]}), self.command_request)
         self.assertEqual("71", self.adapter(SonarrAdapter).search_episode("42"))
         self.assertEqual(("/api/v3/command", "fixture-key", {"name": "EpisodeSearch", "episodeIds": [42]}), self.command_request)
+
+    def test_interactive_first_approved_torrent_is_selected_and_posted_intact(self) -> None:
+        expected = {"approved": True, "protocol": "torrent", "guid": "release-42", "size": 400, "downloadUrl": "https://indexer.invalid/release"}
+        adapter = self.adapter(RadarrAdapter)
+        release = adapter.first_approved_release("42")
+        self.assertIsNotNone(release)
+        assert release is not None
+        self.assertEqual(hashlib.sha256(json.dumps(expected, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), release.selector_fingerprint)
+        self.assertTrue(adapter.grab_release(release))
+        self.assertEqual(expected, self.release_post)
+        assert self.request is not None
+        self.assertEqual("/api/v3/release?movieId=42", self.request[0])
+
+    def test_interactive_selection_never_skips_an_invalid_first_approved_decision(self) -> None:
+        adapter = self.adapter(RadarrAdapter)
+        valid = {"approved": True, "protocol": "torrent", "guid": "later", "size": 400, "downloadUrl": "https://indexer.invalid/later"}
+        for first in (
+            {"approved": True, "protocol": "usenet", "guid": "first", "size": 400, "downloadUrl": "https://indexer.invalid/first"},
+            {"approved": True, "protocol": "torrent", "guid": "first", "size": 0, "downloadUrl": "https://indexer.invalid/first"},
+            {"approved": True, "protocol": "torrent", "guid": "first", "size": 400},
+        ):
+            with self.subTest(first=first):
+                self.release_payload = [first, valid]
+                self.assertIsNone(adapter.first_approved_release("42"))

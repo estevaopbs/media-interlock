@@ -7,6 +7,7 @@ class RadarrAdapter(ArrHistoryAdapter):
     media_keys = ("movieId",)
     source_name = "radarr"
     item_type = "Movie"
+    release_entity_key = "movieId"
 
     def search_movie(self, movie_id: str) -> str | None:
         return self._submit_command("MoviesSearch", "movieIds", movie_id)

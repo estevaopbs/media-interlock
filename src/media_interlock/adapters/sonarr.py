@@ -7,6 +7,7 @@ class SonarrAdapter(ArrHistoryAdapter):
     media_keys = ("episodeId", "seriesId")
     source_name = "sonarr"
     item_type = "Episode"
+    release_entity_key = "episodeId"
 
     def search_episode(self, episode_id: str) -> str | None:
         return self._submit_command("EpisodeSearch", "episodeIds", episode_id)
