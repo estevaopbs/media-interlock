@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import unittest
 import uuid
+import tempfile
+from pathlib import Path
 
 import _source_tree  # noqa: F401
 
 from media_interlock.reconciler.model import AttemptPolicy, ReconciliationState, SearchIntent
+from media_interlock.reconciler.store import ReconcilerStore
 
 
 class ReconciliationModelTests(unittest.TestCase):
@@ -58,3 +61,16 @@ class ReconciliationModelTests(unittest.TestCase):
         restored = ReconciliationState.from_records(state.records())
         self.assertEqual(intent, restored.intent(intent.operation_id))
         self.assertFalse(restored.eligible("sonarr", "42", AttemptPolicy(0, 1), now=999, force=True))
+
+    def test_private_store_restores_uncertain_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ReconcilerStore.open(Path(directory) / "reconciler")
+            intent = SearchIntent(str(uuid.uuid4()), "radarr", "42", False, "checkpoint-a")
+            state = ReconciliationState()
+            state.record_intent(intent, now=100)
+            store.save(state)
+            store.close()
+
+            restarted = ReconcilerStore.open(Path(directory) / "reconciler")
+            self.addCleanup(restarted.close)
+            self.assertEqual(intent, restarted.load().intent(intent.operation_id))
