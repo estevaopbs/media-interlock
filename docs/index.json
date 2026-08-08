@@ -2,7 +2,7 @@
   "schema": "media-interlock.docs-index/v1",
   "project": {
     "name": "MediaInterlock",
-    "status": "design-documented-preimplementation"
+    "status": "implementation-in-progress"
   },
   "budgets": {
     "permanent_markdown": {
@@ -35,7 +35,7 @@
       },
       {
         "id": "MI-01",
-        "status": "pending"
+        "status": "completed"
       },
       {
         "id": "MI-02",

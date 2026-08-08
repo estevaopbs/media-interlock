@@ -27,6 +27,12 @@ state-machine tables. They do not create one bespoke test per source function.
 Behavior is not repeated at multiple layers unless each layer detects a
 different failure class.
 
+The shared mechanism gate verifies strict configuration and secret redaction,
+contract version and field rejection, exclusive SQLite ownership and restart
+persistence, atomic contained writes, Unix-socket framing, and every modeled
+custody reservation boundary. This proves neither a live upstream integration
+nor deployment filesystem permissions.
+
 ## CI time budgets
 
 | Gate | Maximum wall time | Use |

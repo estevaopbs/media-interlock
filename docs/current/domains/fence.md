@@ -21,6 +21,10 @@ under observed, durable capacity and concurrency constraints.
   capability; it never treats a proxy response as proof of a successful search
   or download.
 
+Prowlarr is a Fence-owned optional readiness capability. Its adapter may report
+configured indexer availability to inhibit new admission, but cannot rank a
+release, initiate a search, or prove a download outcome.
+
 Unknown or ambiguous state closes new admission. Fence unavailability must not
 stop playback of an already published generation. Recovery reconciles its own
 durable intent with observed qBittorrent effects and never opens admission merely

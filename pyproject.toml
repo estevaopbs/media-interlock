@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "media-interlock"
+version = "0.1.0"
+description = "Fail-closed media reconciliation, publication, and acquisition control"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+license = {text = "MIT"}
+authors = [{name = "MediaInterlock contributors"}]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.14",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

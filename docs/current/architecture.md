@@ -61,11 +61,11 @@ src/media_interlock/
 
 Shared code is limited to mechanisms with identical semantics: typed
 configuration primitives, contract envelopes, durable local-state helpers,
-safe filesystem primitives, Unix RPC, and observability. SQLite is an initial
-implementation candidate, not an approved storage contract; MI-01 must select
-and test the smallest mechanism that satisfies crash durability. There is no
-generic saga framework, cross-service ORM, shared domain model, or universal
-client.
+safe filesystem primitives, Unix RPC, and observability. Each component owns a
+private SQLite store under an exclusive writer lock. Intent and transition
+writes use immediate durable transactions; no component can open another
+component's store. There is no generic saga framework, cross-service ORM,
+shared domain model, or universal client.
 
 ## Component ownership
 
@@ -98,8 +98,9 @@ not part of the initial architecture and requires a new design decision.
 
 ## Configuration and secrets
 
-TOML is the single human-authored configuration format; whether deployment uses
-one file or component-specific files is an MI-01 schema choice. The loader rejects
+TOML is the single human-authored configuration format. One file contains a
+shared runtime section and optional component and adapter sections, while each
+process consumes only its typed projection. The loader rejects
 unknown keys, invalid combinations, duplicate identities, unsafe paths, and
 unbounded values. Reconciliation policy is configurable, including eligibility
 windows, cooldowns, language preferences, quality constraints, and resource
@@ -135,9 +136,11 @@ preconditions are not optional policy and cannot be replaced by operator trust.
 ## Interfaces, packaging, and platform
 
 The reconciler is a one-shot job. Publisher and fence are daemons. Version 1
-uses local Unix sockets only; container deployments mount an explicit shared
-runtime directory. TCP APIs, a web UI, and an embedded scheduler are not
-initial features.
+uses newline-delimited canonical JSON envelopes over local Unix sockets only.
+Every envelope has a version, kind, operation identity, and body; unknown
+fields and unsupported versions fail closed. Container deployments mount an
+explicit shared runtime directory. TCP APIs, a web UI, and an embedded scheduler
+are not initial features.
 
 Each component exposes a CLI with human-readable and JSON output, health
 status, and metrics. Distribution targets are a Python wheel suitable for

@@ -25,11 +25,11 @@ integrated as declared in the current release profile.
 
 ## Configuration
 
-Validated TOML contains component and adapter sections, while each process
-reads only its owned projection. The MI-01 schema will decide whether those
-sections may share a file or use component-specific files. Configuration files
-contain no secret values. Secret references resolve from environment variables
-or files at process startup and are redacted from diagnostics.
+Validated TOML has one shared runtime section plus optional component and
+adapter sections; each process reads only its owned typed projection.
+Configuration files contain no secret values. Secret references use `env:` or
+`file:` forms, resolve only at process startup, and are redacted from
+diagnostics.
 
 Startup fails before side effects when configuration is unknown, ambiguous, or
 incompatible. A missing optional adapter disables only capabilities that depend
@@ -51,6 +51,11 @@ status codes. Health distinguishes process liveness, configuration readiness,
 adapter readiness, and inhibited work. Metrics are bounded-cardinality and do
 not use media paths, titles, torrent hashes, usernames, or operation IDs as
 labels.
+
+The current development compatibility profile is Python 3.14.6, Jellyfin
+10.11.11, Radarr 6.3.0.10514, Sonarr 4.0.19.2979, qBittorrent 5.2.3, Bazarr
+1.6.0, Seerr 3.4.1, and Prowlarr 2.5.2.5491. Only a later adapter contract test
+qualifies a capability against its corresponding pin.
 
 ## Downstream adoption
 

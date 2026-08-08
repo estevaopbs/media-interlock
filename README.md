@@ -18,10 +18,10 @@ active only when configured.
 
 ## Project status
 
-The design and development program are documented, but there is no runnable
-release yet. Nothing in this repository has been installed in or validated
-against a live media stack. See [current state](docs/current/state.md) for the
-precise boundary.
+The shared safety mechanisms are implemented, but the three component verticals
+and release packaging are still in development. Nothing in this repository has
+been installed in or validated against a live media stack. See [current
+state](docs/current/state.md) for the precise boundary.
 
 ## Principles
 

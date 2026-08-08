@@ -1,14 +1,14 @@
 # Current state
 
-MediaInterlock is in documented-design, preimplementation state. The repository
-contains the development program and documentation validator only. It contains
-no product package, daemon, OCI image, supported configuration schema, release,
-or installation procedure.
+MediaInterlock has implemented its first shared safety slice. It contains a
+strict TOML configuration loader, non-persisted secret references, version-1
+Unix contract envelopes, private durable-state and atomic-I/O primitives, and
+stable human/JSON result conventions. It does not yet contain a component
+daemon, adapter implementation, OCI image, release, or installation procedure.
 
 Consequently:
 
 - none of the seven planned upstream adapters is implemented or qualified;
-- no compatibility versions have been pinned for an implementation cycle;
 - no live, hardware, filesystem, container, or upstream-service acceptance has
   been performed;
 - no downstream deployment should consume this repository yet.
@@ -32,7 +32,8 @@ in `0.x` while interfaces and adapters stabilize. Version `1.0.0` requires all
 three components, all adapters declared for that release, integrated safety
 gates, packaging, and operator documentation.
 
-At the beginning of each implementation cycle, the project pins the latest
-stable supported Python and upstream service versions. Those pins remain fixed
-for the cycle and define what its adapter tests prove. MediaInterlock does not
-promise compatibility with untested older releases.
+The current development cycle is pinned to Python 3.14.6, Jellyfin 10.11.11,
+Radarr 6.3.0.10514, Sonarr 4.0.19.2979, qBittorrent 5.2.3, Bazarr 1.6.0, Seerr
+3.4.1, and Prowlarr 2.5.2.5491. These pins remain fixed for the cycle and
+define what future adapter tests prove. MediaInterlock does not promise
+compatibility with untested older releases.
