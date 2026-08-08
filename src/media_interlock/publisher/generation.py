@@ -1,0 +1,324 @@
+"""Atomic canonical generation promotion with retained prior generations."""
+
+from __future__ import annotations
+
+import os
+import fcntl
+import shutil
+import stat
+import uuid
+import hashlib
+import re
+import ctypes
+import errno
+from pathlib import Path, PurePath
+
+from .filesystem import CandidateSafetyError, CandidateVerifier, VerifiedCandidate
+
+
+class GenerationPublisher:
+    """Promotes a verified staging file into an immutable canonical generation."""
+
+    def __init__(self, staging_root: Path, canonical_root: Path) -> None:
+        self._staging_root = staging_root
+        self._canonical_root = canonical_root
+
+    def prepare(self, generation_id: str, candidate: VerifiedCandidate) -> Path:
+        if not self._valid_generation_id(generation_id):
+            raise CandidateSafetyError("generation identity is unsafe")
+        self._canonical_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if self._canonical_root.is_symlink():
+            raise CandidateSafetyError("canonical root is unsafe")
+        generations = self._canonical_root / "generations"
+        try:
+            metadata = generations.lstat()
+        except FileNotFoundError:
+            generations.mkdir(mode=0o755)
+        else:
+            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise CandidateSafetyError("canonical generations directory is unsafe")
+        destination_dir = generations / generation_id
+        if destination_dir.exists():
+            destination = destination_dir / candidate.relative_path
+            if destination.is_file() and CandidateVerifier(destination_dir).verify(candidate.relative_path) == candidate:
+                return destination
+            raise CandidateSafetyError("generation identity already has a different payload")
+        verified = CandidateVerifier(self._staging_root).verify(candidate.relative_path)
+        if verified != candidate:
+            raise CandidateSafetyError("candidate changed before promotion")
+        temporary = generations / f".{generation_id}.{uuid.uuid4().hex}.tmp"
+        try:
+            temporary.mkdir(mode=0o755)
+            destination = temporary / candidate.relative_path
+            destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self._copy_verified(candidate.relative_path, destination, candidate)
+            self._fsync_tree(destination, temporary)
+            os.replace(temporary, destination_dir)
+            self._fsync_directory(generations)
+            return destination_dir / candidate.relative_path
+        except BaseException:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+
+    @staticmethod
+    def _valid_generation_id(value: object) -> bool:
+        if not isinstance(value, str):
+            return False
+        try:
+            parsed = uuid.UUID(value)
+        except ValueError:
+            return False
+        return str(parsed) == value and parsed.version == 4
+
+    @classmethod
+    def _temporary_generation_name(cls, value: str) -> bool:
+        match = re.fullmatch(r"\.([0-9a-f-]{36})\.([0-9a-f]{32})\.tmp", value)
+        return match is not None and cls._valid_generation_id(match.group(1))
+
+    def _copy_verified(self, relative_path: str, destination: Path, candidate: VerifiedCandidate) -> None:
+        relative = PurePath(relative_path)
+        descriptor = os.open(self._staging_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            for part in relative.parts[:-1]:
+                child = os.open(part, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+            source = os.open(relative.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=descriptor)
+            try:
+                metadata = os.fstat(source)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_size != candidate.bytes_verified:
+                    raise CandidateSafetyError("candidate changed before copy")
+                target = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                try:
+                    digest = hashlib.sha256()
+                    while chunk := os.read(source, 1024 * 1024):
+                        digest.update(chunk)
+                        offset = 0
+                        while offset < len(chunk):
+                            written = os.write(target, chunk[offset:])
+                            if written <= 0:
+                                raise OSError("generation copy made no progress")
+                            offset += written
+                    if digest.hexdigest() != candidate.sha256:
+                        raise CandidateSafetyError("candidate changed during copy")
+                    os.fsync(target)
+                finally:
+                    os.close(target)
+            finally:
+                os.close(source)
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _fsync_tree(self, destination: Path, temporary: Path) -> None:
+        self._fsync_directory(destination.parent)
+        self._fsync_directory(temporary)
+
+
+class CanonicalWriterLock:
+    """Exclusive daemon-lifetime claim for one canonical root."""
+
+    def __init__(self, descriptor: int) -> None:
+        self._descriptor = descriptor
+
+    @classmethod
+    def acquire(cls, canonical_root: Path) -> "CanonicalWriterLock":
+        descriptor = os.open(canonical_root / ".publisher.writer.lock", os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            os.close(descriptor)
+            raise CandidateSafetyError("canonical root already has a Publisher writer") from exc
+        return cls(descriptor)
+
+    def close(self) -> None:
+        fcntl.flock(self._descriptor, fcntl.LOCK_UN)
+        os.close(self._descriptor)
+
+
+class AssetGenerationPublisher:
+    """Seal one asset bundle and atomically advance only that asset's slot."""
+
+    def __init__(self, staging_root: Path, canonical_root: Path, *, namespace: str) -> None:
+        if not namespace or "/" in namespace or namespace in {".", ".."}:
+            raise CandidateSafetyError("canonical namespace is unsafe")
+        self._staging_root = staging_root
+        self._canonical_root = canonical_root
+        self._namespace = namespace
+
+    def publish(self, asset_slot: str, generation_id: str, candidate: VerifiedCandidate, *, previous_generation_id: str | None = None) -> Path:
+        slot = self._slot_name(asset_slot)
+        if previous_generation_id is not None and not GenerationPublisher._valid_generation_id(previous_generation_id):
+            raise CandidateSafetyError("prior generation identity is unsafe")
+        visible_before = self.visible_generation(asset_slot)
+        if visible_before == generation_id:
+            payload = self.generation_payload(asset_slot, generation_id)
+            os.chmod(payload, 0o444)
+            os.chmod(payload.parent, 0o755)
+            GenerationPublisher._fsync_directory(payload.parent)
+            return payload
+        if visible_before != previous_generation_id:
+            raise CandidateSafetyError("asset slot changed after durable generation intent")
+        private_root = self._canonical_root / ".publisher" / "assets" / slot
+        visible_root = self._canonical_root / self._namespace
+        self._safe_directory(self._canonical_root, mode=0o700)
+        self._safe_directory(private_root, mode=0o755)
+        self._safe_directory(visible_root, mode=0o755)
+        try:
+            payload = self.generation_payload(asset_slot, generation_id)
+        except CandidateSafetyError:
+            prepared = GenerationPublisher(self._staging_root, private_root).prepare(generation_id, candidate)
+            payload = private_root / "generations" / generation_id / self._payload_name(candidate.relative_path)
+            os.replace(prepared, payload)
+        # The move can be durable while the following mode repair is not. Make
+        # recovery idempotently restore the read-only playback contract.
+        os.chmod(payload, 0o444)
+        os.chmod(payload.parent, 0o755)
+        GenerationPublisher._fsync_directory(payload.parent)
+        if CandidateVerifier(payload.parent).verify(payload.name) != VerifiedCandidate(payload.name, candidate.bytes_verified, candidate.sha256):
+            raise CandidateSafetyError("asset generation payload differs")
+        slot_path = visible_root / slot
+        target = Path("..") / ".publisher" / "assets" / slot / "generations" / generation_id
+        temporary = visible_root / f".{slot}.{uuid.uuid4().hex}.pending"
+        try:
+            os.symlink(target, temporary)
+            try:
+                metadata = slot_path.lstat()
+            except FileNotFoundError:
+                if previous_generation_id is not None:
+                    raise CandidateSafetyError("asset slot changed after durable generation intent")
+                self._rename_no_replace(temporary, slot_path)
+            else:
+                if not stat.S_ISLNK(metadata.st_mode):
+                    raise CandidateSafetyError("asset slot is unsafe")
+                if self.visible_generation(asset_slot) != previous_generation_id:
+                    raise CandidateSafetyError("asset slot changed after durable generation intent")
+                self._rename_exchange(slot_path, temporary)
+                # The exchanged pending name contains the prior logical slot;
+                # immutable generation directories retain the predecessor.
+                temporary.unlink()
+            GenerationPublisher._fsync_directory(visible_root)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+        return slot_path / payload.name
+
+    def visible_generation(self, asset_slot: str) -> str | None:
+        slot = self._slot_name(asset_slot)
+        path = self._canonical_root / self._namespace / slot
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISLNK(metadata.st_mode):
+            raise CandidateSafetyError("asset slot is unsafe")
+        target = os.readlink(path)
+        expected = f"../.publisher/assets/{slot}/generations/"
+        if not target.startswith(expected):
+            raise CandidateSafetyError("asset slot is unsafe")
+        generation_id = target.removeprefix(expected)
+        if not GenerationPublisher._valid_generation_id(generation_id):
+            raise CandidateSafetyError("asset slot is unsafe")
+        payload = self.generation_payload(asset_slot, generation_id)
+        if not payload.is_file() or payload.is_symlink():
+            raise CandidateSafetyError("asset slot target is unsafe")
+        return generation_id
+
+    def generation_payload(self, asset_slot: str, generation_id: str) -> Path:
+        slot = self._slot_name(asset_slot)
+        if not GenerationPublisher._valid_generation_id(generation_id):
+            raise CandidateSafetyError("generation identity is unsafe")
+        bundle = self._canonical_root / ".publisher" / "assets" / slot / "generations" / generation_id
+        try:
+            candidates = tuple(bundle.glob("payload.*"))
+        except FileNotFoundError as exc:
+            raise CandidateSafetyError("asset generation payload is unavailable") from exc
+        if len(candidates) != 1:
+            raise CandidateSafetyError("asset generation payload is unavailable")
+        payload = candidates[0]
+        metadata = payload.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise CandidateSafetyError("asset generation payload is unsafe")
+        return payload
+
+    @staticmethod
+    def _payload_name(relative_path: str) -> str:
+        suffix = PurePath(relative_path).suffix.lower()
+        if not re.fullmatch(r"\.[a-z0-9]{1,16}", suffix):
+            raise CandidateSafetyError("candidate has no safe media extension")
+        return "payload" + suffix
+
+    def garbage_collect(self, asset_slot: str, retained_generation_ids: set[str]) -> None:
+        """Reclaim only complete obsolete bundles for one known asset."""
+        slot = self._slot_name(asset_slot)
+        retained = set(retained_generation_ids)
+        visible = self.visible_generation(asset_slot)
+        if visible is not None:
+            retained.add(visible)
+        generations = self._canonical_root / ".publisher" / "assets" / slot / "generations"
+        try:
+            entries = tuple(generations.iterdir())
+        except FileNotFoundError:
+            return
+        for generation in entries:
+            metadata = generation.lstat()
+            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or not GenerationPublisher._valid_generation_id(generation.name):
+                raise CandidateSafetyError("asset generation directory is unsafe")
+            if generation.name not in retained:
+                shutil.rmtree(generation)
+        GenerationPublisher._fsync_directory(generations)
+
+    @staticmethod
+    def _safe_directory(path: Path, *, mode: int) -> None:
+        if not path.is_absolute():
+            raise CandidateSafetyError("canonical directory is unsafe")
+        directory = Path(path.anchor)
+        for part in path.parts[1:]:
+            directory = directory / part
+            try:
+                metadata = directory.lstat()
+            except FileNotFoundError:
+                try:
+                    directory.mkdir(mode=mode)
+                except FileExistsError:
+                    pass
+                metadata = directory.lstat()
+            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise CandidateSafetyError("canonical directory is unsafe")
+
+    @staticmethod
+    def _rename_no_replace(source: Path, destination: Path) -> None:
+        AssetGenerationPublisher._renameat2(source, destination, 1)
+
+    @staticmethod
+    def _rename_exchange(left: Path, right: Path) -> None:
+        AssetGenerationPublisher._renameat2(left, right, 2)
+
+    @staticmethod
+    def _renameat2(source: Path, destination: Path, flags: int) -> None:
+        try:
+            renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+        except AttributeError as exc:
+            raise CandidateSafetyError("atomic renameat2 is unavailable") from exc
+        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        renameat2.restype = ctypes.c_int
+        if renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), flags) != 0:
+            error = ctypes.get_errno()
+            if error in {errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP}:
+                raise CandidateSafetyError("filesystem lacks required atomic rename capability")
+            raise OSError(error, os.strerror(error), str(destination))
+
+    @staticmethod
+    def _slot_name(value: str) -> str:
+        if not re.fullmatch(r"(?:radarr|sonarr):[A-Za-z0-9._-]{1,200}", value):
+            raise CandidateSafetyError("asset slot is unsafe")
+        return value.replace(":", "-")

@@ -56,7 +56,7 @@ src/media_interlock/
   observability.py
   _infra/{state,safe_fs,unix_rpc}.py
   reconciler/{model,service,store,cli}.py
-  publisher/{model,service,store,filesystem,inspection,delivery,cli}.py
+  publisher/{model,service,store,filesystem,generation,observability,daemon,cli}.py
   fence/{model,service,store,observer,cli}.py
   adapters/{radarr,sonarr,jellyfin,qbittorrent,bazarr,seerr,prowlarr}.py
 ```
@@ -99,6 +99,14 @@ the authenticated WebUI cookie API; Prowlarr is limited to health plus at least
 one enabled configured indexer. If an essential capability is
 missing, prefer an upstream contribution. A Jellyfin plugin or private API is
 not part of the initial architecture and requires a new design decision.
+
+Publisher derives an asset identity from Arr public APIs, publishes an immutable
+bundle to that asset's stable logical slot, and retains an asset-local
+last-known-good predecessor. Jellyfin notification is only a submitted effect:
+the Publisher observes one exact library item and media source and hashes a full
+static direct-play response before it records delivery. Recovery observes a
+possibly consumed effect before changing any filesystem state; it does not
+retract a slot blindly.
 
 ## Configuration and secrets
 

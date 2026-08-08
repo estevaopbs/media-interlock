@@ -27,6 +27,9 @@ state_dir = "/var/lib/media-interlock/publisher"
 socket_path = "/run/media-interlock/publisher.sock"
 staging_root = "/srv/staging"
 canonical_root = "/srv/library"
+jellyfin_library_id = "2f9e0f39-70de-4502-85ce-7ed03cd2f01f"
+namespace = "library"
+jellyfin_path_prefix = "/jellyfin/library"
 
 [adapters.prowlarr]
 base_url = "https://prowlarr.example.invalid"
@@ -46,6 +49,8 @@ class ConfigurationTests(unittest.TestCase):
         config = load_config(self.write(VALID_CONFIG))
 
         self.assertEqual("/srv/library", str(config.publisher.canonical_root))
+        self.assertEqual("library", config.publisher.namespace)
+        self.assertEqual("/jellyfin/library", config.publisher.jellyfin_path_prefix)
         self.assertEqual("env", config.adapters["prowlarr"].secrets["api_key"].source)
         self.assertNotIn("PROWLARR_API_KEY", repr(config.redacted()))
         self.assertEqual("env:<redacted>", config.redacted()["adapters"]["prowlarr"]["api_key"])
@@ -65,6 +70,14 @@ class ConfigurationTests(unittest.TestCase):
             load_config(self.write(VALID_CONFIG.replace("max_inflight = 2", "max_inflight = 100001")))
         with self.assertRaisesRegex(ConfigError, "base_url must be a valid"):
             load_config(self.write(VALID_CONFIG.replace("https://prowlarr.example.invalid", "http://host:notaport")))
+
+    def test_publisher_catalog_binding_is_typed_and_never_item_mapped(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "jellyfin_library_id"):
+            load_config(self.write(VALID_CONFIG.replace("2f9e0f39-70de-4502-85ce-7ed03cd2f01f", "not-a-uuid")))
+        with self.assertRaisesRegex(ConfigError, "namespace"):
+            load_config(self.write(VALID_CONFIG.replace('namespace = "library"', 'namespace = "library/nested"')))
+        with self.assertRaisesRegex(ConfigError, "unknown key"):
+            load_config(self.write(VALID_CONFIG + 'jellyfin_item_id = "manual-mapping"\n'))
 
     def test_rejects_existing_symlink_aliases_between_canonical_and_staging(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

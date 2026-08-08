@@ -19,6 +19,7 @@ classifiers = [
 
 [project.scripts]
 media-interlock-fence = "media_interlock.fence.cli:main"
+media-interlock-publisher = "media_interlock.publisher.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -1,7 +1,8 @@
 # Operations
 
-There is no runnable release yet. Fence is implemented as a local daemon, but
-this page is not an installation guide and no live deployment has been tested.
+There is no runnable release yet. Fence and Publisher are implemented as local
+daemons, but this page is not an installation guide and no live deployment has
+been tested.
 
 ## Processes
 
@@ -15,7 +16,9 @@ media-interlock-fence
 
 Reconciler runs to completion under an external scheduler or on demand.
 Publisher and fence run independently and expose health, metrics, and versioned
-Unix socket endpoints. They do not start, stop, or reconfigure one another.
+Unix socket endpoints. `media-interlock-publisher --config FILE --status` and
+the corresponding Fence command query only their local daemon status. They do
+not start, stop, or reconfigure one another.
 
 Each process has a separate least-privilege identity, state directory, runtime
 socket, and configured filesystem/network access. Containers receive only the

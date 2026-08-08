@@ -24,10 +24,21 @@ last known-good generation until a newer one is fully committed.
 - Deliver committed catalog changes through durable, idempotent adapter outboxes
   and confirm observed bindings before releasing related retention holds.
 
-Jellyfin supplies catalog observation and delivery. Bazarr and Seerr are
-configured optional adapters whose smallest publisher capabilities remain to be
-validated in the publisher slice; they cannot weaken custody or filesystem
-commit and cannot invent a successful publication.
+Each Arr-derived asset binds to a stable logical slot, an immutable bundle
+generation, and an asset-local predecessor. First publication must not replace
+an existing slot; later publication atomically exchanges only that asset's
+bundle. A notification acknowledgement is submission only. Delivery requires
+exactly one catalog item matching the configured library, translated logical
+path, type, provider identity, source identity and size, followed by full static
+direct-play hash verification. Lost effects and conflicts retain both candidate
+and predecessor for later observation; they never cause blind filesystem
+rollback.
+
+Jellyfin supplies catalog observation and delivery. Bazarr has an authenticated
+status readiness capability and continues to own subtitle work. Seerr has an
+authenticated settings readiness capability and continues to own availability
+projection from its configured media server. These optional adapters cannot
+weaken custody or filesystem commit and cannot invent a successful publication.
 
 ## Boundaries
 
@@ -35,7 +46,7 @@ Publisher does not write Jellyfin or other upstream databases directly,
 perform one-off catalog or user-state migration, own an in-progress download,
 schedule searches, manage stack lifecycle, or provide backup and restore.
 Catalog failure retains publication state and reports degraded delivery; it
-does not roll the filesystem back to an unverified candidate.
+does not roll the filesystem back after a possibly consumed external effect.
 
 The publisher cannot read the fence or reconciler database. It accepts
 versioned observations and intent identifiers and exposes its own status in the

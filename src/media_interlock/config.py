@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Any, Mapping
 from urllib.parse import urlparse
+import uuid
 
 
 class ConfigError(ValueError):
@@ -81,6 +82,9 @@ class FenceConfig(ComponentConfig):
 class PublisherConfig(ComponentConfig):
     staging_root: Path
     canonical_root: Path
+    jellyfin_library_id: str
+    namespace: str
+    jellyfin_path_prefix: str
 
 
 @dataclass(frozen=True)
@@ -165,6 +169,45 @@ def _required_category(table: Mapping[str, object], name: str, location: str) ->
     return value
 
 
+def _required_uuid(table: Mapping[str, object], name: str, location: str) -> str:
+    try:
+        value = table[name]
+    except KeyError as exc:
+        raise ConfigError(f"missing required key: {location}.{name}") from exc
+    if not isinstance(value, str):
+        raise ConfigError(f"{location}.{name} must be a canonical UUID")
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError as exc:
+        raise ConfigError(f"{location}.{name} must be a canonical UUID") from exc
+    if str(parsed) != value:
+        raise ConfigError(f"{location}.{name} must be a canonical UUID")
+    return value
+
+
+def _required_namespace(table: Mapping[str, object], name: str, location: str) -> str:
+    try:
+        value = table[name]
+    except KeyError as exc:
+        raise ConfigError(f"missing required key: {location}.{name}") from exc
+    if not isinstance(value, str) or not value or len(value) > 200 or value in {".", ".."} or "/" in value or "\\" in value or "\x00" in value:
+        raise ConfigError(f"{location}.{name} must be a safe logical namespace")
+    return value
+
+
+def _required_posix_prefix(table: Mapping[str, object], name: str, location: str) -> str:
+    try:
+        value = table[name]
+    except KeyError as exc:
+        raise ConfigError(f"missing required key: {location}.{name}") from exc
+    if not isinstance(value, str) or not value.startswith("/"):
+        raise ConfigError(f"{location}.{name} must be an absolute Jellyfin path prefix")
+    parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in parts[1:]) or "\x00" in value:
+        raise ConfigError(f"{location}.{name} must be an absolute Jellyfin path prefix")
+    return value.rstrip("/") or "/"
+
+
 def _component(table: Mapping[str, object], name: str, runtime_dir: Path) -> ComponentConfig:
     socket_path = _required_path(table, "socket_path", name)
     if socket_path.parent != runtime_dir:
@@ -239,10 +282,19 @@ def load_config(path: Path) -> ProductConfig:
     publisher: PublisherConfig | None = None
     if components["publisher"] is not None:
         table = _table(document["publisher"], "publisher")
-        _require_keys(table, {"state_dir", "socket_path", "staging_root", "canonical_root"}, "publisher")
+        _require_keys(table, {"state_dir", "socket_path", "staging_root", "canonical_root", "jellyfin_library_id", "namespace", "jellyfin_path_prefix"}, "publisher")
         base = components["publisher"]
         assert base is not None
-        publisher = PublisherConfig(base.name, base.state_dir, base.socket_path, _required_path(table, "staging_root", "publisher"), _required_path(table, "canonical_root", "publisher"))
+        publisher = PublisherConfig(
+            base.name,
+            base.state_dir,
+            base.socket_path,
+            _required_path(table, "staging_root", "publisher"),
+            _required_path(table, "canonical_root", "publisher"),
+            _required_uuid(table, "jellyfin_library_id", "publisher"),
+            _required_namespace(table, "namespace", "publisher"),
+            _required_posix_prefix(table, "jellyfin_path_prefix", "publisher"),
+        )
         _validate_disjoint(publisher.staging_root, publisher.canonical_root, "publisher.staging_root", "publisher.canonical_root")
     reconciler = components["reconciler"]
     if reconciler is not None:
