@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 from ..config import SecretReference
+from ._http import MAX_RESPONSE_BYTES, _NoRedirect
 
 
 def _torrent_hash(value: object) -> bool:
@@ -30,12 +31,19 @@ class QbittorrentAdapter:
         self._category = category
         self._resolve = secret_resolver or (lambda reference: reference.resolve())
         self._timeout = timeout_seconds
-        self._opener = build_opener(HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        self._opener = build_opener(_NoRedirect(), HTTPCookieProcessor(http.cookiejar.CookieJar()))
         self._authenticated = False
 
     def _invalidate_authentication(self) -> None:
         self._authenticated = False
-        self._opener = build_opener(HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        self._opener = build_opener(_NoRedirect(), HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+    @staticmethod
+    def _read_bounded(response: Any) -> bytes:
+        body = response.read(MAX_RESPONSE_BYTES + 1)
+        if len(body) > MAX_RESPONSE_BYTES:
+            raise RuntimeError("qBittorrent response exceeds bound")
+        return body
 
     def _post(self, path: str, fields: dict[str, str]) -> bytes:
         request = Request(f"{self._base_url}{path}", data=urlencode(fields).encode("utf-8"), headers={"Content-Type": "application/x-www-form-urlencoded", "Referer": self._base_url}, method="POST")
@@ -43,8 +51,9 @@ class QbittorrentAdapter:
             with self._opener.open(request, timeout=self._timeout) as response:
                 if response.status != 200:
                     raise RuntimeError("unexpected qBittorrent status")
-                return response.read()
+                return self._read_bounded(response)
         except HTTPError as exc:
+            exc.close()
             if exc.code in {401, 403}:
                 self._invalidate_authentication()
             raise
@@ -55,8 +64,9 @@ class QbittorrentAdapter:
             with self._opener.open(request, timeout=self._timeout) as response:
                 if response.status != 200:
                     raise RuntimeError("unexpected qBittorrent status")
-                return json.loads(response.read().decode("utf-8"))
+                return json.loads(self._read_bounded(response).decode("utf-8"))
         except HTTPError as exc:
+            exc.close()
             if exc.code in {401, 403}:
                 self._invalidate_authentication()
             raise
@@ -67,8 +77,9 @@ class QbittorrentAdapter:
             with self._opener.open(request, timeout=self._timeout) as response:
                 if response.status != 200:
                     raise RuntimeError("unexpected qBittorrent status")
-                return response.read().decode("utf-8").strip()
+                return self._read_bounded(response).decode("utf-8").strip()
         except HTTPError as exc:
+            exc.close()
             if exc.code in {401, 403}:
                 self._invalidate_authentication()
             raise

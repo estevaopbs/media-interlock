@@ -16,6 +16,7 @@ from media_interlock.config import SecretReference
 class QbittorrentAdapterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.requests: list[tuple[str, str, dict[str, list[str]]]] = []
+        self.redirect_login = False
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -26,6 +27,11 @@ class QbittorrentAdapterTests(unittest.TestCase):
                 raw = self.rfile.read(int(self.headers["Content-Length"])).decode()
                 outer.requests.append(("POST", self.path, parse_qs(raw)))
                 if self.path == "/api/v2/auth/login":
+                    if outer.redirect_login:
+                        self.send_response(302)
+                        self.send_header("Location", "/redirected")
+                        self.end_headers()
+                        return
                     self.send_response(200)
                     self.send_header("Set-Cookie", "SID=fixture; Path=/")
                     self.end_headers()
@@ -97,3 +103,8 @@ class QbittorrentAdapterTests(unittest.TestCase):
         adapter = self.adapter()
         adapter._get_text = lambda path: "4.6.7" if path.endswith("version") else "2.11.3"  # type: ignore[method-assign]
         self.assertFalse(adapter.ready())
+
+    def test_authenticated_login_redirect_is_not_followed(self) -> None:
+        self.redirect_login = True
+        self.assertFalse(self.adapter().ready())
+        self.assertEqual([("POST", "/api/v2/auth/login", {"username": ["fixture-user"], "password": ["fixture-pass"]})], self.requests)

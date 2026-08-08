@@ -15,6 +15,8 @@ class ProwlarrAdapterTests(unittest.TestCase):
         self.payload = b"[]"
         self.indexers = b'[{"enable":true}]'
         self.header: str | None = None
+        self.redirect_health = False
+        self.paths: list[str] = []
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -22,7 +24,13 @@ class ProwlarrAdapterTests(unittest.TestCase):
                 pass
 
             def do_GET(self) -> None:
+                outer.paths.append(self.path)
                 outer.header = self.headers.get("X-Api-Key")
+                if outer.redirect_health and self.path == "/api/v1/health":
+                    self.send_response(302)
+                    self.send_header("Location", "/api/v1/indexer")
+                    self.end_headers()
+                    return
                 if self.path == "/api/v1/indexer":
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
@@ -63,3 +71,8 @@ class ProwlarrAdapterTests(unittest.TestCase):
         self.indexers = b'[{"enable":true}]'
         self.payload = b'[{"type":"warning","message":"indexer unavailable"}]'
         self.assertFalse(self.adapter().ready())
+
+    def test_authenticated_redirect_is_not_followed(self) -> None:
+        self.redirect_health = True
+        self.assertFalse(self.adapter().ready())
+        self.assertEqual(["/api/v1/health"], self.paths)

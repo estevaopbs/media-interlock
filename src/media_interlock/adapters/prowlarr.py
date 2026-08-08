@@ -6,9 +6,10 @@ import json
 from collections.abc import Callable
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from ..config import SecretReference
+from ._http import request_bytes
 
 
 class ProwlarrAdapter:
@@ -20,10 +21,10 @@ class ProwlarrAdapter:
 
     def _get(self, path: str) -> Any:
         request = Request(f"{self._base_url}{path}", headers={"X-Api-Key": self._resolve(self._api_key)})
-        with urlopen(request, timeout=self._timeout) as response:
-            if response.status != 200:
-                raise RuntimeError("unexpected Prowlarr status")
-            return json.loads(response.read().decode("utf-8"))
+        status, body = request_bytes(request, timeout=self._timeout)
+        if status != 200:
+            raise RuntimeError("unexpected Prowlarr status")
+        return json.loads(body.decode("utf-8"))
 
     def ready(self) -> bool:
         try:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
@@ -14,11 +15,15 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def request_bytes(request: Request, *, timeout: float) -> tuple[int, bytes]:
-    with open_response(request, timeout=timeout) as response:
-        body = response.read(MAX_RESPONSE_BYTES + 1)
-        if len(body) > MAX_RESPONSE_BYTES:
-            raise RuntimeError("upstream response exceeds bound")
-        return response.status, body
+    try:
+        with open_response(request, timeout=timeout) as response:
+            body = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(body) > MAX_RESPONSE_BYTES:
+                raise RuntimeError("upstream response exceeds bound")
+            return response.status, body
+    except HTTPError as exc:
+        exc.close()
+        raise
 
 
 def open_response(request: Request, *, timeout: float):
