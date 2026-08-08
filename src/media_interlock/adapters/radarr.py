@@ -10,9 +10,6 @@ class RadarrAdapter(ArrHistoryAdapter):
     release_entity_key = "movieId"
     category_field_name = "movieCategory"
 
-    def search_movie(self, movie_id: str) -> str | None:
-        return self._submit_command("MoviesSearch", "movieIds", movie_id)
-
     def _entity_path(self, media_id: str) -> str:
         return f"/api/v3/movie/{media_id}"
 

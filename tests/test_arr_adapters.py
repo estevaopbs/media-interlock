@@ -83,13 +83,7 @@ class ArrCorrelationTests(unittest.TestCase):
                     self.send_response(200)
                     self.end_headers()
                     return
-                if self.path != "/api/v3/command":
-                    self.send_error(404)
-                    return
-                self.send_response(201)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b'{"id":71}')
+                self.send_error(404)
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever)
@@ -136,12 +130,6 @@ class ArrCorrelationTests(unittest.TestCase):
         self.assertEqual("sonarr:tvdb-99", identity.asset_slot)
         self.assertEqual("Episode", identity.item_type)
         self.assertEqual({"Tvdb": "99"}, identity.provider_ids)
-
-    def test_native_search_submits_exact_single_public_entity_command(self) -> None:
-        self.assertEqual("71", self.adapter(RadarrAdapter).search_movie("42"))
-        self.assertEqual(("/api/v3/command", "fixture-key", {"name": "MoviesSearch", "movieIds": [42]}), self.command_request)
-        self.assertEqual("71", self.adapter(SonarrAdapter).search_episode("42"))
-        self.assertEqual(("/api/v3/command", "fixture-key", {"name": "EpisodeSearch", "episodeIds": [42]}), self.command_request)
 
     def test_interactive_first_approved_torrent_is_selected_and_posted_intact(self) -> None:
         expected = {"approved": True, "protocol": "torrent", "guid": "release-42", "title": "fixture.movie.2026", "size": 400, "downloadUrl": "https://indexer.invalid/release"}
