@@ -179,7 +179,33 @@ class FenceService:
             torrent_hash = record["torrent_hash"]
             state = record["state"]
             assert isinstance(operation_id, str) and isinstance(reservation_id, str)
-            if state == ReservationState.INTENT_RECORDED.value:
+            if state == ReservationState.GRAB_BOUND.value:
+                download_id = record["download_id"]
+                if isinstance(download_id, str):
+                    self.bind_grab(operation_id, download_id)
+            elif state == ReservationState.TAG_INTENT_RECORDED.value:
+                reservation = self._state.reservation(operation_id)
+                category = self._categories.get(reservation.source)
+                if category is None or not isinstance(torrent_hash, str):
+                    continue
+                try:
+                    observed_bytes = self._qbittorrent.observe_tagged_stopped(torrent_hash, category, reservation_id)
+                except Exception:
+                    observed_bytes = None
+                if observed_bytes is None:
+                    continue
+                candidate = self._state.clone()
+                try:
+                    within_capacity = candidate.mark_qbittorrent_tagged(operation_id, observed_bytes=observed_bytes)
+                except Exception:
+                    continue
+                self._persist(candidate)
+                if within_capacity:
+                    candidate = self._state.clone()
+                    candidate.request_resume(operation_id)
+                    self._persist(candidate)
+                    self._recover_resume(operation_id, reservation_id, torrent_hash)
+            elif state == ReservationState.INTENT_RECORDED.value:
                 try:
                     observed = self._qbittorrent.observe_stopped(reservation_id)
                 except Exception:

@@ -233,6 +233,35 @@ class FenceServiceTests(unittest.TestCase):
         self.assertEqual(["observe"], events)
         self.assertEqual(ReservationState.INTENT_RECORDED, state.reservation(OPERATION_ID).state)
 
+    def test_recovery_adopts_a_bound_arr_grab_without_repeating_arr_effect(self) -> None:
+        class Store:
+            def save(self, _: FenceState) -> None:
+                pass
+
+        class Qbittorrent:
+            def observe_existing_stopped(self, _: str, __: str) -> int | None:
+                return 400
+
+            def apply_reservation_tag(self, _: str, __: str) -> bool:
+                return True
+
+            def observe_tagged_stopped(self, _: str, __: str, ___: str) -> int | None:
+                return 400
+
+            def resume(self, _: str) -> bool:
+                return True
+
+            def observe_active(self, _: str, __: str) -> bool:
+                return True
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        state.pre_admit(PreAdmissionIntent(OPERATION_ID, "radarr", "42", "a" * 64, 400, "7"), qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True)
+        state.bind_observed_grab(OPERATION_ID, download_id="a" * 40, torrent_hash="a" * 40)
+
+        FenceService(state, Store(), Qbittorrent(), prowlarr=None, categories={"radarr": "media-interlock-radarr"}).recover()
+
+        self.assertEqual(ReservationState.QBITTORRENT_ACTIVE, state.reservation(OPERATION_ID).state)
+
     def test_recovery_resumes_only_a_durably_recorded_exact_stopped_hash(self) -> None:
         events: list[str] = []
 
