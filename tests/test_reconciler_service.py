@@ -14,6 +14,58 @@ from media_interlock.reconciler.service import ReconcilerService
 
 
 class ReconcilerServiceTests(unittest.TestCase):
+    def test_recovery_reclaims_a_durable_pre_post_intent_without_stranding_capacity(self) -> None:
+        events: list[str] = []
+        resource = {"approved": True, "protocol": "torrent", "guid": "release-42", "title": "fixture.movie.2026", "size": 400, "downloadUrl": "https://indexer.invalid/release"}
+        release = ArrRelease(resource, hashlib.sha256(json.dumps(resource, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), 400)
+        operation_id = str(uuid.uuid4())
+        state = ReconciliationState()
+        state.record_intent(SearchIntent(operation_id, "radarr", "42", False, "checkpoint"))
+        from media_interlock.reconciler.model import GrabIntent
+        state.record_grab_intent(GrabIntent(operation_id, "radarr", "42", release.selector_fingerprint, 400, 7, resource))
+
+        class Store:
+            def save(self, _: ReconciliationState) -> None: events.append("save")
+        class Arr:
+            def stopped_qbittorrent_client(self, _: str) -> bool: events.append("client"); return True
+            def grab_release(self, _: ArrRelease) -> bool: events.append("post"); return False
+            def observe_grab(self, _: str, __: ArrRelease, *, watermark: int) -> ArrGrabObservation:
+                self_outer.assertEqual(7, watermark); events.append("observe"); return ArrGrabObservation("absent")
+        class Fence:
+            def pre_admit(self, _: PreAdmissionIntent) -> AdmissionDecision: events.append("preadmit"); return AdmissionDecision(True, "admitted")
+            def bind_grab(self, _: str, __: str, ___: str) -> bool: self_outer.fail("absence cannot bind")
+
+        self_outer = self
+        result = ReconcilerService(state, Store(), {"radarr": Arr()}, Fence(), {"radarr": "media-interlock-radarr"}).recover(now=100)
+
+        self.assertEqual(["pending"], result)
+        self.assertTrue(state.grab_attempted(operation_id))
+        self.assertEqual(["client", "preadmit", "save", "post", "observe"], events)
+
+    def test_recovery_derives_a_missing_grab_intent_before_any_pre_admission(self) -> None:
+        events: list[str] = []
+        resource = {"approved": True, "protocol": "torrent", "guid": "release-42", "title": "fixture.movie.2026", "size": 400, "downloadUrl": "https://indexer.invalid/release"}
+        release = ArrRelease(resource, hashlib.sha256(json.dumps(resource, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), 400)
+        operation_id = str(uuid.uuid4())
+        state = ReconciliationState()
+        state.record_intent(SearchIntent(operation_id, "radarr", "42", False, "checkpoint"))
+
+        class Store:
+            def save(self, _: ReconciliationState) -> None: events.append("save")
+        class Arr:
+            def stopped_qbittorrent_client(self, _: str) -> bool: events.append("client"); return True
+            def history_watermark(self) -> int | None: events.append("watermark"); return 7
+            def first_approved_release(self, _: str) -> ArrRelease | None: events.append("release"); return release
+            def grab_release(self, _: ArrRelease) -> bool: events.append("post"); return False
+            def observe_grab(self, _: str, __: ArrRelease, *, watermark: int) -> ArrGrabObservation: events.append("observe"); return ArrGrabObservation("absent")
+        class Fence:
+            def pre_admit(self, _: PreAdmissionIntent) -> AdmissionDecision: events.append("preadmit"); return AdmissionDecision(True, "admitted")
+            def bind_grab(self, _: str, __: str, ___: str) -> bool: self_outer.fail("absence cannot bind")
+
+        self_outer = self
+        self.assertEqual(["pending"], ReconcilerService(state, Store(), {"radarr": Arr()}, Fence(), {"radarr": "media-interlock-radarr"}).recover(now=100))
+        self.assertEqual(["client", "watermark", "release", "save", "client", "preadmit", "save", "post", "observe"], events)
+
     def test_recovery_observes_durable_possible_grab_without_repeating_post(self) -> None:
         resource = {"approved": True, "protocol": "torrent", "guid": "release-42", "title": "fixture.movie.2026", "size": 400, "downloadUrl": "https://indexer.invalid/release"}
         release = ArrRelease(resource, hashlib.sha256(json.dumps(resource, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), 400)
@@ -33,11 +85,11 @@ class ReconcilerServiceTests(unittest.TestCase):
             def observe_grab(self, entity_id: str, selected: ArrRelease, *, watermark: int) -> ArrGrabObservation:
                 self_outer.assertEqual(("42", release, 7), (entity_id, selected, watermark))
                 calls.append("observe")
-                return ArrGrabObservation("observed", "a" * 40)
+                return ArrGrabObservation("observed", "A" * 40, "a" * 40)
 
         class Fence:
-            def bind_grab(self, received_operation: str, download_id: str) -> bool:
-                self_outer.assertEqual((operation_id, "a" * 40), (received_operation, download_id))
+            def bind_grab(self, received_operation: str, download_id: str, torrent_hash: str) -> bool:
+                self_outer.assertEqual((operation_id, "A" * 40, "a" * 40), (received_operation, download_id, torrent_hash))
                 calls.append("bind")
                 return True
 
@@ -86,7 +138,7 @@ class ReconcilerServiceTests(unittest.TestCase):
                 events.append("preadmit")
                 return AdmissionDecision(True, "admitted")
 
-            def bind_grab(self, _: str, __: str) -> bool:
+            def bind_grab(self, _: str, __: str, ___: str) -> bool:
                 self_outer.fail("absent observation must not bind a grab")
 
         self_outer = self

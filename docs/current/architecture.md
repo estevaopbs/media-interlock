@@ -42,11 +42,13 @@ Reconciler persists an Arr release selector, causal watermark and expected size
 before Fence pre-admission, which deliberately has no locator or download ID.
 Arr then owns the authenticated release grab and download tracking with its
 configured qBittorrent client stopped. Fence polls public Arr Queue and History
-to bind one exact later grab to the reservation, then observes the real stopped
-torrent hash, source-specific category, staging root and positive size before
-it tags or resumes it. Terminal observation contains the real Arr download ID
-and stable operation correlation identities, not an authoritative external
-path.
+to bind one exact later grab to the reservation. It preserves Arr's real
+download ID for the terminal contract and derives one matching canonical
+lowercase torrent hash solely for qBittorrent observation, tagging, and resume.
+It observes that stopped hash, source-specific category, staging root and
+positive size before it tags or resumes it. Terminal observation contains the
+real Arr download ID and stable operation correlation identities, not an
+authoritative external path.
 
 ## Repository boundary
 

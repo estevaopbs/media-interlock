@@ -18,8 +18,8 @@ active only when configured.
 
 ## Project status
 
-The shared safety mechanisms are implemented, but the three component verticals
-and release packaging are still in development. Nothing in this repository has
+The three component verticals are implemented; release-candidate integration,
+packaging, and rehearsal are still in development. Nothing in this repository has
 been installed in or validated against a live media stack. See [current
 state](docs/current/state.md) for the precise boundary.
 

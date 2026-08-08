@@ -9,6 +9,7 @@ from pathlib import Path
 import _source_tree  # noqa: F401
 
 from media_interlock.contracts import Envelope, StatusCode, status_response
+from media_interlock.fence.model import PreAdmissionIntent
 from media_interlock.reconciler.fence_client import UnixFenceClient
 
 
@@ -38,7 +39,8 @@ class UnixFenceClientTests(unittest.TestCase):
             self.addCleanup(listener.close)
             client = UnixFenceClient(path)
 
-            self.assertTrue(client.pre_admit("12345678-1234-4678-9234-567812345678", "radarr", "42", "a" * 64, 400, "7").admitted)
-            self.assertTrue(client.bind_grab("12345678-1234-4678-9234-567812345678", "a" * 40))
+            self.assertTrue(client.pre_admit(PreAdmissionIntent("12345678-1234-4678-9234-567812345678", "radarr", "42", "a" * 64, 400, "7")).admitted)
+            self.assertTrue(client.bind_grab("12345678-1234-4678-9234-567812345678", "A" * 40, "a" * 40))
 
         self.assertEqual(["acquisition_pre_admission", "acquisition_grab_binding"], [envelope.kind for envelope in seen])
+        self.assertEqual({"download_id": "A" * 40, "torrent_hash": "a" * 40}, seen[-1].body)

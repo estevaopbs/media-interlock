@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 from ..config import SecretReference
+from ..fence.model import QbittorrentActivityObservation, QbittorrentObservation
 from ._http import MAX_RESPONSE_BYTES, _NoRedirect
 
 
@@ -23,12 +24,11 @@ def _torrent_hash(value: object) -> bool:
 class QbittorrentAdapter:
     """Controls only tagged work in one configured category and staging root."""
 
-    def __init__(self, base_url: str, username: SecretReference, password: SecretReference, *, staging_root: Path, category: str, secret_resolver: Callable[[SecretReference], str] | None = None, timeout_seconds: float = 5.0) -> None:
+    def __init__(self, base_url: str, username: SecretReference, password: SecretReference, *, staging_root: Path, secret_resolver: Callable[[SecretReference], str] | None = None, timeout_seconds: float = 5.0) -> None:
         self._base_url = base_url.rstrip("/")
         self._username = username
         self._password = password
         self._staging_root = str(staging_root)
-        self._category = category
         self._resolve = secret_resolver or (lambda reference: reference.resolve())
         self._timeout = timeout_seconds
         self._opener = build_opener(_NoRedirect(), HTTPCookieProcessor(http.cookiejar.CookieJar()))
@@ -111,57 +111,25 @@ class QbittorrentAdapter:
             return match is not None and int(match.group(1)) == 5 and version_parts >= (2, 11) and isinstance(preferences, dict) and preferences.get("start_paused_enabled") is True
         return False
 
-    def _tagged(self, reservation_id: str) -> dict[str, Any] | None:
-        if not self._login() or not reservation_id:
-            return None
-        try:
-            torrents = self._get_json(f"/api/v2/torrents/info?{urlencode({'tag': reservation_id, 'category': self._category})}")
-        except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        if not isinstance(torrents, list) or len(torrents) != 1 or not isinstance(torrents[0], dict):
-            return None
-        torrent = torrents[0]
-        tags, category, save_path, torrent_hash = (torrent.get(key) for key in ("tags", "category", "save_path", "hash"))
-        if not all(isinstance(value, str) and value for value in (tags, category, save_path)) or not _torrent_hash(torrent_hash):
-            return None
-        if reservation_id not in {tag.strip() for tag in tags.split(",")} or category != self._category or save_path != self._staging_root:
-            return None
-        return torrent
-
-    def observe_stopped(self, reservation_id: str) -> tuple[str, int] | None:
-        torrent = self._tagged(reservation_id)
-        if torrent is None:
-            return None
-        state = torrent.get("state")
-        size = torrent.get("size")
-        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
-            return None
-        return (torrent["hash"], size) if isinstance(state, str) and (state.startswith("paused") or state.startswith("stopped")) else None
-
-    def add_stopped(self, source: str, reservation_id: str) -> tuple[str, int] | None:
-        if not source or not reservation_id or not self.ready():
-            return None
-        try:
-            self._post("/api/v2/torrents/add", {"urls": source, "paused": "true", "tags": reservation_id, "category": self._category, "savepath": self._staging_root})
-        except (HTTPError, URLError, OSError, RuntimeError):
-            return None
-        return self.observe_stopped(reservation_id)
-
-    def observe_existing_stopped(self, torrent_hash: str, category: str) -> int | None:
+    def observe_existing_stopped(self, torrent_hash: str, category: str) -> QbittorrentObservation:
         """Observe an Arr-added torrent before Fence mutates its tag or state."""
         if not self._login() or not _torrent_hash(torrent_hash) or not isinstance(category, str) or not category:
-            return None
+            return QbittorrentObservation("unknown")
         try:
             torrents = self._get_json(f"/api/v2/torrents/info?{urlencode({'hashes': torrent_hash, 'category': category})}")
         except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        if not isinstance(torrents, list) or len(torrents) != 1 or not isinstance(torrents[0], dict):
-            return None
+            return QbittorrentObservation("unknown")
+        if not isinstance(torrents, list):
+            return QbittorrentObservation("unknown")
+        if not torrents:
+            return QbittorrentObservation("absent")
+        if len(torrents) != 1 or not isinstance(torrents[0], dict):
+            return QbittorrentObservation("ambiguous")
         torrent = torrents[0]
         size, state = torrent.get("size"), torrent.get("state")
         if torrent.get("hash") != torrent_hash or torrent.get("category") != category or torrent.get("save_path") != self._staging_root or isinstance(size, bool) or not isinstance(size, int) or size <= 0 or not isinstance(state, str):
-            return None
-        return size if state.startswith("paused") or state.startswith("stopped") else None
+            return QbittorrentObservation("unknown")
+        return QbittorrentObservation("observed", size) if state.startswith("paused") or state.startswith("stopped") else QbittorrentObservation("unknown")
 
     def apply_reservation_tag(self, torrent_hash: str, reservation_id: str) -> bool:
         if not self._login() or not _torrent_hash(torrent_hash) or not isinstance(reservation_id, str) or not reservation_id:
@@ -172,19 +140,23 @@ class QbittorrentAdapter:
             return False
         return True
 
-    def observe_tagged_stopped(self, torrent_hash: str, category: str, reservation_id: str) -> int | None:
+    def observe_tagged_stopped(self, torrent_hash: str, category: str, reservation_id: str) -> QbittorrentObservation:
         if not self._login() or not _torrent_hash(torrent_hash) or not isinstance(category, str) or not category or not isinstance(reservation_id, str) or not reservation_id:
-            return None
+            return QbittorrentObservation("unknown")
         try:
             torrents = self._get_json(f"/api/v2/torrents/info?{urlencode({'hashes': torrent_hash, 'category': category, 'tag': reservation_id})}")
         except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        if not isinstance(torrents, list) or len(torrents) != 1 or not isinstance(torrents[0], dict):
-            return None
+            return QbittorrentObservation("unknown")
+        if not isinstance(torrents, list):
+            return QbittorrentObservation("unknown")
+        if not torrents:
+            return QbittorrentObservation("absent")
+        if len(torrents) != 1 or not isinstance(torrents[0], dict):
+            return QbittorrentObservation("ambiguous")
         torrent = torrents[0]
         tags = torrent.get("tags")
         if not isinstance(tags, str) or reservation_id not in {tag.strip() for tag in tags.split(",")}:
-            return None
+            return QbittorrentObservation("unknown")
         return self.observe_existing_stopped(torrent_hash, category)
 
     def resume(self, torrent_hash: str) -> bool:
@@ -196,43 +168,51 @@ class QbittorrentAdapter:
             return False
         return True
 
-    def observe_active(self, torrent_hash: str, reservation_id: str) -> bool | None:
-        if not self._login() or not _torrent_hash(torrent_hash):
-            return None
+    def observe_active(self, torrent_hash: str, reservation_id: str, category: str) -> QbittorrentActivityObservation:
+        if not self._login() or not _torrent_hash(torrent_hash) or not isinstance(category, str) or not category:
+            return QbittorrentActivityObservation("unknown")
         try:
             torrents = self._get_json(f"/api/v2/torrents/info?{urlencode({'hashes': torrent_hash})}")
         except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        if not isinstance(torrents, list) or len(torrents) != 1 or not isinstance(torrents[0], dict):
-            return None
+            return QbittorrentActivityObservation("unknown")
+        if not isinstance(torrents, list):
+            return QbittorrentActivityObservation("unknown")
+        if not torrents:
+            return QbittorrentActivityObservation("absent")
+        if len(torrents) != 1 or not isinstance(torrents[0], dict):
+            return QbittorrentActivityObservation("ambiguous")
         torrent = torrents[0]
         tags = torrent.get("tags")
-        if torrent.get("hash") != torrent_hash or torrent.get("category") != self._category or torrent.get("save_path") != self._staging_root or not isinstance(tags, str) or reservation_id not in {tag.strip() for tag in tags.split(",")}:
-            return None
+        if torrent.get("hash") != torrent_hash or torrent.get("category") != category or torrent.get("save_path") != self._staging_root or not isinstance(tags, str) or reservation_id not in {tag.strip() for tag in tags.split(",")}:
+            return QbittorrentActivityObservation("unknown")
         state = torrent.get("state")
         if not isinstance(state, str):
-            return None
+            return QbittorrentActivityObservation("unknown")
         if state in {"downloading", "stalledDL", "queuedDL", "forcedDL", "metaDL", "forcedMetaDL", "uploading", "stalledUP", "queuedUP", "forcedUP"}:
-            return True
+            return QbittorrentActivityObservation("observed", True)
         if state.startswith("paused") or state.startswith("stopped"):
-            return False
-        return None
+            return QbittorrentActivityObservation("observed", False)
+        return QbittorrentActivityObservation("unknown")
 
-    def terminal_observed(self, torrent_hash: str, reservation_id: str) -> bool | None:
+    def terminal_observed(self, torrent_hash: str, reservation_id: str, category: str) -> QbittorrentActivityObservation:
         """Accept only an exact, fully downloaded fenced torrent as terminal."""
-        if not self._login() or not _torrent_hash(torrent_hash):
-            return None
+        if not self._login() or not _torrent_hash(torrent_hash) or not isinstance(category, str) or not category:
+            return QbittorrentActivityObservation("unknown")
         try:
             torrents = self._get_json(f"/api/v2/torrents/info?{urlencode({'hashes': torrent_hash})}")
         except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        if not isinstance(torrents, list) or len(torrents) != 1 or not isinstance(torrents[0], dict):
-            return None
+            return QbittorrentActivityObservation("unknown")
+        if not isinstance(torrents, list):
+            return QbittorrentActivityObservation("unknown")
+        if not torrents:
+            return QbittorrentActivityObservation("absent")
+        if len(torrents) != 1 or not isinstance(torrents[0], dict):
+            return QbittorrentActivityObservation("ambiguous")
         torrent = torrents[0]
         tags = torrent.get("tags")
-        if torrent.get("hash") != torrent_hash or torrent.get("category") != self._category or torrent.get("save_path") != self._staging_root or not isinstance(tags, str) or reservation_id not in {tag.strip() for tag in tags.split(",")}:
-            return None
+        if torrent.get("hash") != torrent_hash or torrent.get("category") != category or torrent.get("save_path") != self._staging_root or not isinstance(tags, str) or reservation_id not in {tag.strip() for tag in tags.split(",")}:
+            return QbittorrentActivityObservation("unknown")
         progress, state = torrent.get("progress"), torrent.get("state")
         if isinstance(progress, bool) or not isinstance(progress, (int, float)) or progress != 1 or not isinstance(state, str):
-            return None
-        return state in {"uploading", "stalledUP", "queuedUP", "forcedUP", "pausedUP"}
+            return QbittorrentActivityObservation("unknown")
+        return QbittorrentActivityObservation("observed", state in {"uploading", "stalledUP", "queuedUP", "forcedUP", "pausedUP"})

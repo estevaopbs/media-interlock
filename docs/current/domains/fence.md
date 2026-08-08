@@ -11,7 +11,8 @@ under observed, durable capacity and concurrency constraints.
   ID exists.
 - Persist owner-bound intent before external effects and adopt or repeat an
   effect only after observing its exact postcondition.
-- Bind each admitted torrent to its qBittorrent hash, Fence-only category,
+- Bind each admitted torrent to its real Arr download ID and matching canonical
+  qBittorrent hash, Fence-only category,
   reservation tag, and configured staging root before Fence resumes it.
 - Observe qBittorrent transfer and seeding state through its adapter without
   treating cached or incomplete responses as authority.
@@ -35,9 +36,10 @@ durable intent with observed qBittorrent effects and never opens admission merel
 because a generic timeout elapsed.
 
 Fence's local socket accepts canonical version-1 pre-admission and observed
-grab intents, custody receipts, status, metrics, and explicit
+grab bindings, custody receipts, status, metrics, and explicit
 transfer-observation requests. It persists selector and observed identity
-fingerprints but no release locator. Terminal observations carry Arr's real
+fingerprints but no release locator. A binding rejects a download ID/hash pair
+unless the former canonically lowers to the latter. Terminal observations carry Arr's real
 download ID and are persisted before the socket returns them. Status and metrics
 report only aggregate reservation counts and bytes.
 

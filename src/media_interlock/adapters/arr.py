@@ -37,6 +37,7 @@ class ArrGrabObservation:
 
     kind: str
     download_id: str | None = None
+    torrent_hash: str | None = None
 
 
 class ArrHistoryAdapter:
@@ -181,7 +182,10 @@ class ArrHistoryAdapter:
             and record.get("size") == release.expected_bytes
         ]
         if len(queue_matches) == 1:
-            return ArrGrabObservation("observed", download_id)
+            torrent_hash = download_id.lower()
+            if len(torrent_hash) != 40 or any(character not in "0123456789abcdef" for character in torrent_hash):
+                return ArrGrabObservation("unknown")
+            return ArrGrabObservation("observed", download_id, torrent_hash)
         if not queue_matches:
             return ArrGrabObservation("absent")
         return ArrGrabObservation("ambiguous")
@@ -200,18 +204,23 @@ class ArrHistoryAdapter:
             return False
         matches = 0
         for client in clients:
-            if not isinstance(client, dict) or client.get("enable") is not True or client.get("protocol") != "torrent" or client.get("implementation") != "QBittorrent":
+            if not isinstance(client, dict):
+                return False
+            if client.get("enable") is not True:
                 continue
+            if client.get("protocol") != "torrent" or client.get("implementation") != "QBittorrent":
+                return False
             fields = client.get("fields")
             if not isinstance(fields, list):
                 return False
             values: dict[str, object] = {}
             for field in fields:
-                if not isinstance(field, dict) or set(field) - {"name", "value"} or not isinstance(field.get("name"), str) or field["name"] in values:
+                if not isinstance(field, dict) or not isinstance(field.get("name"), str) or field["name"] in values:
                     return False
                 values[field["name"]] = field.get("value")
-            if values.get("initialState") == 2 and values.get(self.category_field_name) == category:
-                matches += 1
+            if values.get("initialState") != 2 or values.get(self.category_field_name) != category:
+                return False
+            matches += 1
         return matches == 1
 
     def _matched_import(self, download_id: str, media_id: str) -> tuple[str, str] | None:

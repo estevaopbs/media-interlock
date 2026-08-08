@@ -6,7 +6,7 @@ import socket
 from pathlib import Path
 
 from ..contracts import Envelope, StatusCode, acquisition_grab_binding, acquisition_pre_admission
-from ..fence.model import AdmissionDecision
+from ..fence.model import AdmissionDecision, PreAdmissionIntent
 
 
 class UnixFenceClient:
@@ -36,8 +36,8 @@ class UnixFenceClient:
             return None
         return response if response.operation_id == request.operation_id else None
 
-    def pre_admit(self, operation_id: str, source: str, media_id: str, selector_fingerprint: str, expected_bytes: int, watermark: str) -> AdmissionDecision:
-        response = self._call(acquisition_pre_admission(operation_id=operation_id, source=source, media_id=media_id, selector_fingerprint=selector_fingerprint, expected_bytes=expected_bytes, watermark=watermark))
+    def pre_admit(self, intent: PreAdmissionIntent) -> AdmissionDecision:
+        response = self._call(acquisition_pre_admission(operation_id=intent.operation_id, source=intent.source, media_id=intent.media_id, selector_fingerprint=intent.selector_fingerprint, expected_bytes=intent.expected_bytes, watermark=intent.watermark))
         if response is None or response.kind != "status":
             return AdmissionDecision(False, "fence_unavailable")
         code, message = response.body.get("code"), response.body.get("message")
@@ -45,6 +45,6 @@ class UnixFenceClient:
             return AdmissionDecision(False, "fence_invalid_response")
         return AdmissionDecision(code == StatusCode.OK.value, message)
 
-    def bind_grab(self, operation_id: str, download_id: str) -> bool:
-        response = self._call(acquisition_grab_binding(operation_id=operation_id, download_id=download_id))
+    def bind_grab(self, operation_id: str, download_id: str, torrent_hash: str) -> bool:
+        response = self._call(acquisition_grab_binding(operation_id=operation_id, download_id=download_id, torrent_hash=torrent_hash))
         return response is not None and response.kind == "status" and response.body.get("code") == StatusCode.OK.value

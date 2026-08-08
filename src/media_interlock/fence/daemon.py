@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable
 
 from ..contracts import ContractError, Envelope, StatusCode, metrics_response, status_response
-from .model import AcquisitionIntent, PreAdmissionIntent
+from .model import PreAdmissionIntent
 from .observability import FenceObservability
 from .service import FenceService
 
@@ -37,14 +37,8 @@ class FenceDaemon:
             decision = self._service.pre_admit(intent, publisher_ready=publisher_ready)
             return status_response(envelope.operation_id, StatusCode.OK if decision.admitted else StatusCode.INHIBITED if decision.reason != "conflict" else StatusCode.CONFLICT, decision.reason)
         if envelope.kind == "acquisition_grab_binding":
-            bound = self._service.bind_grab(envelope.operation_id, str(envelope.body["download_id"]))
+            bound = self._service.bind_grab(envelope.operation_id, str(envelope.body["download_id"]), str(envelope.body["torrent_hash"]))
             return status_response(envelope.operation_id, StatusCode.OK if bound else StatusCode.INHIBITED, "grab bound" if bound else "grab pending")
-        if envelope.kind == "acquisition_intent":
-            body = envelope.body
-            intent = AcquisitionIntent(envelope.operation_id, str(body["source"]), str(body["upstream_id"]), str(body["media_id"]), int(body["bytes_reserved"]), str(body["source_fingerprint"]))
-            _, _, publisher_ready = self._readiness()
-            decision = self._service.admit(intent, source=str(body["source_locator"]), publisher_ready=publisher_ready)
-            return status_response(envelope.operation_id, StatusCode.OK if decision.admitted else StatusCode.INHIBITED if decision.reason not in {"conflict", "source_fingerprint_mismatch"} else StatusCode.CONFLICT, decision.reason)
         if envelope.kind == "observe":
             terminal = self._service.observe(envelope.operation_id)
             return terminal if terminal is not None else status_response(envelope.operation_id, StatusCode.OK, "no terminal acquisition")

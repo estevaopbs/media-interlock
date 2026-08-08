@@ -38,6 +38,10 @@ downstream correction utilities, not general reconciliation policy.
 
 Technical failure, unknown upstream capability, stale observations, missing
 required identifiers, divergent providers, or multiple candidates do not
-advance a successful-search checkpoint. A successful native search with zero
-results may advance it when the configured policy defines that observation as
-complete.
+advance a successful-search checkpoint. A durable pre-POST intent is recovered
+through its pre-admission and exact release path; an intent recorded before a
+possibly consumed POST is observed first and is never blindly posted again.
+The public Arr download ID is retained for downstream correlation, while its
+matching canonical lowercase torrent hash is supplied separately to Fence.
+A successful native search with zero results may advance it when the configured
+policy defines that observation as complete.

@@ -1,7 +1,7 @@
 # Current state
 
-MediaInterlock has implemented its shared safety slice and the Fence and
-Publisher verticals.
+MediaInterlock has implemented its shared safety slice and the Fence, Publisher,
+and Reconciler verticals.
 Fence has a private durable reservation store,
 version-1 local Unix endpoint, bounded health/metrics, exact qBittorrent
 control, optional configured-indexer Prowlarr readiness, terminal observation,
@@ -10,11 +10,16 @@ private durable publication store, per-asset sealed bundles and stable slots,
 asset-local predecessor retention, Arr identity correlation, bounded Jellyfin
 catalog observation, and exact static direct-play verification before delivery.
 
+Reconciler has a private durable intent store, typed movie and episode policy,
+native ordered Arr release selection, causal Queue/History polling, exact
+Unix Fence pre-admission and grab binding, and conservative recovery across
+possible release effects.
+
 Consequently:
 
 - qBittorrent, Prowlarr, Radarr, Sonarr, Jellyfin, Bazarr, and Seerr are
   contract-tested only against disposable HTTP services at their pinned
-  development profiles; Reconciler remains pending convergence;
+  development profiles;
 - no live, hardware, filesystem, container, or upstream-service acceptance has
   been performed;
 - no downstream deployment should consume this repository yet.

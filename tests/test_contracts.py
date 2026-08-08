@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import unittest
 import uuid
-import hashlib
 
 import _source_tree  # noqa: F401
 
@@ -11,7 +10,6 @@ from media_interlock.contracts import (
     CustodyLedger,
     Envelope,
     StatusCode,
-    acquisition_intent,
     acquisition_grab_binding,
     acquisition_pre_admission,
     custody_receipt,
@@ -26,11 +24,18 @@ class ContractTests(unittest.TestCase):
     def test_arr_observed_grab_binds_real_download_identity_without_locator(self) -> None:
         binding = acquisition_grab_binding(
             operation_id=OPERATION_ID,
-            download_id="0123456789abcdef0123456789abcdef01234567",
+            download_id="0123456789ABCDEF0123456789ABCDEF01234567",
+            torrent_hash="0123456789abcdef0123456789abcdef01234567",
         )
 
         self.assertEqual(binding, Envelope.decode(binding.encode()))
-        self.assertEqual({"download_id"}, set(binding.body))
+        self.assertEqual({"download_id", "torrent_hash"}, set(binding.body))
+        with self.assertRaises(ContractError):
+            acquisition_grab_binding(
+                operation_id=OPERATION_ID,
+                download_id="B" * 40,
+                torrent_hash="a" * 40,
+            )
     def test_pre_admission_has_no_locator_and_terminal_carries_real_arr_download_id(self) -> None:
         pre_admission = acquisition_pre_admission(
             operation_id=OPERATION_ID,
@@ -76,14 +81,6 @@ class ContractTests(unittest.TestCase):
                 "source": "radarr",
                 "upstream_id": "grab-42",
             })
-
-    def test_acquisition_intent_keeps_locator_transient_and_binds_its_fingerprint(self) -> None:
-        locator = "magnet:?xt=urn:btih:fixture"
-        envelope = acquisition_intent(operation_id=OPERATION_ID, source="radarr", source_locator=locator, upstream_id="grab-42", media_id="movie-42", bytes_reserved=4096, source_fingerprint=hashlib.sha256(locator.encode()).hexdigest())
-
-        self.assertEqual(envelope, Envelope.decode(envelope.encode()))
-        with self.assertRaises(ContractError):
-            acquisition_intent(operation_id=OPERATION_ID, source="radarr", source_locator=locator, upstream_id="grab-42", media_id="movie-42", bytes_reserved=4096, source_fingerprint="not-a-hash")
 
     def test_contract_rejects_unknown_fields_incompatible_versions_and_invalid_ids(self) -> None:
         with self.assertRaisesRegex(ContractError, "unknown envelope fields"):

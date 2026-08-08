@@ -24,7 +24,7 @@ class ArrReleaseControl(Protocol):
 
 class FencePreAdmission(Protocol):
     def pre_admit(self, intent: PreAdmissionIntent) -> AdmissionDecision: ...
-    def bind_grab(self, operation_id: str, download_id: str) -> bool: ...
+    def bind_grab(self, operation_id: str, download_id: str, torrent_hash: str) -> bool: ...
 
 
 class ReconcilerService:
@@ -39,30 +39,67 @@ class ReconcilerService:
         self._store.save(self._state)
 
     def recover(self, *, now: int) -> list[str]:
-        """Observe possible Arr effects first; never replay a durable POST intent."""
+        """Resume durable pre-POST work; observe possible POST effects first."""
         results: list[str] = []
         for intent in self._state.intents():
-            if self._state.observed(intent.operation_id) or not self._state.grab_attempted(intent.operation_id):
+            if self._state.observed(intent.operation_id):
+                continue
+            adapter = self._adapters.get(intent.source)
+            category = self._categories.get(intent.source)
+            if adapter is None or category is None:
+                results.append("unavailable")
                 continue
             try:
                 grab = self._state.grab_intent(intent.operation_id)
             except KeyError:
-                continue
-            adapter = self._adapters.get(intent.source)
-            if adapter is None:
-                results.append("unavailable")
-                continue
+                try:
+                    if not adapter.stopped_qbittorrent_client(category):
+                        results.append("inhibited")
+                        continue
+                    watermark = adapter.history_watermark()
+                    release = adapter.first_approved_release(intent.entity_id)
+                except Exception:
+                    results.append("unavailable")
+                    continue
+                if watermark is None or release is None:
+                    results.append("inhibited")
+                    continue
+                try:
+                    grab = GrabIntent(intent.operation_id, intent.source, intent.entity_id, release.selector_fingerprint, release.expected_bytes, watermark, release.resource)
+                except ValueError:
+                    results.append("inhibited")
+                    continue
+                self._state.record_grab_intent(grab)
+                self._persist()
+            if not self._state.grab_attempted(intent.operation_id):
+                try:
+                    if not adapter.stopped_qbittorrent_client(category):
+                        results.append("inhibited")
+                        continue
+                    admission = self._fence.pre_admit(PreAdmissionIntent(intent.operation_id, intent.source, intent.entity_id, grab.selector_fingerprint, grab.expected_bytes, str(grab.watermark)))
+                except Exception:
+                    results.append("unavailable")
+                    continue
+                if not admission.admitted:
+                    results.append("inhibited")
+                    continue
+                self._state.mark_grab_attempted(intent.operation_id)
+                self._persist()
+                try:
+                    adapter.grab_release(ArrRelease(dict(grab.release_resource), grab.selector_fingerprint, grab.expected_bytes))
+                except Exception:
+                    pass
             release = ArrRelease(dict(grab.release_resource), grab.selector_fingerprint, grab.expected_bytes)
             try:
                 observation = adapter.observe_grab(intent.entity_id, release, watermark=grab.watermark)
             except Exception:
                 results.append("unavailable")
                 continue
-            if observation.kind != "observed" or observation.download_id is None:
+            if observation.kind != "observed" or observation.download_id is None or observation.torrent_hash is None:
                 results.append("pending")
                 continue
             try:
-                bound = self._fence.bind_grab(intent.operation_id, observation.download_id)
+                bound = self._fence.bind_grab(intent.operation_id, observation.download_id, observation.torrent_hash)
             except Exception:
                 results.append("unavailable")
                 continue
@@ -127,10 +164,10 @@ class ReconcilerService:
             observation = adapter.observe_grab(intent.entity_id, release, watermark=grab.watermark)
         except Exception:
             return "unavailable"
-        if observation.kind != "observed" or observation.download_id is None:
+        if observation.kind != "observed" or observation.download_id is None or observation.torrent_hash is None:
             return "pending"
         try:
-            bound = self._fence.bind_grab(intent.operation_id, observation.download_id)
+            bound = self._fence.bind_grab(intent.operation_id, observation.download_id, observation.torrent_hash)
         except Exception:
             return "unavailable"
         if not bound:

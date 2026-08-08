@@ -160,7 +160,7 @@ class ArrCorrelationTests(unittest.TestCase):
         adapter = self.adapter(RadarrAdapter)
         release = adapter.first_approved_release("42")
         assert release is not None
-        download_id = "a" * 40
+        download_id = "A" * 40
         self.payload = {"records": [{"id": 8, "eventType": "grabbed", "movieId": 42, "sourceTitle": "fixture.movie.2026", "downloadId": download_id}], "totalRecords": 1}
         self.queue_payload = {"records": [{"id": 9, "movieId": 42, "title": "fixture.movie.2026", "downloadId": download_id, "protocol": "torrent", "size": 400}], "totalRecords": 1}
 
@@ -168,6 +168,7 @@ class ArrCorrelationTests(unittest.TestCase):
 
         self.assertEqual("observed", observation.kind)
         self.assertEqual(download_id, observation.download_id)
+        self.assertEqual(download_id.lower(), observation.torrent_hash)
 
     def test_grab_observation_never_converts_absence_or_ambiguity_to_a_grab(self) -> None:
         adapter = self.adapter(RadarrAdapter)
@@ -188,7 +189,10 @@ class ArrCorrelationTests(unittest.TestCase):
             "enable": True,
             "protocol": "torrent",
             "implementation": "QBittorrent",
-            "fields": [{"name": "initialState", "value": 2}, {"name": "movieCategory", "value": "media-interlock-radarr"}],
+            "fields": [
+                {"name": "initialState", "value": 2, "order": 3, "label": "Initial State", "type": "select", "advanced": False, "privacy": "normal"},
+                {"name": "movieCategory", "value": "media-interlock-radarr", "order": 4, "label": "Category", "type": "textbox", "advanced": True, "privacy": "normal"},
+            ],
         }]
         self.assertTrue(adapter.stopped_qbittorrent_client("media-interlock-radarr"))
 
@@ -197,5 +201,18 @@ class ArrCorrelationTests(unittest.TestCase):
             "protocol": "torrent",
             "implementation": "QBittorrent",
             "fields": [{"name": "initialState", "value": 0}, {"name": "movieCategory", "value": "media-interlock-radarr"}],
+        }]
+        self.assertFalse(adapter.stopped_qbittorrent_client("media-interlock-radarr"))
+
+        self.download_clients = [{
+            "enable": True,
+            "protocol": "torrent",
+            "implementation": "QBittorrent",
+            "fields": [{"name": "initialState", "value": 2}, {"name": "movieCategory", "value": "media-interlock-radarr"}],
+        }, {
+            "enable": True,
+            "protocol": "usenet",
+            "implementation": "SABnzbd",
+            "fields": [],
         }]
         self.assertFalse(adapter.stopped_qbittorrent_client("media-interlock-radarr"))

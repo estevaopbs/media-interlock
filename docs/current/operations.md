@@ -41,9 +41,11 @@ unready rather than silently degrading to unsafe behavior.
 
 Operational readiness also requires disjoint staging/canonical roots,
 publisher-only canonical write access, read-only playback mounts, paused-on-add
-qBittorrent behavior, a dedicated configured qBittorrent category, and
+qBittorrent behavior, distinct configured qBittorrent categories per Arr
+source, and
 fence-only resume authority. Fence accepts a stopped add only after it observes
-its exact hash, category, reservation tag, and staging root; it persists resume
+the exact Arr download identity and corresponding canonical hash, category,
+reservation tag, and staging root; it persists resume
 intent before the resume call. MediaInterlock validates
 the paths and observable upstream settings; deployment manifests, identities,
 mounts, ACLs, and credentials enforce the parts outside the process. Both are
