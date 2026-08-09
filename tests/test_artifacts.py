@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
+import io
+import json
 import subprocess
 import sys
+import tarfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -14,7 +18,29 @@ from media_interlock import __version__
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _artifact_builder() -> object:
+    specification = importlib.util.spec_from_file_location("build_artifacts", ROOT / "scripts" / "build-artifacts.py")
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
+
+
 class ArtifactDefinitionTests(unittest.TestCase):
+    def test_artifact_manifest_uses_its_oci_archive_manifest_digest(self) -> None:
+        archive = ROOT / ".test-artifact.oci.tar"
+        payload = json.dumps({"manifests": [{"digest": "sha256:" + "a" * 64}]}).encode("utf-8")
+        try:
+            with tarfile.open(archive, "w") as written:
+                entry = tarfile.TarInfo("index.json")
+                entry.size = len(payload)
+                written.addfile(entry, io.BytesIO(payload))
+
+            builder = _artifact_builder()
+            self.assertEqual("sha256:" + "a" * 64, builder._oci_archive_manifest_digest(archive))
+        finally:
+            archive.unlink(missing_ok=True)
+
     def test_corrective_release_version_is_consistent(self) -> None:
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 

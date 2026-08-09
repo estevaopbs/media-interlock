@@ -7,8 +7,10 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
+import tarfile
 import tempfile
 import tomllib
 import venv
@@ -40,6 +42,25 @@ def _sha256(path: Path) -> str:
         while chunk := artifact.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _oci_archive_manifest_digest(archive: Path) -> str:
+    """Return the single OCI manifest identity carried by an archive."""
+    try:
+        with tarfile.open(archive, "r") as contents:
+            index = contents.extractfile("index.json")
+            if index is None:
+                raise ValueError("OCI archive has no index.json")
+            payload = json.load(index)
+    except (OSError, tarfile.TarError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("OCI archive index cannot be read") from exc
+    manifests = payload.get("manifests") if isinstance(payload, dict) else None
+    if not isinstance(manifests, list) or len(manifests) != 1:
+        raise ValueError("OCI archive must contain exactly one manifest")
+    digest = manifests[0].get("digest") if isinstance(manifests[0], dict) else None
+    if not isinstance(digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+        raise ValueError("OCI archive manifest digest is invalid")
+    return digest
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -87,8 +108,9 @@ def main(argv: list[str] | None = None) -> int:
             "--build-arg", f"PACKAGE_VERSION={version}",
             "--target", component, "--tag", tag, "--file", "Containerfile", ".",
         ], cwd=root)
-        _run([arguments.oci_engine, "image", "save", "--format", "oci-archive", "--output", str(output / f"media-interlock-{component}.oci.tar"), tag], cwd=root)
-        digest = _output([arguments.oci_engine, "image", "inspect", "--format", "{{.Digest}}", tag], cwd=root)
+        archive = output / f"media-interlock-{component}.oci.tar"
+        _run([arguments.oci_engine, "image", "save", "--format", "oci-archive", "--output", str(archive), tag], cwd=root)
+        digest = _oci_archive_manifest_digest(archive)
         (output / f"media-interlock-{component}.manifest-digest").write_text(
             digest + "\n",
             encoding="utf-8",
