@@ -1,12 +1,21 @@
 # Current state
 
-MediaInterlock 0.1.1 is the corrective candidate for an immutable public
-release. Version 0.1.0 remains preserved at tag
+MediaInterlock 0.1.1 is the immutable public release for downstream
+consumption. Its annotated tag
+[`v0.1.1`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.1)
+resolves to source commit `6affa40694bfa0dcd85c813c53fad0bb9586d8a0`.
+The release publishes wheel SHA-256
+`a0060693e7602c1f2de4dfcef3ef85e8d8c705a2506af92d33481fc307d8dbb9`
+and these public OCI manifest digests:
+
+- Reconciler: `sha256:4147831e39a7ee3d84927b1b4fef8886c37ed75b1aa491ded478c6f9689af3cc`;
+- Fence: `sha256:5dda677078e4f53749566d973974b695aef453223d17444347f96a90e89db7b8`;
+- Publisher: `sha256:0dacfe0da5485b9bf416dab67c72e210487e8c0de2df53f455fa9bfe43578835`.
+
+Version 0.1.0 remains preserved at tag
 [`v0.1.0`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.0),
 but it was published before release immutability was enabled and is not the
-immutable downstream-consumption release. The 0.1.1 publication will bind one
-wheel and three public OCI manifests to its exact source commit, version, and
-MIT license.
+immutable downstream-consumption release.
 
 The shared safety slice and Fence, Publisher, and Reconciler verticals have
 converged. Fence has strict
