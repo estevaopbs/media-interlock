@@ -1,7 +1,7 @@
 # Operations
 
-The current public 0.1.3 release contains one wheel plus Reconciler, Fence, and
-Publisher OCI images. Version 0.1.4 is an unpublished corrective candidate.
+The current public 0.1.4 release contains one wheel plus Reconciler, Fence, and
+Publisher OCI images.
 This page is not an installation guide and no live deployment has been tested.
 
 ## Processes

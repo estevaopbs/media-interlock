@@ -76,10 +76,9 @@ A release candidate requires:
 - disposable restart/crash rehearsal for effects changed in the cycle;
 - one consolidated independent review with findings resolved.
 
-The 0.1.3 release records its immutable source tag, wheel SHA-256, and three
-public OCI digests in the current-state authority. A future 0.1.4 publication
-must replace those current-release identities only after equivalent immutable
-remote and anonymous-access verification.
+The 0.1.4 release records its immutable source tag, wheel SHA-256, and three
+public OCI digests in the current-state authority after immutable remote and
+anonymous-access verification.
 Its artifact build executes
 all three images and rejects a
 runtime Python version that differs from the fixed compatibility profile.

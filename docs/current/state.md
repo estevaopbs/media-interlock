@@ -1,33 +1,38 @@
 # Current state
 
-MediaInterlock 0.1.3 is the immutable public downstream-consumption release.
+MediaInterlock 0.1.4 is the immutable public downstream-consumption release.
 Its annotated tag
-[`v0.1.3`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.3)
-resolves to source commit `d60a05ed2ee4d31923af02b2ea565b98f2afb4fd`.
+[`v0.1.4`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.4)
+resolves to source commit `a36d7a59dd15fea63f73f342895f6a51423128a8`.
 The release publishes wheel SHA-256
-`81a05ee5125f4a600121ad720f6aef89868383688728237a0557de2edbc61099`
+`fc05804cb08194f4b24223a048a79b3f469fa9a4b0a9e4b710741f35ff32185c`
 and these public OCI manifest digests, each executing Python 3.14.7:
 
-- Reconciler: `sha256:f0b9a44c7b616fdd5b71c923de8093bbdd9c07c80ec27bb15e3c51042e2a2643`;
-- Fence: `sha256:860d8d5d2f3774bf795c9d5ea23f4dcbb8f44baf351324759bf72cd0a82e6d12`;
-- Publisher: `sha256:80cb25fd6dc003e812e141b828e43291903ca00dbce693d4c76ff1055e91ef49`.
+- Reconciler: `sha256:140c11c95c87cc63752dd0d69cf44762b7fcec67d7ff2172faa2a103d641c1e9`;
+- Fence: `sha256:a9a61fe4aa6ed51d1355080df0d0a8bfaf547d6a5a099262981de6461d4a4d45`;
+- Publisher: `sha256:5c35927adec424d515d69df32dd7fe64839c1cc5a6b20f7a3af04d80ba75bba4`.
 
 The public GitHub API reports the release immutable, and credential-free
-downloads and manifest inspection reproduce those identities. Version 0.1.3
-adds a version-1 Publisher Unix
+downloads, manifest inspection, and runtime probes reproduce those identities.
+Version 0.1.3 added a version-1 Publisher Unix
 operation query with durable accepted, pending, catalog-confirmed, conflict,
 unavailable, and terminal visible-confirmed results. Its exact terminal receipt
 is emitted only after the existing Jellyfin binding and static direct-play gate
 and binds the public operation, asset, generation digest, library, item, media
 source, and expected catalog path.
 
-Version 0.1.4 is the unpublished corrective candidate. It treats
+Version 0.1.4 treats
 `arr_import_path_prefix` as the Arr-visible namespace and translates only its
 canonical relative suffix below each source-specific Publisher staging root.
 The release rehearsal uses one shared `/data/library` Arr prefix with distinct
 movie and show staging roots, including assisted socket intake, sidecars, lost
-response recovery, idempotent retry, and exact terminal receipt. No 0.1.4 tag,
-public wheel, OCI digest, or immutable release is claimed yet.
+response recovery, idempotent retry, and exact terminal receipt. Sonarr
+correlation requires the requested episode ID and never substitutes a
+numerically matching series ID.
+
+Version 0.1.3 remains preserved at tag
+[`v0.1.3`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.3)
+as the preceding immutable release.
 
 Version 0.1.2 remains preserved at tag
 [`v0.1.2`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.2)
