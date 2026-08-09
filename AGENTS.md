@@ -53,11 +53,13 @@ secrets, or duplicated program history. Discard it when stale.
 
 ## Cross-repository changes
 
-A change that affects the downstream deployment contract uses the same program
-unit identifier in both repositories but receives one plan per repository.
-Integrate and release the MediaInterlock contract first; update the downstream
-pin and local acceptance second. A public component test cannot prove the live
-overlay, and an overlay rehearsal cannot replace public product gates.
+A change that affects a downstream deployment contract remains a unit of the
+`MEDIAINTERLOCK` program only in this repository. A deployment repository uses
+its own local decision IDs and adoption plan; do not mirror unit identifiers or
+create a cross-repository program/coordinator. Integrate and release the
+MediaInterlock contract first, then let downstream independently update its pin
+and local acceptance. A public component test cannot prove a live overlay, and
+an overlay rehearsal cannot replace public product gates.
 
 ## Documentation and verification
 
