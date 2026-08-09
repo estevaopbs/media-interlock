@@ -21,6 +21,14 @@ is emitted only after the existing Jellyfin binding and static direct-play gate
 and binds the public operation, asset, generation digest, library, item, media
 source, and expected catalog path.
 
+Version 0.1.4 is the unpublished corrective candidate. It treats
+`arr_import_path_prefix` as the Arr-visible namespace and translates only its
+canonical relative suffix below each source-specific Publisher staging root.
+The release rehearsal uses one shared `/data/library` Arr prefix with distinct
+movie and show staging roots, including assisted socket intake, sidecars, lost
+response recovery, idempotent retry, and exact terminal receipt. No 0.1.4 tag,
+public wheel, OCI digest, or immutable release is claimed yet.
+
 Version 0.1.2 remains preserved at tag
 [`v0.1.2`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.2)
 as the preceding immutable release.

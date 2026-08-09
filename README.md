@@ -29,6 +29,10 @@ sockets, one wheel, and OCI images for all three components. Nothing in this
 repository has been installed in or validated against a live media stack. See
 [current state](docs/current/state.md) for the precise boundary.
 
+Version 0.1.4 is the local corrective candidate for translating the single
+Arr-visible import prefix into each source's distinct Publisher staging root.
+It has not been tagged or published.
+
 ## Principles
 
 - Unknown or ambiguous state closes new acquisition; it never destroys the

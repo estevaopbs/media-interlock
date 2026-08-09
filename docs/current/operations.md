@@ -1,8 +1,8 @@
 # Operations
 
-The 0.1.3 release contains one wheel plus Reconciler,
-Fence, and Publisher OCI images. This page is not an installation guide and no
-live deployment has been tested.
+The current public 0.1.3 release contains one wheel plus Reconciler, Fence, and
+Publisher OCI images. Version 0.1.4 is an unpublished corrective candidate.
+This page is not an installation guide and no live deployment has been tested.
 
 ## Processes
 
@@ -80,6 +80,14 @@ candidate intake use the Publisher's local versioned socket with sealed
 owner-bound manifests. A downstream tool may prepare those inputs, but it owns
 the one-off selection or migration policy and must not expect a Fence receipt
 from either intake path.
+
+`arr_import_path_prefix` names the absolute path namespace exposed by Arr; it
+is not a Publisher mount path. After unique download/media/event correlation,
+Publisher removes that exact segment-boundary prefix and verifies the remaining
+relative path below the source-specific `staging_root`. Radarr and Sonarr may
+therefore both report `/data/library/...` while Publisher uses distinct movie
+and episode staging roots. Paths outside or equal to the prefix, traversal,
+ambiguous history, and symlink-based authority remain pending.
 
 To recover a Publisher result after any timeout, send one canonical JSON frame
 to the configured Publisher socket using the public wheel's

@@ -123,6 +123,14 @@ static direct-play response before it records delivery. Recovery observes a
 possibly consumed effect before changing any filesystem state; it does not
 retract a slot blindly.
 
+Arr import history and Publisher staging use distinct namespaces. The source
+profile's `arr_import_path_prefix` is the absolute Arr-visible boundary. For an
+exact correlated import, Publisher accepts only a canonical path strictly below
+that boundary, derives its non-empty relative suffix lexically, and applies the
+suffix below that source's configured `staging_root`. It never requires the two
+absolute prefixes to be equal, resolves the Arr path through the host
+filesystem, or accepts per-item mappings and textual-prefix fallbacks.
+
 The Publisher's version-1 Unix surface projects that private state by
 `operation_id` as accepted, pending, catalog-confirmed, visible-confirmed,
 conflict, or unavailable. Visible confirmation is a separate terminal receipt
@@ -143,9 +151,11 @@ budgets.
 
 The supported source set is one typed Radarr movie profile and one typed Sonarr
 episode profile. A profile binds its Arr download-client identity and category,
-qBittorrent save path, Arr import prefix, Publisher roots and catalog binding,
-and named physical-capacity pools. Fence receives only the acquisition and
-pool projection; Publisher and Reconciler receive their own minimal fields.
+qBittorrent save path, Arr-visible import prefix, Publisher roots and catalog
+binding, and named physical-capacity pools. Multiple sources may share the same
+Arr-visible import prefix while retaining distinct Publisher staging roots.
+Fence receives only the acquisition and pool projection; Publisher and
+Reconciler receive their own minimal fields.
 Materialized roots and pool probes must agree on filesystem identity, while
 distinct named pools cannot silently share a free-space supply.
 

@@ -45,7 +45,7 @@ class ArtifactDefinitionTests(unittest.TestCase):
     def test_corrective_release_version_is_consistent(self) -> None:
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-        self.assertEqual("0.1.3", __version__)
+        self.assertEqual("0.1.4", __version__)
         self.assertEqual(__version__, project["project"]["version"])
 
     def test_artifact_builder_rejects_a_runtime_outside_the_python_profile(self) -> None:

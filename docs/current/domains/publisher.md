@@ -15,6 +15,11 @@ last known-good generation until a newer one is fully committed.
   release its reservation.
 - Re-derive all filesystem paths from configured roots and stable identifiers;
   external strings never become path authority.
+- Translate a uniquely correlated absolute Arr import only by removing the
+  configured Arr-visible path prefix and applying the canonical non-empty
+  relative suffix below that source's distinct Publisher staging root. Reject
+  partial prefixes, traversal, ambiguity, and any attempt to use Arr history or
+  a symlink as filesystem authority.
 - Seal exactly one contained video and its selected contained sidecars through
   two equal no-follow observations separated by the source profile's bounded
   settle interval. Source profiles may narrow sidecar extensions and require
@@ -55,8 +60,10 @@ the daemon re-observes the contained source and accepts only an exact manifest
 match. An assisted candidate first records an owner intent bound to the same
 manifest digest, then completes through the same bundle and generation state
 machine only after one exact Arr import observation agrees with its path and
-asset identity. Neither path fabricates a torrent hash or produces a Fence
-receipt.
+asset identity. Radarr and Sonarr may expose that observation below the same
+Arr-visible prefix while Publisher resolves the resulting suffix below their
+separate staging roots. Neither path fabricates a torrent hash or produces a
+Fence receipt.
 
 Publisher exposes each operation through its version-1 Unix contract without
 exposing its private store. `publisher_operation_query` has an empty body and
