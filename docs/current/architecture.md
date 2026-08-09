@@ -123,6 +123,14 @@ static direct-play response before it records delivery. Recovery observes a
 possibly consumed effect before changing any filesystem state; it does not
 retract a slot blindly.
 
+The Publisher's version-1 Unix surface projects that private state by
+`operation_id` as accepted, pending, catalog-confirmed, visible-confirmed,
+conflict, or unavailable. Visible confirmation is a separate terminal receipt
+bound to the exact generation digest and Jellyfin identities; no aggregate
+health or metric is delivery evidence. This projection is recovered from
+Publisher-owned durable state, so clients retry the query after timeout rather
+than reading SQLite or inferring success from a filesystem path.
+
 ## Configuration and secrets
 
 TOML is the single human-authored configuration format. One file contains a

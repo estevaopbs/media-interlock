@@ -1,6 +1,6 @@
 # Operations
 
-The 0.1.2 release contains one wheel plus Reconciler,
+The 0.1.3 candidate contains one wheel plus Reconciler,
 Fence, and Publisher OCI images. This page is not an installation guide and no
 live deployment has been tested.
 
@@ -81,13 +81,25 @@ owner-bound manifests. A downstream tool may prepare those inputs, but it owns
 the one-off selection or migration policy and must not expect a Fence receipt
 from either intake path.
 
+To recover a Publisher result after any timeout, send one canonical JSON frame
+to the configured Publisher socket using the public wheel's
+`publisher_operation_query(operation_id)` contract helper. The daemon returns
+`publisher_operation_status` for `accepted`, `pending`, `catalog-confirmed`,
+`conflict`, or `unavailable`. It returns `publisher_operation_receipt` only for
+`visible-confirmed`, after exact Jellyfin binding and static direct-play digest
+verification. The receipt contains the public source/upstream/media/asset,
+generation/digest, library/item/media-source, and expected-catalog-path binding.
+Consumers retry the same query and compare the same receipt; they never inspect
+Publisher SQLite or private generation paths.
+
 ## Observability
 
 Human CLI output explains the blocked invariant without printing private media
 metadata or secrets. JSON output has a versioned schema and stable machine
-status codes. Health distinguishes process liveness, configuration readiness,
+status codes. Per-operation socket replies may contain the explicitly requested
+receipt binding, while health and metrics never do. Health distinguishes process liveness, configuration readiness,
 adapter readiness, and inhibited work. Metrics are bounded-cardinality and do
-not use media paths, titles, torrent hashes, usernames, or operation IDs as
+do not use media paths, titles, hashes, usernames, or operation IDs as values or
 labels. Fence's shared-lease metrics report bounded availability and an opened
 device/inode identity only; they do not reveal a lock path or a peer writer.
 

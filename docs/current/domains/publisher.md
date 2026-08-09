@@ -58,6 +58,30 @@ machine only after one exact Arr import observation agrees with its path and
 asset identity. Neither path fabricates a torrent hash or produces a Fence
 receipt.
 
+Publisher exposes each operation through its version-1 Unix contract without
+exposing its private store. `publisher_operation_query` has an empty body and
+uses the envelope `operation_id`. Its nonterminal response is
+`publisher_operation_status` with exactly one state:
+
+- `accepted`: durable owner intent or custody exists, but no sealed candidate
+  has entered publication;
+- `pending`: publication has started but exact catalog observation is absent;
+- `catalog-confirmed`: the configured library, expected path, item, and media
+  source match, but static direct-play bytes and digest are not yet confirmed;
+- `conflict`: submitted intake contradicts durable identity;
+- `unavailable`: the operation is unknown or cannot be represented safely.
+
+Only full static direct-play verification changes the public result to
+`publisher_operation_receipt` with `state=visible-confirmed`. That terminal,
+idempotent receipt binds source, upstream and media identities, asset slot,
+generation UUID and payload SHA-256, configured library, Jellyfin item and
+media-source identities, and expected catalog path. `publisher_assisted_complete`
+returns this same projection: a nonterminal processor result is `pending`, never
+an intake-success substitute. Re-querying after a crash or lost response returns
+the durable projection. A pre-0.1.3 delivered record lacks the new receipt
+binding and remains `unavailable` until Publisher repeats exact catalog and
+direct-play verification.
+
 Jellyfin supplies catalog observation and delivery. Bazarr has an authenticated
 status readiness capability and continues to own subtitle work. Seerr has an
 authenticated settings readiness capability and continues to own availability
@@ -74,7 +98,9 @@ does not roll the filesystem back after a possibly consumed external effect.
 
 The publisher cannot read the fence or reconciler database. It accepts
 versioned observations and owner-bound intake contracts and exposes its own
-status in the same manner. Safety limits such as path containment, single-writer
+aggregate status plus per-operation projection in the same manner. Its metrics
+remain aggregate and never contain operation IDs, paths, titles, or digests.
+Safety limits such as path containment, single-writer
 ownership, two-phase durable effects, and last-known-good retention are not
 configurable.
 It becomes ready only when canonical and staging roots are disjoint, canonical

@@ -28,6 +28,11 @@ The Publisher gates also cover double-observed bundles, sidecar and inspection
 policy, source drift, independently copied canonical inodes, and exact
 hardlink freezes. Bootstrap and assisted intake prove separate provenance,
 manifest replay, and recovery rules.
+Publisher socket black-box gates additionally require accepted/pending/catalog-
+confirmed separation, conflict and unavailable replies, wrong-binding
+inhibition, idempotent retry after a lost response, and one exact terminal
+receipt only after direct-play verification. Metrics are checked separately for
+absence of paths, titles, hashes, and operation IDs.
 Deployment tests also reject overlapping roots, competing canonical writers,
 auto-resuming downloads, and a competing qBittorrent resume credential.
 
@@ -68,8 +73,9 @@ A release candidate requires:
 - disposable restart/crash rehearsal for effects changed in the cycle;
 - one consolidated independent review with findings resolved.
 
-The 0.1.2 release records its immutable source tag, wheel SHA-256, and three
-public OCI digests in the current-state authority. Its artifact build executes
+The 0.1.3 release candidate must record its immutable source tag, wheel SHA-256,
+and three public OCI digests in the current-state authority after publication.
+Its artifact build executes
 all three images and rejects a
 runtime Python version that differs from the fixed compatibility profile.
 Those records prove only the published artifact identity and

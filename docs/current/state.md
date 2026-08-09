@@ -12,6 +12,14 @@ and these public OCI manifest digests, each executing Python 3.14.7:
 - Fence: `sha256:fbc3b27e2d4bc1f5bec0c32e41ac01674e51ade47701e7f18efa98be87a6e419`;
 - Publisher: `sha256:dff85dbbbd62e2c416658c669515166dac72bad32915330ca6a4d71dfc74bce2`.
 
+Version 0.1.3 is the corrective candidate. It adds a version-1 Publisher Unix
+operation query with durable accepted, pending, catalog-confirmed, conflict,
+unavailable, and terminal visible-confirmed results. Its exact terminal receipt
+is emitted only after the existing Jellyfin binding and static direct-play gate
+and binds the public operation, asset, generation digest, library, item, media
+source, and expected catalog path. No 0.1.3 publication identity is claimed
+until the immutable remote release and anonymous artifact checks complete.
+
 Version 0.1.1 remains preserved at tag
 [`v0.1.1`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.1),
 but its three OCI images execute Python 3.14.6 rather than the compatibility
@@ -35,6 +43,8 @@ Fence freezes for hardlinked staging copies, independent canonical inodes,
 stable slots, asset-local predecessor retention, distinct bootstrap/assisted
 provenance, Arr identity correlation, bounded Jellyfin catalog observation,
 and exact static direct-play verification before delivery.
+Publisher also exposes a per-operation public projection without requiring
+access to its private SQLite state; aggregate metrics remain metadata-free.
 
 Reconciler has a private durable intent store, typed movie and episode policy,
 native ordered Arr release selection, causal Queue/History polling, exact
@@ -43,8 +53,9 @@ possible release effects.
 
 The release rehearsal runs the production HTTP adapter code against disposable
 pinned-shape upstreams, invokes the Reconciler CLI, crosses both daemon Unix
-contracts, restarts Fence and Publisher at durable boundaries, and proves exact
-Jellyfin catalog and direct-play delivery. The local build produces a
+contracts, restarts Fence and Publisher at durable boundaries, and proves
+pending, wrong-binding, response-loss recovery, terminal receipt, and exact
+Jellyfin catalog/direct-play delivery. The local build produces a
 source-date-controlled wheel and Reconciler, Fence, and Publisher OCI image
 manifest digests using a hash-locked build bootstrap. Its canonical artifact
 manifest binds the source revision, version, wheel hash, and image identities.
