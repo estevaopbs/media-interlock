@@ -68,7 +68,8 @@ uses the envelope `operation_id`. Its nonterminal response is
 - `pending`: publication has started but exact catalog observation is absent;
 - `catalog-confirmed`: the configured library, expected path, item, and media
   source match, but static direct-play bytes and digest are not yet confirmed;
-- `conflict`: submitted intake contradicts durable identity;
+- `conflict`: submitted intake contradicts durable identity; for an existing
+  operation this state is durably absorbing and survives a lost response;
 - `unavailable`: the operation is unknown or cannot be represented safely.
 
 Only full static direct-play verification changes the public result to
@@ -78,9 +79,9 @@ generation UUID and payload SHA-256, configured library, Jellyfin item and
 media-source identities, and expected catalog path. `publisher_assisted_complete`
 returns this same projection: a nonterminal processor result is `pending`, never
 an intake-success substitute. Re-querying after a crash or lost response returns
-the durable projection. A pre-0.1.3 delivered record lacks the new receipt
-binding and remains `unavailable` until Publisher repeats exact catalog and
-direct-play verification.
+the durable projection. A pre-0.1.3 catalog observation or delivered record
+lacks the new library/path receipt binding and remains `unavailable` until
+Publisher repeats exact catalog and direct-play verification.
 
 Jellyfin supplies catalog observation and delivery. Bazarr has an authenticated
 status readiness capability and continues to own subtitle work. Seerr has an

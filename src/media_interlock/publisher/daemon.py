@@ -30,7 +30,7 @@ class PublisherDaemon:
             await asyncio.sleep(interval_seconds)
             try:
                 self.retry_once()
-            except (ContractError, OSError, RuntimeError, ValueError):
+            except (ContractError, KeyError, OSError, RuntimeError, ValueError):
                 # Existing pending state is retained for the next bounded poll.
                 continue
 
@@ -58,13 +58,16 @@ class PublisherDaemon:
             try:
                 accepted = self._intake is not None and self._intake(envelope)
             except (ContractError, OSError, RuntimeError, ValueError):
-                return publisher_operation_status(envelope.operation_id, "conflict")
+                return self._record_conflict(envelope.operation_id)
             if not accepted:
-                return publisher_operation_status(envelope.operation_id, "conflict")
+                return self._record_conflict(envelope.operation_id)
+            current = self._service.operation_response(envelope.operation_id)
+            if current.kind == "publisher_operation_status" and current.body["state"] == "conflict":
+                return current
             if envelope.kind != "publisher_assisted_intent" and self._process is not None:
                 try:
                     self._process(envelope.operation_id)
-                except (ContractError, OSError, RuntimeError, ValueError):
+                except (ContractError, KeyError, OSError, RuntimeError, ValueError):
                     pass
             return self._service.operation_response(envelope.operation_id)
         if envelope.kind == "terminal_acquisition":
@@ -85,3 +88,10 @@ class PublisherDaemon:
         if envelope.kind == "metrics":
             return metrics_response(envelope.operation_id, self._observability.metrics())
         return status_response(envelope.operation_id, StatusCode.INVALID_CONTRACT, "unsupported Publisher message")
+
+    def _record_conflict(self, operation_id: str) -> Envelope:
+        try:
+            recorded = self._service.record_operation_conflict(operation_id)
+        except (ContractError, OSError, RuntimeError, ValueError):
+            return publisher_operation_status(operation_id, "unavailable")
+        return self._service.operation_response(operation_id) if recorded else publisher_operation_status(operation_id, "unavailable")

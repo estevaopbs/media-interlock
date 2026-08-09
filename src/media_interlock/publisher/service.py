@@ -114,11 +114,15 @@ class PublisherService:
             publication = self._state.publication(operation_id)
         except KeyError:
             return publisher_operation_status(operation_id, "unavailable")
+        if publication.public_conflict:
+            return publisher_operation_status(operation_id, "conflict")
         if publication.state is PublicationState.CUSTODY_RESERVED:
             return publisher_operation_status(operation_id, "accepted")
         if publication.state in {PublicationState.CANDIDATE_VERIFIED, PublicationState.GENERATION_INTENT}:
             return publisher_operation_status(operation_id, "pending")
         if publication.state is PublicationState.CATALOG_PENDING:
+            if publication.catalog_item_id is not None and (not publication.catalog_library_id or not publication.expected_catalog_path):
+                return publisher_operation_status(operation_id, "unavailable")
             return publisher_operation_status(
                 operation_id,
                 "catalog-confirmed" if publication.catalog_item_id is not None else "pending",
@@ -147,6 +151,16 @@ class PublisherService:
             media_source_id=publication.catalog_media_source_id,
             expected_catalog_path=publication.expected_catalog_path,
         )
+
+    def record_operation_conflict(self, operation_id: str) -> bool:
+        try:
+            self._state.publication(operation_id)
+        except KeyError:
+            return False
+        durable = self._state.clone()
+        durable.mark_operation_conflict(operation_id)
+        self._persist(durable)
+        return True
 
     def bootstrap_bundle(self, *, operation_id: str, source: str, upstream_id: str, media_id: str, asset_slot: str, item_type: str, provider_ids: dict[str, str], bundle: VerifiedBundle, manifest_digest: str) -> None:
         durable = self._state.clone()
@@ -419,6 +433,8 @@ class AssetPublisherWorkProcessor:
     def __call__(self, operation_id: str) -> bool:
         try:
             publication = self._service._state.publication(operation_id)
+            if publication.public_conflict:
+                return False
             if publication.state is PublicationState.CUSTODY_RESERVED:
                 correlation = self._correlations.get(publication.source)
                 if correlation is None or not self._service.correlate_identify_and_verify(operation_id, correlation, self._inspection, freeze=self._freeze):

@@ -85,7 +85,9 @@ To recover a Publisher result after any timeout, send one canonical JSON frame
 to the configured Publisher socket using the public wheel's
 `publisher_operation_query(operation_id)` contract helper. The daemon returns
 `publisher_operation_status` for `accepted`, `pending`, `catalog-confirmed`,
-`conflict`, or `unavailable`. It returns `publisher_operation_receipt` only for
+`conflict`, or `unavailable`. A conflict for an existing operation is durable
+and fail-closed, so a lost conflict response is recovered by the same query. It
+returns `publisher_operation_receipt` only for
 `visible-confirmed`, after exact Jellyfin binding and static direct-play digest
 verification. The receipt contains the public source/upstream/media/asset,
 generation/digest, library/item/media-source, and expected-catalog-path binding.
@@ -97,9 +99,10 @@ Publisher SQLite or private generation paths.
 Human CLI output explains the blocked invariant without printing private media
 metadata or secrets. JSON output has a versioned schema and stable machine
 status codes. Per-operation socket replies may contain the explicitly requested
-receipt binding, while health and metrics never do. Health distinguishes process liveness, configuration readiness,
+receipt binding, while health and metrics never do. Health distinguishes
+process liveness, configuration readiness,
 adapter readiness, and inhibited work. Metrics are bounded-cardinality and do
-do not use media paths, titles, hashes, usernames, or operation IDs as values or
+not use media paths, titles, hashes, usernames, or operation IDs as values or
 labels. Fence's shared-lease metrics report bounded availability and an opened
 device/inode identity only; they do not reveal a lock path or a peer writer.
 

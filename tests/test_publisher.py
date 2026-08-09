@@ -163,6 +163,7 @@ class PublisherCustodyTests(unittest.TestCase):
         state.mark_catalog_observed(OPERATION_ID, "jellyfin-item", "media-source")
         state.mark_catalog_delivered(OPERATION_ID)
         legacy = dict(state.records()[0])
+        legacy.pop("public_conflict")
         legacy.pop("catalog_library_id")
         legacy.pop("expected_catalog_path")
         restored = PublisherState.from_records([legacy])
@@ -175,6 +176,44 @@ class PublisherCustodyTests(unittest.TestCase):
         receipt = service.operation_response(OPERATION_ID)
         self.assertEqual("publisher_operation_receipt", receipt.kind)
         self.assertEqual("/jellyfin/library/radarr-tmdb-42/payload.mkv", receipt.body["expected_catalog_path"])
+
+    def test_v012_catalog_observation_without_binding_is_not_catalog_confirmed(self) -> None:
+        state = PublisherState()
+        state.adopt_terminal(self.terminal())
+        state.mark_candidate_verified(OPERATION_ID, "movie.mkv", 5, "a" * 64)
+        state.bind_asset_identity(OPERATION_ID, "radarr:tmdb-42", "Movie", {"Tmdb": "42"})
+        state.record_generation_intent(OPERATION_ID, None)
+        state.mark_generation_committed(OPERATION_ID)
+        state.bind_catalog_expectation(OPERATION_ID, "library-1", "/jellyfin/library/radarr-tmdb-42/payload.mkv")
+        state.mark_notification_attempted(OPERATION_ID)
+        state.mark_catalog_observed(OPERATION_ID, "jellyfin-item", "media-source")
+        legacy = dict(state.records()[0])
+        legacy.pop("public_conflict")
+        legacy.pop("catalog_library_id")
+        legacy.pop("expected_catalog_path")
+        restored = PublisherState.from_records([legacy])
+
+        self.assertEqual("unavailable", PublisherService(restored, object()).operation_response(OPERATION_ID).body["state"])
+        restored.bind_catalog_expectation(OPERATION_ID, "library-1", "/jellyfin/library/radarr-tmdb-42/payload.mkv")
+        self.assertIsNone(restored.publication(OPERATION_ID).catalog_item_id)
+        self.assertEqual("pending", PublisherService(restored, object()).operation_response(OPERATION_ID).body["state"])
+
+    def test_public_conflict_is_durable_and_absorbing(self) -> None:
+        class Store:
+            def save(self, _: PublisherState) -> None:
+                pass
+
+        state = PublisherState()
+        state.record_assisted_intent(
+            operation_id=OPERATION_ID, source="radarr", upstream_id="import-42", media_id="42", expected_bytes=5,
+            manifest_digest="a" * 64,
+        )
+        service = PublisherService(state, Store())
+
+        self.assertTrue(service.record_operation_conflict(OPERATION_ID))
+        self.assertEqual("conflict", service.operation_response(OPERATION_ID).body["state"])
+        restored = PublisherState.from_records(state.records())
+        self.assertEqual("conflict", PublisherService(restored, Store()).operation_response(OPERATION_ID).body["state"])
 
     def test_bootstrap_is_owner_bound_idempotent_and_rejects_manifest_drift(self) -> None:
         from media_interlock.publisher.filesystem import BundleVerifier
