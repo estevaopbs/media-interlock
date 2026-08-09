@@ -18,15 +18,15 @@ active only when configured.
 
 ## Project status
 
-MediaInterlock 0.1.2 remains the current immutable public
-[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.2).
+MediaInterlock 0.1.3 is the current immutable public
+[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.3).
+Release 0.1.2 remains preserved as its immutable predecessor.
 Release 0.1.1 remains preserved but its OCI images use Python 3.14.6 rather than
-the fixed 3.14.7 compatibility profile. Version 0.1.3 is the corrective
-candidate for per-operation Publisher status and exact terminal receipts. The
-released artifacts have been exercised only
-with disposable upstream services, durable local state, Unix sockets, one
-wheel, and OCI images for all three components. Nothing in this repository has
-been installed in or validated against a live media stack. See
+the fixed 3.14.7 compatibility profile. Version 0.1.3 adds per-operation
+Publisher status and exact terminal receipts. The released artifacts have been
+exercised only with disposable upstream services, durable local state, Unix
+sockets, one wheel, and OCI images for all three components. Nothing in this
+repository has been installed in or validated against a live media stack. See
 [current state](docs/current/state.md) for the precise boundary.
 
 ## Principles

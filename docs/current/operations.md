@@ -1,6 +1,6 @@
 # Operations
 
-The 0.1.3 candidate contains one wheel plus Reconciler,
+The 0.1.3 release contains one wheel plus Reconciler,
 Fence, and Publisher OCI images. This page is not an installation guide and no
 live deployment has been tested.
 

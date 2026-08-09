@@ -1,24 +1,29 @@
 # Current state
 
-MediaInterlock 0.1.2 is the immutable public downstream-consumption release.
+MediaInterlock 0.1.3 is the immutable public downstream-consumption release.
 Its annotated tag
-[`v0.1.2`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.2)
-resolves to source commit `59bac5beb0a97bfcfd9baf928195ba08c2ffc513`.
+[`v0.1.3`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.3)
+resolves to source commit `d60a05ed2ee4d31923af02b2ea565b98f2afb4fd`.
 The release publishes wheel SHA-256
-`c87e9a5d7943943b81610c1bbcd7e951a912448217a65461df253da25e120110`
+`81a05ee5125f4a600121ad720f6aef89868383688728237a0557de2edbc61099`
 and these public OCI manifest digests, each executing Python 3.14.7:
 
-- Reconciler: `sha256:f2298eb9ed263c4650c43c6ad8f9250d3373a665a83ad8135ed9c53992af92f9`;
-- Fence: `sha256:fbc3b27e2d4bc1f5bec0c32e41ac01674e51ade47701e7f18efa98be87a6e419`;
-- Publisher: `sha256:dff85dbbbd62e2c416658c669515166dac72bad32915330ca6a4d71dfc74bce2`.
+- Reconciler: `sha256:f0b9a44c7b616fdd5b71c923de8093bbdd9c07c80ec27bb15e3c51042e2a2643`;
+- Fence: `sha256:860d8d5d2f3774bf795c9d5ea23f4dcbb8f44baf351324759bf72cd0a82e6d12`;
+- Publisher: `sha256:80cb25fd6dc003e812e141b828e43291903ca00dbce693d4c76ff1055e91ef49`.
 
-Version 0.1.3 is the corrective candidate. It adds a version-1 Publisher Unix
+The public GitHub API reports the release immutable, and credential-free
+downloads and manifest inspection reproduce those identities. Version 0.1.3
+adds a version-1 Publisher Unix
 operation query with durable accepted, pending, catalog-confirmed, conflict,
 unavailable, and terminal visible-confirmed results. Its exact terminal receipt
 is emitted only after the existing Jellyfin binding and static direct-play gate
 and binds the public operation, asset, generation digest, library, item, media
-source, and expected catalog path. No 0.1.3 publication identity is claimed
-until the immutable remote release and anonymous artifact checks complete.
+source, and expected catalog path.
+
+Version 0.1.2 remains preserved at tag
+[`v0.1.2`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.2)
+as the preceding immutable release.
 
 Version 0.1.1 remains preserved at tag
 [`v0.1.1`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.1),
