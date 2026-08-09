@@ -18,10 +18,10 @@ active only when configured.
 
 ## Project status
 
-MediaInterlock 0.1.2 is the corrective candidate for an immutable public
-[GitHub release](https://github.com/estevaopbs/media-interlock/releases).
+MediaInterlock 0.1.2 is the current immutable public
+[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.2).
 Release 0.1.1 remains preserved but its OCI images use Python 3.14.6 rather than
-the fixed 3.14.7 compatibility profile. The candidate has been exercised only
+the fixed 3.14.7 compatibility profile. The release has been exercised only
 with disposable upstream services, durable local state, Unix sockets, one
 wheel, and OCI images for all three components. Nothing in this repository has
 been installed in or validated against a live media stack. See

@@ -1,7 +1,18 @@
 # Current state
 
-MediaInterlock 0.1.2 is the corrective candidate for the immutable public
-downstream-consumption release. Version 0.1.1 remains preserved at tag
+MediaInterlock 0.1.2 is the immutable public downstream-consumption release.
+Its annotated tag
+[`v0.1.2`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.2)
+resolves to source commit `59bac5beb0a97bfcfd9baf928195ba08c2ffc513`.
+The release publishes wheel SHA-256
+`c87e9a5d7943943b81610c1bbcd7e951a912448217a65461df253da25e120110`
+and these public OCI manifest digests, each executing Python 3.14.7:
+
+- Reconciler: `sha256:f2298eb9ed263c4650c43c6ad8f9250d3373a665a83ad8135ed9c53992af92f9`;
+- Fence: `sha256:fbc3b27e2d4bc1f5bec0c32e41ac01674e51ade47701e7f18efa98be87a6e419`;
+- Publisher: `sha256:dff85dbbbd62e2c416658c669515166dac72bad32915330ca6a4d71dfc74bce2`.
+
+Version 0.1.1 remains preserved at tag
 [`v0.1.1`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.1),
 but its three OCI images execute Python 3.14.6 rather than the compatibility
 profile's fixed Python 3.14.7. It is therefore not the conforming OCI release.
@@ -39,7 +50,7 @@ manifest digests using a hash-locked build bootstrap. Its canonical artifact
 manifest binds the source revision, version, wheel hash, and image identities.
 Archive tar timestamps are not a reproducibility identity.
 
-Candidate proof is limited to those artifacts and disposable checks.
+Release proof is limited to those artifacts and disposable checks.
 Consequently:
 
 - qBittorrent, Prowlarr, Radarr, Sonarr, Jellyfin, Bazarr, and Seerr are
@@ -47,7 +58,7 @@ Consequently:
   development profiles;
 - no live, hardware, filesystem, container, or upstream-service acceptance has
   been performed;
-- no downstream deployment should consume this candidate until its own pinned,
+- no downstream deployment should promote this release until its own pinned,
   live acceptance is complete.
 
 ## Authority split

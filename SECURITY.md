@@ -7,7 +7,7 @@ as security-sensitive.
 
 ## Supported versions
 
-The next supported public line is 0.1.2, pending its immutable publication.
+The supported public line is 0.1.2.
 Only the latest stable MediaInterlock line and the upstream versions pinned for
 its current development cycle are supported unless release notes say otherwise.
 

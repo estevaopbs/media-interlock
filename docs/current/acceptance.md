@@ -68,9 +68,9 @@ A release candidate requires:
 - disposable restart/crash rehearsal for effects changed in the cycle;
 - one consolidated independent review with findings resolved.
 
-The 0.1.2 corrective candidate must record its immutable source tag, wheel
-SHA-256, and three public OCI digests in the current-state authority when it is
-published. Its artifact build must also execute all three images and reject a
+The 0.1.2 release records its immutable source tag, wheel SHA-256, and three
+public OCI digests in the current-state authority. Its artifact build executes
+all three images and rejects a
 runtime Python version that differs from the fixed compatibility profile.
 Those records prove only the published artifact identity and
 disposable release gates, not a downstream or live deployment acceptance.
