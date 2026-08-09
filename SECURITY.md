@@ -7,9 +7,9 @@ as security-sensitive.
 
 ## Supported versions
 
-There is no released or supported version yet. After the first release, only
-the latest stable MediaInterlock line and the upstream versions pinned for its
-current development cycle are supported unless release notes say otherwise.
+The supported public line is 0.1.0. Only the latest stable MediaInterlock line
+and the upstream versions pinned for its current development cycle are
+supported unless release notes say otherwise.
 
 ## Reporting a vulnerability
 

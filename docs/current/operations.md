@@ -1,7 +1,7 @@
 # Operations
 
-The current local release candidate contains a runnable wheel plus Fence and
-Publisher OCI daemon images. This page is not an installation guide and no live
+The public 0.1.0 release contains one wheel plus Reconciler, Fence, and
+Publisher OCI images. This page is not an installation guide and no live
 deployment has been tested.
 
 ## Processes
@@ -37,6 +37,9 @@ It requires a clean checkout and emits one wheel plus Reconciler, Fence, and
 Publisher OCI archives, individual manifest-digest files, and a canonical
 `artifacts.json` binding source revision, version, wheel hash, and image
 identities. It never pushes or publishes; OCI archives are local transport.
+Downstream consumers pin the public release wheel or these immutable OCI
+digests, never a local checkout or an unversioned image tag. The release itself
+does not provide deployment manifests or grant live acceptance.
 
 ## Configuration
 

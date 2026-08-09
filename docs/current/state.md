@@ -1,7 +1,21 @@
 # Current state
 
-MediaInterlock is a local release candidate with its shared safety slice and
-the Fence, Publisher, and Reconciler verticals converged. Fence has strict
+MediaInterlock 0.1.0 is publicly released from commit
+`557a6e657baa77c2811d07bbafb06cb57c085d06` at tag
+[`v0.1.0`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.0).
+The release wheel SHA-256 is
+`d258c4cd739c7d8926d0f2c82a5241332e62c20c536322b9e5351ed89ace383a`.
+Its immutable OCI references are:
+
+- `ghcr.io/estevaopbs/media-interlock-reconciler:0.1.0` at
+  `sha256:d912081bd0792a709f41609290d6f403c8e60cad8ef11c1dfedf607e71a17c03`;
+- `ghcr.io/estevaopbs/media-interlock-fence:0.1.0` at
+  `sha256:4bdde35e8bf7534f2449dab0740c29d80b5792de639bf61873154ea4359458de`;
+- `ghcr.io/estevaopbs/media-interlock-publisher:0.1.0` at
+  `sha256:1c37901f26221a8e25d26ce2ad4a48985f70debe03b94d5a574abbd88705393d`.
+
+The shared safety slice and Fence, Publisher, and Reconciler verticals have
+converged. Fence has strict
 Radarr movie and Sonarr episode source profiles, observer-first external Arr
 grab adoption, per-source qBittorrent paths, a neutral bounded mutation lease,
 physical headroom, and exact local quiescence. It has a private durable
@@ -19,7 +33,7 @@ native ordered Arr release selection, causal Queue/History polling, exact
 Unix Fence pre-admission and grab binding, and conservative recovery across
 possible release effects.
 
-The release rehearsal runs the production HTTP adapter code against disposable
+The release rehearsal ran the production HTTP adapter code against disposable
 pinned-shape upstreams, invokes the Reconciler CLI, crosses both daemon Unix
 contracts, restarts Fence and Publisher at durable boundaries, and proves exact
 Jellyfin catalog and direct-play delivery. The local build produces a
@@ -28,6 +42,7 @@ manifest digests using a hash-locked build bootstrap. Its canonical artifact
 manifest binds the source revision, version, wheel hash, and image identities.
 Archive tar timestamps are not a reproducibility identity.
 
+Release proof is limited to those artifacts and disposable checks.
 Consequently:
 
 - qBittorrent, Prowlarr, Radarr, Sonarr, Jellyfin, Bazarr, and Seerr are

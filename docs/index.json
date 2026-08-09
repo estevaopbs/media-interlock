@@ -2,7 +2,7 @@
   "schema": "media-interlock.docs-index/v1",
   "project": {
     "name": "MediaInterlock",
-    "status": "implementation-in-progress"
+    "status": "released"
   },
   "budgets": {
     "permanent_markdown": {
@@ -22,55 +22,7 @@
       }
     }
   },
-  "program": {
-    "id": "MEDIAINTERLOCK",
-    "status": "active",
-    "specification": "docs/work/specs/2026-08-09-adoption-readiness-design.md",
-    "slice_catalog": "docs/work/slices/media-interlock-adoption-readiness.md",
-    "active_plan": "docs/work/plans/2026-08-09-mi-09-immutable-public-release.md",
-    "units": [
-      {
-        "id": "MI-00",
-        "status": "completed"
-      },
-      {
-        "id": "MI-01",
-        "status": "completed"
-      },
-      {
-        "id": "MI-02",
-        "status": "completed"
-      },
-      {
-        "id": "MI-03",
-        "status": "completed"
-      },
-      {
-        "id": "MI-04",
-        "status": "completed"
-      },
-      {
-        "id": "MI-05",
-        "status": "completed"
-      },
-      {
-        "id": "MI-06",
-        "status": "completed"
-      },
-      {
-        "id": "MI-07",
-        "status": "completed"
-      },
-      {
-        "id": "MI-08",
-        "status": "completed"
-      },
-      {
-        "id": "MI-09",
-        "status": "in_progress"
-      }
-    ]
-  },
+  "program": null,
   "documents": [
     {
       "path": "README.md",
@@ -143,27 +95,6 @@
       "class": "permanent",
       "owner": "fence responsibility and behavior",
       "load_when": ["changing acquisition admission, qBittorrent, Prowlarr, capacity, concurrency, or seeding behavior"]
-    },
-    {
-      "path": "docs/work/specs/2026-08-09-adoption-readiness-design.md",
-      "class": "work",
-      "kind": "spec",
-      "owner": "approved adoption-readiness product design while MI-06 through MI-09 remain pending",
-      "load_when": ["planning or implementing any pending MEDIAINTERLOCK slice"]
-    },
-    {
-      "path": "docs/work/slices/media-interlock-adoption-readiness.md",
-      "class": "work",
-      "kind": "slice",
-      "owner": "ordered MI-06 through MI-09 product program",
-      "load_when": ["selecting, planning, or completing a MEDIAINTERLOCK slice"]
-    },
-    {
-      "path": "docs/work/plans/2026-08-09-mi-09-immutable-public-release.md",
-      "class": "work",
-      "kind": "plan",
-      "owner": "bounded MI-09 immutable public release implementation plan",
-      "load_when": ["executing or reviewing MI-09"]
     }
   ]
 }
