@@ -2,16 +2,25 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tomllib
 import unittest
 from pathlib import Path
 
 import _source_tree  # noqa: F401
+
+from media_interlock import __version__
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class ArtifactDefinitionTests(unittest.TestCase):
+    def test_corrective_release_version_is_consistent(self) -> None:
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+        self.assertEqual("0.1.1", __version__)
+        self.assertEqual(__version__, project["project"]["version"])
+
     def test_oci_targets_are_arbitrary_uid_safe_and_execute_only_declared_components(self) -> None:
         containerfile = (ROOT / "Containerfile").read_text(encoding="utf-8")
 

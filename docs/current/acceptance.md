@@ -68,10 +68,10 @@ A release candidate requires:
 - disposable restart/crash rehearsal for effects changed in the cycle;
 - one consolidated independent review with findings resolved.
 
-The immutable 0.1.0 release records the exact source tag, wheel SHA-256, and
-three public OCI digests in the current-state authority. Those records prove
-only the published artifact identity and disposable release gates, not a
-downstream or live deployment acceptance.
+The 0.1.1 corrective candidate must record its immutable source tag, wheel
+SHA-256, and three public OCI digests in the current-state authority when it is
+published. Those records prove only the published artifact identity and
+disposable release gates, not a downstream or live deployment acceptance.
 
 Version `1.0.0` additionally requires all three components integrated and
 operator-facing configuration and upgrade guidance in their existing

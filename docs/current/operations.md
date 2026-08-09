@@ -1,8 +1,8 @@
 # Operations
 
-The public 0.1.0 release contains one wheel plus Reconciler, Fence, and
-Publisher OCI images. This page is not an installation guide and no live
-deployment has been tested.
+The 0.1.1 corrective release candidate contains one wheel plus Reconciler,
+Fence, and Publisher OCI images. This page is not an installation guide and no
+live deployment has been tested.
 
 ## Processes
 

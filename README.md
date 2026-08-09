@@ -18,12 +18,14 @@ active only when configured.
 
 ## Project status
 
-MediaInterlock 0.1.0 is publicly released as an immutable [GitHub
-release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.0).
-It was exercised only with disposable upstream services, durable local state,
-Unix sockets, one wheel, and OCI images for all three components. Nothing in
-this repository has been installed in or validated against a live media stack.
-See [current state](docs/current/state.md) for the precise boundary.
+MediaInterlock 0.1.1 is the corrective release candidate for an immutable
+public [GitHub release](https://github.com/estevaopbs/media-interlock/releases).
+The earlier 0.1.0 release remains preserved but was not published under release
+immutability. The candidate has been exercised only with disposable upstream
+services, durable local state, Unix sockets, one wheel, and OCI images for all
+three components. Nothing in this repository has been installed in or validated
+against a live media stack. See [current state](docs/current/state.md) for the
+precise boundary.
 
 ## Principles
 
