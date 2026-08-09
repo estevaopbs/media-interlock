@@ -27,7 +27,7 @@
     "status": "active",
     "specification": "docs/work/specs/2026-08-09-adoption-readiness-design.md",
     "slice_catalog": "docs/work/slices/media-interlock-adoption-readiness.md",
-    "active_plan": null,
+    "active_plan": "docs/work/plans/2026-08-09-mi-09-immutable-public-release.md",
     "units": [
       {
         "id": "MI-00",
@@ -67,7 +67,7 @@
       },
       {
         "id": "MI-09",
-        "status": "pending"
+        "status": "in_progress"
       }
     ]
   },
@@ -157,6 +157,13 @@
       "kind": "slice",
       "owner": "ordered MI-06 through MI-09 product program",
       "load_when": ["selecting, planning, or completing a MEDIAINTERLOCK slice"]
+    },
+    {
+      "path": "docs/work/plans/2026-08-09-mi-09-immutable-public-release.md",
+      "class": "work",
+      "kind": "plan",
+      "owner": "bounded MI-09 immutable public release implementation plan",
+      "load_when": ["executing or reviewing MI-09"]
     }
   ]
 }
