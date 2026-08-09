@@ -1,8 +1,8 @@
 # Operations
 
-There is no runnable release yet. Fence and Publisher are implemented as local
-daemons, but this page is not an installation guide and no live deployment has
-been tested.
+The current local release candidate contains a runnable wheel plus Fence and
+Publisher OCI daemon images. This page is not an installation guide and no live
+deployment has been tested.
 
 ## Processes
 
@@ -25,6 +25,10 @@ socket, and configured filesystem/network access. Containers receive only the
 mounts and sockets their component needs. A deployment may install any
 component independently, but a release is accepted only after all three are
 integrated as declared in the current release profile.
+
+The local-only artifact gate is `python scripts/build-artifacts.py --output DIR`.
+It never pushes or publishes; its wheel and OCI manifest digest outputs are the
+reproducibility evidence, while the OCI archive files are local transport.
 
 ## Configuration
 

@@ -18,9 +18,10 @@ active only when configured.
 
 ## Project status
 
-The three component verticals are implemented; release-candidate integration,
-packaging, and rehearsal are still in development. Nothing in this repository has
-been installed in or validated against a live media stack. See [current
+The three component verticals have converged into a local release candidate.
+It has been exercised only with disposable upstream services, durable local
+state, Unix sockets, a wheel, and daemon OCI images. Nothing in this repository
+has been installed in or validated against a live media stack. See [current
 state](docs/current/state.md) for the precise boundary.
 
 ## Principles

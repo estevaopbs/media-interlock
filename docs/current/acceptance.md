@@ -51,7 +51,8 @@ A release candidate requires:
 
 - focused and affected test gates green from a clean checkout;
 - all adapters declared for that release pinned and contract-tested;
-- wheel and OCI artifacts built reproducibly and scanned;
+- wheel byte identity and OCI manifest digests reproduced from hash-locked
+  build inputs, with archive tar files treated only as local transport;
 - documentation index, byte budgets, link checks, diff check, and secret scan;
 - negative tests for fail-closed ambiguity and missing capability;
 - disposable restart/crash rehearsal for effects changed in the cycle;

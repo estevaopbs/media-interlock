@@ -1,7 +1,7 @@
 # Current state
 
-MediaInterlock has implemented its shared safety slice and the Fence, Publisher,
-and Reconciler verticals.
+MediaInterlock is a local release candidate with its shared safety slice and
+the Fence, Publisher, and Reconciler verticals converged.
 Fence has a private durable reservation store,
 version-1 local Unix endpoint, bounded health/metrics, exact qBittorrent
 control, optional configured-indexer Prowlarr readiness, terminal observation,
@@ -15,6 +15,13 @@ native ordered Arr release selection, causal Queue/History polling, exact
 Unix Fence pre-admission and grab binding, and conservative recovery across
 possible release effects.
 
+The release rehearsal runs the production HTTP adapter code against disposable
+pinned-shape upstreams, invokes the Reconciler CLI, crosses both daemon Unix
+contracts, restarts Fence and Publisher at durable boundaries, and proves exact
+Jellyfin catalog and direct-play delivery. The local build produces a
+source-date-controlled wheel and OCI image manifest digests using a hash-locked
+build bootstrap. Archive tar timestamps are not a reproducibility identity.
+
 Consequently:
 
 - qBittorrent, Prowlarr, Radarr, Sonarr, Jellyfin, Bazarr, and Seerr are
@@ -22,7 +29,8 @@ Consequently:
   development profiles;
 - no live, hardware, filesystem, container, or upstream-service acceptance has
   been performed;
-- no downstream deployment should consume this repository yet.
+- no downstream deployment should consume this candidate until its own pinned,
+  live acceptance is complete.
 
 ## Authority split
 
