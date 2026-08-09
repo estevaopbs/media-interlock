@@ -186,6 +186,11 @@ class ReleaseRehearsalTests(unittest.TestCase):
                 publisher_stop.set(); publisher_thread.join(5)
                 catalog_visible[0] = True
                 publisher_stop, publisher_thread = start_daemon(runtime / "publisher.sock", lambda: publisher_cli._runtime(load_config(config_path)))
+                publisher_stop.set(); publisher_thread.join(5)
+                recovered_store = PublisherStore.open(root / "publisher-state")
+                self.assertEqual(PublicationState.DELIVERED, recovered_store.load().publication(operation_id).state)
+                recovered_store.close()
+                publisher_stop, publisher_thread = start_daemon(runtime / "publisher.sock", lambda: publisher_cli._runtime(load_config(config_path)))
                 self.assertEqual(receipt, exchange(runtime / "publisher.sock", terminal))
             finally:
                 if fence_stop is not None: fence_stop.set(); fence_thread.join(5)
