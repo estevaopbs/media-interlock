@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
+import os
+import socket
 import tempfile
 import threading
 import unittest
@@ -12,7 +13,6 @@ from pathlib import Path
 
 import _source_tree  # noqa: F401
 
-from media_interlock.adapters.arr import ArrCandidate, ArrGrabObservation, ArrRelease
 from media_interlock.adapters.bazarr import BazarrAdapter
 from media_interlock.adapters.jellyfin import CatalogExpectation, CatalogObservation, CatalogSubmission
 from media_interlock.adapters.prowlarr import ProwlarrAdapter
@@ -21,26 +21,20 @@ from media_interlock.adapters.radarr import RadarrAdapter
 from media_interlock.adapters.seerr import SeerrAdapter
 from media_interlock.adapters.sonarr import SonarrAdapter
 from media_interlock.config import SecretReference
-from media_interlock.contracts import Envelope
-from media_interlock.fence.daemon import FenceDaemon
-from media_interlock.fence.model import FencePolicy, FenceState, QbittorrentActivityObservation, QbittorrentObservation
-from media_interlock.fence.observability import FenceObservability
-from media_interlock.fence.service import FenceService
+from media_interlock.config import load_config
+from media_interlock.contracts import CONTRACT_VERSION, Envelope
+from media_interlock.fence import cli as fence_cli
 from media_interlock.fence.store import FenceStore
-from media_interlock.publisher.daemon import PublisherDaemon
-from media_interlock.publisher.filesystem import CandidateVerifier
 from media_interlock.publisher.generation import AssetGenerationPublisher
 from media_interlock.publisher.model import PublicationState
-from media_interlock.publisher.observability import PublisherObservability
-from media_interlock.publisher.service import AssetPublisherWorkProcessor, PathTranslation, PublisherService
+from media_interlock.publisher import cli as publisher_cli
 from media_interlock.publisher.store import PublisherStore
-from media_interlock.reconciler.fence_client import UnixFenceClient
-from media_interlock.reconciler.model import ReconciliationState, SearchIntent
-from media_interlock.reconciler.service import ReconcilerService
+from media_interlock.reconciler import cli as reconciler_cli
+from media_interlock.reconciler.store import ReconcilerStore
 
 
-class ReleaseRehearsalTests(unittest.IsolatedAsyncioTestCase):
-    async def test_all_declared_adapters_use_their_public_http_readiness_boundaries(self) -> None:
+class ReleaseRehearsalTests(unittest.TestCase):
+    def test_all_declared_adapters_use_their_public_http_readiness_boundaries(self) -> None:
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_: object) -> None: pass
             def do_POST(self) -> None:
@@ -77,87 +71,116 @@ class ReleaseRehearsalTests(unittest.IsolatedAsyncioTestCase):
         from media_interlock.adapters.jellyfin import JellyfinAdapter
         self.assertTrue(JellyfinAdapter(base, key, secret_resolver=lambda _: "fixture").ready())
 
-    async def test_reconciler_fence_and_publisher_complete_one_exact_unix_runtime_handoff(self) -> None:
-        operation_id = str(uuid.uuid4())
+    def test_real_http_adapters_and_unix_daemons_complete_durable_handoff(self) -> None:
         media = b"synthetic-release-media"
-        release_resource = {"approved": True, "protocol": "torrent", "guid": "release-42", "title": "fixture.movie", "size": len(media), "downloadUrl": "https://indexer.invalid/release"}
-        release = ArrRelease(release_resource, hashlib.sha256(json.dumps(release_resource, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), len(media))
+        torrent_hash = "a" * 40
+        download_id = torrent_hash.upper()
+        release = {"approved": True, "protocol": "torrent", "guid": "release-42", "title": "fixture.movie", "size": len(media), "downloadUrl": "https://indexer.invalid/release"}
         events: list[str] = []
+        grabbed = [False]
+        torrent = {"hash": torrent_hash, "category": "media-interlock-radarr", "save_path": "", "size": len(media), "state": "pausedDL", "tags": "", "progress": 0}
 
-        class Qbittorrent:
-            def ready(self) -> bool: return True
-            def observe_existing_stopped(self, torrent_hash: str, category: str) -> QbittorrentObservation:
-                events.append(f"stopped:{torrent_hash}:{category}"); return QbittorrentObservation("observed", len(media))
-            def apply_reservation_tag(self, torrent_hash: str, reservation_id: str) -> bool:
-                events.append(f"tag:{torrent_hash}:{reservation_id}"); return True
-            def observe_tagged_stopped(self, torrent_hash: str, category: str, reservation_id: str) -> QbittorrentObservation:
-                events.append(f"tagged:{torrent_hash}:{category}:{reservation_id}"); return QbittorrentObservation("observed", len(media))
-            def resume(self, torrent_hash: str) -> bool:
-                events.append(f"resume:{torrent_hash}"); return True
-            def observe_active(self, torrent_hash: str, reservation_id: str, category: str) -> QbittorrentActivityObservation:
-                events.append(f"active:{torrent_hash}:{reservation_id}:{category}"); return QbittorrentActivityObservation("observed", True)
-            def terminal_observed(self, torrent_hash: str, reservation_id: str, category: str) -> QbittorrentActivityObservation:
-                events.append(f"terminal:{torrent_hash}:{reservation_id}:{category}"); return QbittorrentActivityObservation("observed", True)
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_: object) -> None: pass
+            def _json(self, value: object, status: int = 200) -> None:
+                self.send_response(status); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(json.dumps(value).encode())
+            def do_GET(self) -> None:
+                from urllib.parse import parse_qs, urlparse
+                parsed = urlparse(self.path); query = parse_qs(parsed.query)
+                if parsed.path == "/api/v3/downloadclient": self._json([{"enable": True, "protocol": "torrent", "implementation": "QBittorrent", "fields": [{"name": "initialState", "value": 2, "type": "select"}, {"name": "movieCategory", "value": "media-interlock-radarr"}, {"name": "tvCategory", "value": "media-interlock-sonarr"}]}])
+                elif parsed.path == "/api/v3/release": self._json([release])
+                elif parsed.path == "/api/v3/history":
+                    if "downloadId" in query: self._json({"records": [{"eventType": "downloadFolderImported", "downloadId": download_id, "movieId": 42, "data": {"importedPath": str(staging / "movie.mkv")}}], "totalRecords": 1})
+                    else: self._json({"records": [] if not grabbed[0] else [{"id": 8, "eventType": "grabbed", "movieId": 42, "sourceTitle": "fixture.movie", "downloadId": download_id}], "totalRecords": 0 if not grabbed[0] else 1})
+                elif parsed.path == "/api/v3/queue": self._json({"records": [{"id": 9, "movieId": 42, "title": "fixture.movie", "downloadId": download_id, "protocol": "torrent", "size": len(media)}], "totalRecords": 1})
+                elif parsed.path == "/api/v3/movie/42": self._json({"id": 42, "tmdbId": 42})
+                elif parsed.path == "/api/v2/app/webapiVersion": self.send_response(200); self.end_headers(); self.wfile.write(b"2.11.3")
+                elif parsed.path == "/api/v2/app/version": self.send_response(200); self.end_headers(); self.wfile.write(b"v5.2.3")
+                elif parsed.path == "/api/v2/app/preferences": self._json({"start_paused_enabled": True})
+                elif parsed.path == "/api/v2/torrents/info": self._json([torrent])
+                elif parsed.path == "/api/v1/health": self._json([])
+                elif parsed.path == "/api/v1/indexer": self._json([{"enable": True}])
+                elif parsed.path == "/System/Info": self._json({"Version": "10.11.11"})
+                elif parsed.path == "/api/system/status": self._json({"data": {"bazarr_version": "1.6.0"}})
+                elif parsed.path == "/api/v1/settings/main": self._json({"applicationTitle": "fixture"})
+                elif parsed.path == "/Items":
+                    internal = "/jellyfin/library/radarr-tmdb-42/payload.mkv"
+                    self._json({"Items": [{"Id": "item-42", "Path": internal, "Type": "Movie", "ProviderIds": {"Tmdb": "42"}, "MediaSources": [{"Id": "source-42", "Path": internal, "Size": len(media)}]}], "TotalRecordCount": 1})
+                elif parsed.path == "/Videos/item-42/stream": self.send_response(200); self.end_headers(); self.wfile.write(media)
+                else: self.send_error(404)
+            def do_POST(self) -> None:
+                if self.path == "/api/v2/auth/login": self.send_response(200); self.end_headers(); self.wfile.write(b"Ok.")
+                elif self.path == "/api/v3/release":
+                    body = json.loads(self.rfile.read(int(self.headers["Content-Length"])).decode()); grabbed[0] = body == release; events.append("arr-post"); self.send_response(200); self.end_headers()
+                elif self.path == "/api/v2/torrents/addTags":
+                    from urllib.parse import parse_qs
+                    torrent["tags"] = parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())["tags"][0]; events.append("tag"); self.send_response(200); self.end_headers()
+                elif self.path == "/api/v2/torrents/start": torrent["state"] = "downloading"; events.append("resume"); self.send_response(200); self.end_headers()
+                elif self.path == "/Library/Media/Updated": events.append("catalog-submit"); self.send_response(204); self.end_headers()
+                else: self.send_error(404)
 
-        class Arr:
-            def stopped_qbittorrent_client(self, category: str) -> bool: return category == "media-interlock-radarr"
-            def history_watermark(self) -> int | None: return 7
-            def first_approved_release(self, entity_id: str) -> ArrRelease | None: return release if entity_id == "42" else None
-            def grab_release(self, selected: ArrRelease) -> bool: events.append("arr-post"); return selected == release
-            def observe_grab(self, entity_id: str, selected: ArrRelease, *, watermark: int) -> ArrGrabObservation:
-                events.append("arr-observe"); return ArrGrabObservation("observed", "A" * 40, "a" * 40) if (entity_id, selected, watermark) == ("42", release, 7) else ArrGrabObservation("unknown")
+        def exchange(path: Path, envelope: Envelope) -> Envelope:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(5); client.connect(str(path)); client.sendall(envelope.encode())
+                frame = bytearray()
+                while not frame.endswith(b"\n"): frame.extend(client.recv(65536))
+            return Envelope.decode(bytes(frame))
 
-        class Correlation:
-            def candidate_identity(self, download_id: str, media_id: str) -> ArrCandidate | None:
-                return ArrCandidate("movie.mkv", "radarr:tmdb-42", "Movie", {"Tmdb": "42"}) if (download_id, media_id) == ("A" * 40, "42") else None
-
-        class Catalog:
-            def submit_update(self, internal_path: str, update_type: str) -> CatalogSubmission:
-                events.append(f"catalog-submit:{internal_path}:{update_type}"); return CatalogSubmission(True)
-            def observe_catalog(self, expected: CatalogExpectation) -> CatalogObservation | None:
-                events.append(f"catalog-observe:{expected.internal_path}")
-                if expected.internal_path != "/jellyfin/library/radarr-tmdb-42/payload.mkv" or expected.expected_bytes != len(media): return None
-                return CatalogObservation("item-42", "source-42", expected.internal_path, len(media))
-            def direct_play_matches(self, observation: CatalogObservation, *, expected_bytes: int, expected_sha256: str) -> bool:
-                events.append(f"direct-play:{observation.item_id}:{observation.media_source_id}")
-                return observation.internal_path == "/jellyfin/library/radarr-tmdb-42/payload.mkv" and expected_bytes == len(media) and expected_sha256 == hashlib.sha256(media).hexdigest()
+        def start_daemon(path: Path, runtime_factory: object) -> tuple[threading.Event, threading.Thread]:
+            ready, stop = threading.Event(), threading.Event()
+            async def serve() -> None:
+                store, daemon, lock = runtime_factory()
+                try:
+                    if path.exists(): path.unlink()
+                    server = await asyncio.start_unix_server(daemon.handle, path=path); ready.set()
+                    while not stop.is_set(): await asyncio.sleep(0.001)
+                    server.close(); await server.wait_closed()
+                finally:
+                    store.close()
+                    if lock is not None: lock.close()
+            thread = threading.Thread(target=lambda: asyncio.run(serve())); thread.start(); self.assertTrue(ready.wait(5)); return stop, thread
 
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); staging = root / "staging"; canonical = root / "canonical"; staging.mkdir(); canonical.mkdir()
-            (staging / "movie.mkv").write_bytes(media)
-            fence_store = FenceStore.open(root / "fence-state")
-            publisher_store = PublisherStore.open(root / "publisher-state")
-            self.addCleanup(fence_store.close); self.addCleanup(publisher_store.close)
-            fence_state = fence_store.load(FencePolicy(capacity_bytes=10_000, max_inflight=1))
-            fence_service = FenceService(fence_state, fence_store, Qbittorrent(), None, categories={"radarr": "media-interlock-radarr"})
-            fence = FenceDaemon(fence_service, FenceObservability(fence_state), readiness=lambda: (True, True, True))
-            publisher_state = publisher_store.load(); publisher_service = PublisherService(publisher_state, publisher_store)
-            processor = AssetPublisherWorkProcessor(publisher_service, {"radarr": Correlation()}, CandidateVerifier(staging), AssetGenerationPublisher(staging, canonical, namespace="library"), Catalog(), PathTranslation(canonical, "library", "/jellyfin/library"), library_id="2f9e0f39-70de-4502-85ce-7ed03cd2f01f")
-            publisher = PublisherDaemon(publisher_service, PublisherObservability(publisher_state), readiness=lambda: True, process=processor)
-            fence_path, publisher_path = root / "fence.sock", root / "publisher.sock"
-            fence_server = await asyncio.start_unix_server(fence.handle, path=fence_path)
-            publisher_server = await asyncio.start_unix_server(publisher.handle, path=publisher_path)
+            root = Path(directory); staging = root / "staging"; canonical = root / "canonical"; runtime = root / "runtime"
+            staging.mkdir(); canonical.mkdir(); runtime.mkdir(); (staging / "movie.mkv").write_bytes(media); torrent["save_path"] = str(staging)
+            http = ThreadingHTTPServer(("127.0.0.1", 0), Handler); http_thread = threading.Thread(target=http.serve_forever); http_thread.start()
+            self.addCleanup(http.server_close); self.addCleanup(http_thread.join); self.addCleanup(http.shutdown)
+            host, port = http.server_address; base = f"http://{host}:{port}"; config_path = root / "media-interlock.toml"
+            config_path.write_text("\n".join(["[shared]", f'runtime_dir = "{runtime}"', "", "[fence]", f'state_dir = "{root / "fence-state"}"', f'socket_path = "{runtime / "fence.sock"}"', f'staging_root = "{staging}"', 'radarr_category = "media-interlock-radarr"', 'sonarr_category = "media-interlock-sonarr"', "capacity_bytes = 10000", "max_inflight = 1", "", "[publisher]", f'state_dir = "{root / "publisher-state"}"', f'socket_path = "{runtime / "publisher.sock"}"', f'staging_root = "{staging}"', f'canonical_root = "{canonical}"', 'jellyfin_library_id = "2f9e0f39-70de-4502-85ce-7ed03cd2f01f"', 'namespace = "library"', 'jellyfin_path_prefix = "/jellyfin/library"', "", "[reconciler]", f'state_dir = "{root / "reconciler-state"}"', f'socket_path = "{runtime / "reconciler.sock"}"', "", "[reconciler.movie]", "minimum_age_days = 0", "terminal_horizon_days = 1", "cooldown_seconds = 0", "max_attempts = 3", "max_searches_per_run = 1", "", "[reconciler.episode]", "minimum_age_days = 0", "terminal_horizon_days = 1", "cooldown_seconds = 0", "max_attempts = 3", "max_searches_per_run = 1", *sum(([f"[adapters.{name}]", f'base_url = "{base}"', 'username = "env:MI_FIXTURE_USER"', 'password = "env:MI_FIXTURE_PASSWORD"', ""] if name == "qbittorrent" else [f"[adapters.{name}]", f'base_url = "{base}"', 'api_key = "env:MI_FIXTURE_KEY"', ""] for name in ("radarr", "sonarr", "qbittorrent", "jellyfin", "bazarr", "seerr", "prowlarr")), [])]) + "\n", encoding="utf-8")
+            old_environment = {name: os.environ.get(name) for name in ("MI_FIXTURE_KEY", "MI_FIXTURE_USER", "MI_FIXTURE_PASSWORD")}; os.environ.update({"MI_FIXTURE_KEY": "fixture", "MI_FIXTURE_USER": "fixture", "MI_FIXTURE_PASSWORD": "fixture"})
+            publisher_stop = fence_stop = None
             try:
-                reconciler = ReconcilerService(ReconciliationState(), type("Store", (), {"save": lambda *_: None})(), {"radarr": Arr()}, UnixFenceClient(fence_path), {"radarr": "media-interlock-radarr"})
-                self.assertEqual("bound", await asyncio.to_thread(reconciler.execute, SearchIntent(operation_id, "radarr", "42", False, "fixture"), now=1))
-                terminal = fence_service.observe(operation_id)
-                assert terminal is not None
-                reader, writer = await asyncio.open_unix_connection(publisher_path)
-                writer.write(terminal.encode()); await writer.drain()
-                receipt = Envelope.decode(await reader.readuntil(b"\n"))
-                writer.close(); await writer.wait_closed()
-                fence_reader, fence_writer = await asyncio.open_unix_connection(fence_path)
-                fence_writer.write(receipt.encode()); await fence_writer.drain()
-                receipt_status = Envelope.decode(await fence_reader.readuntil(b"\n"))
-                fence_writer.close(); await fence_writer.wait_closed()
+                publisher_stop, publisher_thread = start_daemon(runtime / "publisher.sock", lambda: publisher_cli._runtime(load_config(config_path)))
+                fence_stop, fence_thread = start_daemon(runtime / "fence.sock", lambda: (*fence_cli._runtime(load_config(config_path))[:2], None))
+                self.assertEqual(0, reconciler_cli.main(["--config", str(config_path), "--source", "radarr", "--entity", "42", "--checkpoint", "fixture", "--json"]))
+                reconciler_store = ReconcilerStore.open(root / "reconciler-state")
+                reconciler_state = reconciler_store.load()
+                self.assertTrue(reconciler_state.observed(reconciler_state.intents()[0].operation_id), reconciler_state.records())
+                operation_id = reconciler_state.intents()[0].operation_id
+                reconciler_store.close()
+                # A daemon restart after the grab binding must resume from its
+                # durable state; it must not repeat the Arr POST or tag effect.
+                fence_stop.set(); fence_thread.join(5)
+                fence_stop, fence_thread = start_daemon(runtime / "fence.sock", lambda: (*fence_cli._runtime(load_config(config_path))[:2], None))
+                torrent.update({"state": "uploading", "progress": 1})
+                terminal = exchange(runtime / "fence.sock", Envelope(CONTRACT_VERSION, "observe", operation_id, {})); self.assertEqual("terminal_acquisition", terminal.kind)
+                # The terminal is durable at Fence before the separate
+                # Publisher owner comes back, so a lost delivery has no
+                # filesystem rollback path.
+                publisher_stop.set(); publisher_thread.join(5)
+                publisher_stop, publisher_thread = start_daemon(runtime / "publisher.sock", lambda: publisher_cli._runtime(load_config(config_path)))
+                receipt = exchange(runtime / "publisher.sock", terminal); self.assertEqual("custody_receipt", receipt.kind)
+                self.assertEqual("ok", exchange(runtime / "fence.sock", receipt).body["code"])
+                publisher_stop.set(); publisher_thread.join(5)
+                publisher_stop, publisher_thread = start_daemon(runtime / "publisher.sock", lambda: publisher_cli._runtime(load_config(config_path)))
+                self.assertEqual(receipt, exchange(runtime / "publisher.sock", terminal))
             finally:
-                fence_server.close(); publisher_server.close()
-                await fence_server.wait_closed(); await publisher_server.wait_closed()
-
-            self.assertEqual("custody_receipt", receipt.kind)
-            self.assertEqual("ok", receipt_status.body["code"])
-            self.assertEqual(PublicationState.DELIVERED, publisher_store.load().publication(operation_id).state)
-            self.assertEqual("released", fence_state.reservation(operation_id).state)
+                if fence_stop is not None: fence_stop.set(); fence_thread.join(5)
+                if publisher_stop is not None: publisher_stop.set(); publisher_thread.join(5)
+                for name, value in old_environment.items():
+                    if value is None: os.environ.pop(name, None)
+                    else: os.environ[name] = value
+            self.assertEqual(PublicationState.DELIVERED, PublisherStore.open(root / "publisher-state").load().publication(operation_id).state)
+            self.assertEqual("released", FenceStore.open(root / "fence-state").load(__import__("media_interlock.fence.model", fromlist=["FencePolicy"]).FencePolicy(10000, 1)).reservation(operation_id).state)
             self.assertEqual(media, (canonical / "library" / "radarr-tmdb-42" / "payload.mkv").read_bytes())
-        self.assertLess(events.index("arr-post"), events.index("resume:" + "a" * 40))
-        self.assertLess(events.index("terminal:" + "a" * 40 + f":fence:{operation_id}:media-interlock-radarr"), events.index("catalog-submit:/jellyfin/library/radarr-tmdb-42/payload.mkv:created"))
+        self.assertEqual(["arr-post", "tag", "resume", "catalog-submit"], events)

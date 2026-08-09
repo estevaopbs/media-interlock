@@ -16,7 +16,7 @@ class ArtifactDefinitionTests(unittest.TestCase):
         containerfile = (ROOT / "Containerfile").read_text(encoding="utf-8")
 
         self.assertIn("FROM docker.io/library/python@sha256:", containerfile)
-        self.assertIn("build==1.5.0 setuptools==80.9.0", containerfile)
+        self.assertIn("--require-hashes --no-deps --requirement build-requirements.txt", containerfile)
         self.assertIn("FROM runtime AS fence", containerfile)
         self.assertIn("FROM runtime AS publisher", containerfile)
         self.assertIn("USER media-interlock", containerfile)
@@ -37,3 +37,12 @@ class ArtifactDefinitionTests(unittest.TestCase):
         self.assertIn("--oci-engine", result.stdout)
         self.assertIn("--source-date-epoch", result.stdout)
         self.assertNotIn("push", result.stdout.lower())
+
+    def test_build_bootstrap_is_hash_locked_and_wheel_only(self) -> None:
+        requirements = (ROOT / "build-requirements.txt").read_text(encoding="utf-8")
+        builder = (ROOT / "scripts" / "build-artifacts.py").read_text(encoding="utf-8")
+
+        self.assertEqual(4, requirements.count("--hash=sha256:"))
+        self.assertIn('"--require-hashes", "--no-deps"', builder)
+        self.assertIn('"--wheel", "--no-isolation"', builder)
+        self.assertNotIn('"--sdist"', builder)
