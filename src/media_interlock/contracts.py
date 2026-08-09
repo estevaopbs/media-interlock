@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
@@ -59,6 +60,53 @@ def _json_body(value: object) -> dict[str, Any]:
     return decoded
 
 
+def _sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _manifest_sha256(manifest: Mapping[str, Any] | object) -> str:
+    try:
+        encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ContractError("publisher intake manifest is not JSON-safe") from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _intake_manifest(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    expected = {"source", "upstream_id", "media_id", "asset_slot", "item_type", "provider_ids", "candidate_relative_path", "bundle_members", "inspection", "expected_catalog_path"}
+    if set(value) != expected or value.get("source") not in {"radarr", "sonarr"} or value.get("item_type") not in {"Movie", "Episode"}:
+        return False
+    if not all(isinstance(value[name], str) and value[name] for name in expected - {"provider_ids", "bundle_members", "inspection"}):
+        return False
+    if not value["asset_slot"].startswith(value["source"] + ":") or value["candidate_relative_path"].startswith("/") or ".." in value["candidate_relative_path"].split("/"):
+        return False
+    providers = value["provider_ids"]
+    members = value["bundle_members"]
+    if providers is not None and (not isinstance(providers, dict) or len(providers) > 16 or any(not isinstance(key, str) or not key or not isinstance(item, str) or not item for key, item in providers.items())):
+        return False
+    if not isinstance(members, list) or not 1 <= len(members) <= 129:
+        return False
+    inspection = value["inspection"]
+    if not isinstance(inspection, dict) or set(inspection) != {"audio_languages", "subtitle_languages", "container_evidence"} or not all(
+        isinstance(group, list) and len(group) <= 64 and all(isinstance(item, str) and item and len(item) <= 64 for item in group)
+        for group in inspection.values()
+    ) or not inspection["container_evidence"]:
+        return False
+    paths: set[str] = set()
+    payload = False
+    for member in members:
+        fields = {"path", "bytes", "allocated", "device", "inode", "modified_ns", "sha256"}
+        if not isinstance(member, dict) or set(member) != fields or not isinstance(member["path"], str) or not member["path"] or member["path"].startswith("/") or ".." in member["path"].split("/") or member["path"] in paths or not _sha256(member["sha256"]):
+            return False
+        if any(isinstance(member[name], bool) or not isinstance(member[name], int) or member[name] < 0 for name in ("bytes", "allocated", "device", "inode", "modified_ns")) or member["bytes"] <= 0:
+            return False
+        paths.add(member["path"])
+        payload = payload or member["path"] == value["candidate_relative_path"]
+    return payload
+
+
 @dataclass(frozen=True)
 class Envelope:
     version: str
@@ -69,7 +117,7 @@ class Envelope:
     def __post_init__(self) -> None:
         if not isinstance(self.version, str) or self.version != CONTRACT_VERSION:
             raise ContractError("unsupported contract version")
-        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_pre_admission", "acquisition_grab_binding", "terminal_acquisition", "custody_receipt", "metrics", "observe", "quiesce"}:
+        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_pre_admission", "acquisition_grab_binding", "acquisition_freeze", "terminal_acquisition", "custody_receipt", "publisher_bootstrap", "publisher_assisted_intent", "publisher_assisted_complete", "metrics", "observe", "quiesce"}:
             raise ContractError("unknown contract kind")
         _operation_id(self.operation_id)
         normalized = _json_body(self.body)
@@ -101,6 +149,16 @@ class Envelope:
         elif self.kind == "quiesce":
             if set(normalized) != {"enabled"} or not isinstance(normalized["enabled"], bool):
                 raise ContractError("invalid quiescence fields")
+        elif self.kind == "acquisition_freeze":
+            if normalized:
+                raise ContractError("acquisition freeze request has fields")
+        elif self.kind in {"publisher_bootstrap", "publisher_assisted_complete"}:
+            if set(normalized) != {"manifest", "manifest_sha256"} or not _intake_manifest(normalized["manifest"]) or not isinstance(normalized["manifest_sha256"], str) or normalized["manifest_sha256"] != _manifest_sha256(normalized["manifest"]):
+                raise ContractError("publisher intake manifest is invalid")
+        elif self.kind == "publisher_assisted_intent":
+            expected = {"expected_bytes", "manifest_sha256", "media_id", "source", "upstream_id"}
+            if set(normalized) != expected or normalized["source"] not in {"radarr", "sonarr"} or not all(isinstance(normalized[name], str) and normalized[name] for name in expected - {"source", "expected_bytes"}) or not _sha256(normalized["manifest_sha256"]) or isinstance(normalized["expected_bytes"], bool) or not isinstance(normalized["expected_bytes"], int) or normalized["expected_bytes"] <= 0:
+                raise ContractError("publisher assisted intent fields are invalid")
         elif normalized:
             raise ContractError("observe request has fields")
         object.__setattr__(self, "body", normalized)
@@ -148,6 +206,22 @@ def acquisition_pre_admission(*, operation_id: str, source: str, media_id: str, 
 
 def acquisition_grab_binding(*, operation_id: str, download_id: str, torrent_hash: str) -> Envelope:
     return Envelope(CONTRACT_VERSION, "acquisition_grab_binding", _operation_id(operation_id), {"download_id": download_id, "torrent_hash": torrent_hash})
+
+
+def acquisition_freeze(*, operation_id: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "acquisition_freeze", _operation_id(operation_id), {})
+
+
+def publisher_bootstrap(*, operation_id: str, manifest: Mapping[str, Any]) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "publisher_bootstrap", _operation_id(operation_id), {"manifest": dict(manifest), "manifest_sha256": _manifest_sha256(manifest)})
+
+
+def publisher_assisted_intent(*, operation_id: str, source: str, upstream_id: str, media_id: str, expected_bytes: int, manifest_sha256: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "publisher_assisted_intent", _operation_id(operation_id), {"source": source, "upstream_id": upstream_id, "media_id": media_id, "expected_bytes": expected_bytes, "manifest_sha256": manifest_sha256})
+
+
+def publisher_assisted_complete(*, operation_id: str, manifest: Mapping[str, Any]) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "publisher_assisted_complete", _operation_id(operation_id), {"manifest": dict(manifest), "manifest_sha256": _manifest_sha256(manifest)})
 
 
 def terminal_acquisition(*, operation_id: str, fence_reservation_id: str, source: str, upstream_id: str, media_id: str, bytes_reserved: int, download_id: str) -> Envelope:

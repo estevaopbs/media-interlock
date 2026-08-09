@@ -36,7 +36,6 @@ class CatalogExpectation:
             bool(self.library_id)
             and self.internal_path.startswith("/")
             and self.item_type in {"Movie", "Episode"}
-            and bool(self.provider_ids)
             and all(isinstance(key, str) and key and isinstance(value, str) and value for key, value in self.provider_ids.items())
             and isinstance(self.expected_bytes, int)
             and self.expected_bytes >= 0
@@ -172,7 +171,7 @@ class JellyfinAdapter:
             or item.get("Path") != expected.internal_path
             or item.get("Type") != expected.item_type
             or not isinstance(provider_ids, dict)
-            or any(provider_ids.get(key) != value for key, value in expected.provider_ids.items())
+            or provider_ids != dict(expected.provider_ids)
             or (expected.known_item_id is not None and item_id != expected.known_item_id)
         ):
             return None

@@ -382,6 +382,8 @@ class FenceService:
                     self._recover_resume(operation_id, reservation_id, torrent_hash, self._state.reservation(operation_id).source)
             elif state == ReservationState.PAUSE_INTENT_RECORDED.value:
                 self._recover_pause(operation_id)
+            elif state == ReservationState.FREEZE_INTENT_RECORDED.value:
+                self._recover_freeze(operation_id)
 
     def _recover_resume(self, operation_id: str, reservation_id: str, torrent_hash: object, source: str) -> None:
         if self._state.quiescing or not self._ready_for_resume(self._state) or not isinstance(torrent_hash, str):
@@ -424,6 +426,47 @@ class FenceService:
         envelope = candidate.complete(operation_id)
         self._persist(candidate)
         return envelope
+
+    def freeze(self, operation_id: str) -> bool:
+        """Durably stop one terminal owned hash for a Publisher hardlink copy."""
+        try:
+            reservation = self._state.reservation(operation_id)
+        except KeyError:
+            return False
+        if reservation.state is ReservationState.QBITTORRENT_FROZEN:
+            return True
+        if reservation.state is not ReservationState.TERMINAL:
+            return False
+        candidate = self._state.clone()
+        try:
+            candidate.request_freeze(operation_id)
+        except Exception:
+            return False
+        self._persist(candidate)
+        return self._recover_freeze(operation_id)
+
+    def _recover_freeze(self, operation_id: str) -> bool:
+        try:
+            reservation = self._state.reservation(operation_id)
+            source = self._sources[reservation.source]
+            if reservation.state is not ReservationState.FREEZE_INTENT_RECORDED or reservation.torrent_hash is None:
+                return reservation.state is ReservationState.QBITTORRENT_FROZEN
+            with self._hold_mutation_lease():
+                observed = self._qbittorrent.observe_active(reservation.torrent_hash, reservation.reservation_id, source.category, save_path=source.qbittorrent_save_path)
+                frozen = observed.kind == "observed" and observed.active is False
+                if observed.kind == "observed" and observed.active is True:
+                    frozen = self._qbittorrent.pause(reservation.torrent_hash) and (after := self._qbittorrent.observe_active(reservation.torrent_hash, reservation.reservation_id, source.category, save_path=source.qbittorrent_save_path)).kind == "observed" and after.active is False
+        except Exception:
+            return False
+        if not frozen:
+            return False
+        candidate = self._state.clone()
+        try:
+            candidate.mark_qbittorrent_frozen(operation_id)
+        except Exception:
+            return False
+        self._persist(candidate)
+        return True
 
     def complete(self, operation_id: str) -> Envelope:
         candidate = self._state.clone()

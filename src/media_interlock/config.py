@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Any, Mapping
@@ -113,6 +114,11 @@ class PublisherSourceProfile:
     namespace: str
     jellyfin_library_id: str
     jellyfin_path_prefix: str
+    bundle_settle_seconds: int
+    bundle_sidecar_extensions: tuple[str, ...]
+    bundle_required_languages: tuple[str, ...]
+    bundle_language_aliases: Mapping[str, str]
+    bundle_required_container_evidence: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -139,6 +145,11 @@ class SourceProfile:
     namespace: str
     jellyfin_library_id: str
     jellyfin_path_prefix: str
+    bundle_settle_seconds: int
+    bundle_sidecar_extensions: tuple[str, ...]
+    bundle_required_languages: tuple[str, ...]
+    bundle_language_aliases: Mapping[str, str]
+    bundle_required_container_evidence: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -241,6 +252,61 @@ def _required_nonnegative(table: Mapping[str, object], name: str, location: str,
     if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > maximum:
         raise ConfigError(f"{location}.{name} must be a bounded non-negative integer")
     return value
+
+
+def _optional_nonnegative(table: Mapping[str, object], name: str, location: str, maximum: int, *, default: int) -> int:
+    if name not in table:
+        return default
+    return _required_nonnegative(table, name, location, maximum)
+
+
+def _optional_bundle_strings(table: Mapping[str, object], name: str, location: str, *, default: tuple[str, ...], extension: bool = False) -> tuple[str, ...]:
+    if name not in table:
+        return default
+    raw = table[name]
+    if not isinstance(raw, list) or not raw or len(raw) > 32:
+        raise ConfigError(f"{location}.{name} must be a bounded non-empty list")
+    normalized: list[str] = []
+    for value in raw:
+        if not isinstance(value, str) or not value or len(value) > 32:
+            raise ConfigError(f"{location}.{name} has an invalid value")
+        item = value.lower().replace("_", "-")
+        if extension:
+            if not re.fullmatch(r"\.[a-z0-9]{1,16}", item):
+                raise ConfigError(f"{location}.{name} has an invalid extension")
+        elif not re.fullmatch(r"[a-z0-9]{2,8}(?:-[a-z0-9]{2,8})?", item):
+            raise ConfigError(f"{location}.{name} has an invalid language")
+        normalized.append(item)
+    if len(set(normalized)) != len(normalized):
+        raise ConfigError(f"{location}.{name} must not repeat values")
+    return tuple(normalized)
+
+
+def _optional_bundle_aliases(table: Mapping[str, object], location: str) -> Mapping[str, str]:
+    if "bundle_language_aliases" not in table:
+        return {}
+    raw = table["bundle_language_aliases"]
+    if not isinstance(raw, dict) or len(raw) > 32:
+        raise ConfigError(f"{location}.bundle_language_aliases must be a bounded table")
+    aliases: dict[str, str] = {}
+    for alias, canonical in raw.items():
+        parsed = _optional_bundle_strings({"value": [alias]}, "value", location, default=())
+        targets = _optional_bundle_strings({"value": [canonical]}, "value", location, default=())
+        aliases[parsed[0]] = targets[0]
+    if len(set(aliases)) != len(aliases) or any(alias == canonical for alias, canonical in aliases.items()):
+        raise ConfigError(f"{location}.bundle_language_aliases is invalid")
+    return aliases
+
+
+def _optional_container_evidence(table: Mapping[str, object], location: str) -> tuple[str, ...]:
+    if "bundle_required_container_evidence" not in table:
+        return ()
+    raw = table["bundle_required_container_evidence"]
+    if not isinstance(raw, list) or len(raw) > 16 or any(not isinstance(value, str) or not re.fullmatch(r"container:(avi|m4v|mkv|mp4|webm)", value) for value in raw):
+        raise ConfigError(f"{location}.bundle_required_container_evidence is invalid")
+    if len(set(raw)) != len(raw):
+        raise ConfigError(f"{location}.bundle_required_container_evidence must not repeat values")
+    return tuple(raw)
 
 
 def _required_category(table: Mapping[str, object], name: str, location: str) -> str:
@@ -390,7 +456,7 @@ def _sources(value: object, pools: Mapping[str, CapacityPool]) -> dict[str, Sour
     allowed = {
         "kind", "download_client_id", "category", "qbittorrent_save_path", "arr_import_path_prefix",
         "staging_root", "canonical_root", "download_pool", "staging_pool", "canonical_pool",
-        "namespace", "jellyfin_library_id", "jellyfin_path_prefix",
+        "namespace", "jellyfin_library_id", "jellyfin_path_prefix", "bundle_settle_seconds", "bundle_sidecar_extensions", "bundle_required_languages", "bundle_language_aliases", "bundle_required_container_evidence",
     }
     for name, expected_kind in _SOURCE_KINDS.items():
         profile = _table(table[name], f"sources.{name}")
@@ -418,6 +484,11 @@ def _sources(value: object, pools: Mapping[str, CapacityPool]) -> dict[str, Sour
             _required_namespace(profile, "namespace", f"sources.{name}"),
             _required_uuid(profile, "jellyfin_library_id", f"sources.{name}"),
             _required_posix_prefix(profile, "jellyfin_path_prefix", f"sources.{name}"),
+            _optional_nonnegative(profile, "bundle_settle_seconds", f"sources.{name}", 60, default=2),
+            _optional_bundle_strings(profile, "bundle_sidecar_extensions", f"sources.{name}", default=(".ass", ".ssa", ".srt", ".vtt"), extension=True),
+            _optional_bundle_strings(profile, "bundle_required_languages", f"sources.{name}", default=()),
+            _optional_bundle_aliases(profile, f"sources.{name}"),
+            _optional_container_evidence(profile, f"sources.{name}"),
         )
     if len({profile.download_client_id for profile in profiles.values()}) != len(profiles):
         raise ConfigError("source download_client_id values must be distinct")
@@ -516,7 +587,7 @@ def load_config(path: Path) -> ProductConfig:
             base.state_dir,
             base.socket_path,
             {
-                name: PublisherSourceProfile(name, source.arr_import_path_prefix, source.staging_root, source.canonical_root, source.namespace, source.jellyfin_library_id, source.jellyfin_path_prefix)
+                name: PublisherSourceProfile(name, source.arr_import_path_prefix, source.staging_root, source.canonical_root, source.namespace, source.jellyfin_library_id, source.jellyfin_path_prefix, source.bundle_settle_seconds, source.bundle_sidecar_extensions, source.bundle_required_languages, source.bundle_language_aliases, source.bundle_required_container_evidence)
                 for name, source in sources.items()
             },
         )

@@ -13,7 +13,7 @@ import ctypes
 import errno
 from pathlib import Path, PurePath
 
-from .filesystem import CandidateSafetyError, CandidateVerifier, VerifiedCandidate
+from .filesystem import BundleMember, CandidateSafetyError, CandidateVerifier, VerifiedBundle, VerifiedCandidate
 
 
 class GenerationPublisher:
@@ -60,6 +60,69 @@ class GenerationPublisher:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
 
+    def prepare_bundle(self, generation_id: str, bundle: VerifiedBundle, *, allow_hardlinks: bool = False) -> Path:
+        """Copy every pre-sealed member before exposing a complete generation."""
+        if not self._valid_generation_id(generation_id) or not isinstance(bundle, VerifiedBundle) or not bundle.members:
+            raise CandidateSafetyError("bundle generation identity is unsafe")
+        if bundle.payload.relative_path not in {member.relative_path for member in bundle.members}:
+            raise CandidateSafetyError("bundle payload is absent")
+        self._canonical_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if self._canonical_root.is_symlink():
+            raise CandidateSafetyError("canonical root is unsafe")
+        generations = self._canonical_root / "generations"
+        try:
+            metadata = generations.lstat()
+        except FileNotFoundError:
+            generations.mkdir(mode=0o755)
+        else:
+            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise CandidateSafetyError("canonical generations directory is unsafe")
+        destination_dir = generations / generation_id
+        if destination_dir.exists():
+            if self._copied_bundle_matches(destination_dir, bundle):
+                return destination_dir / bundle.payload.relative_path
+            raise CandidateSafetyError("generation identity already has a different bundle")
+        if not self._source_bundle_matches(bundle, allow_hardlinks=allow_hardlinks):
+            raise CandidateSafetyError("candidate bundle changed before promotion")
+        temporary = generations / f".{generation_id}.{uuid.uuid4().hex}.tmp"
+        try:
+            temporary.mkdir(mode=0o755)
+            for member in bundle.members:
+                destination = temporary / member.relative_path
+                destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                self._copy_verified(member.relative_path, destination, VerifiedCandidate(member.relative_path, member.bytes_verified, member.sha256), allow_hardlinks=allow_hardlinks)
+            if not self._source_bundle_matches(bundle, allow_hardlinks=allow_hardlinks):
+                raise CandidateSafetyError("candidate bundle changed during copy")
+            self._fsync_bundle(temporary, bundle)
+            os.replace(temporary, destination_dir)
+            self._fsync_directory(generations)
+            return destination_dir / bundle.payload.relative_path
+        except BaseException:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+
+    def _source_bundle_matches(self, bundle: VerifiedBundle, *, allow_hardlinks: bool) -> bool:
+        verifier = CandidateVerifier(self._staging_root)
+        try:
+            observed = tuple(verifier.inspect(member.relative_path, allow_hardlinks=allow_hardlinks) for member in bundle.members)
+        except CandidateSafetyError:
+            return False
+        return observed == bundle.members
+
+    @staticmethod
+    def _copied_bundle_matches(destination_dir: Path, bundle: VerifiedBundle) -> bool:
+        verifier = CandidateVerifier(destination_dir)
+        try:
+            observed = tuple(verifier.verify(member.relative_path) for member in bundle.members)
+        except CandidateSafetyError:
+            return False
+        return all(
+            candidate.relative_path == member.relative_path
+            and candidate.bytes_verified == member.bytes_verified
+            and candidate.sha256 == member.sha256
+            for candidate, member in zip(observed, bundle.members, strict=True)
+        )
+
     @staticmethod
     def _valid_generation_id(value: object) -> bool:
         if not isinstance(value, str):
@@ -75,7 +138,7 @@ class GenerationPublisher:
         match = re.fullmatch(r"\.([0-9a-f-]{36})\.([0-9a-f]{32})\.tmp", value)
         return match is not None and cls._valid_generation_id(match.group(1))
 
-    def _copy_verified(self, relative_path: str, destination: Path, candidate: VerifiedCandidate) -> None:
+    def _copy_verified(self, relative_path: str, destination: Path, candidate: VerifiedCandidate, *, allow_hardlinks: bool = False) -> None:
         relative = PurePath(relative_path)
         descriptor = os.open(self._staging_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
         try:
@@ -86,7 +149,7 @@ class GenerationPublisher:
             source = os.open(relative.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=descriptor)
             try:
                 metadata = os.fstat(source)
-                if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_size != candidate.bytes_verified:
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink < 1 or (not allow_hardlinks and metadata.st_nlink != 1) or metadata.st_size != candidate.bytes_verified:
                     raise CandidateSafetyError("candidate changed before copy")
                 target = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
                 try:
@@ -121,6 +184,13 @@ class GenerationPublisher:
         self._fsync_directory(destination.parent)
         self._fsync_directory(temporary)
 
+    def _fsync_bundle(self, temporary: Path, bundle: VerifiedBundle) -> None:
+        directories = {temporary}
+        for member in bundle.members:
+            directories.add((temporary / member.relative_path).parent)
+        for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+            self._fsync_directory(directory)
+
 
 class CanonicalWriterLock:
     """Exclusive daemon-lifetime claim for one canonical root."""
@@ -153,14 +223,14 @@ class AssetGenerationPublisher:
         self._canonical_root = canonical_root
         self._namespace = namespace
 
-    def publish(self, asset_slot: str, generation_id: str, candidate: VerifiedCandidate, *, previous_generation_id: str | None = None) -> Path:
+    def publish(self, asset_slot: str, generation_id: str, candidate: VerifiedCandidate | VerifiedBundle, *, previous_generation_id: str | None = None, hardlink_frozen: bool = False) -> Path:
         slot = self._slot_name(asset_slot)
         if previous_generation_id is not None and not GenerationPublisher._valid_generation_id(previous_generation_id):
             raise CandidateSafetyError("prior generation identity is unsafe")
         visible_before = self.visible_generation(asset_slot)
         if visible_before == generation_id:
             payload = self.generation_payload(asset_slot, generation_id)
-            os.chmod(payload, 0o444)
+            self._seal_bundle_modes(payload.parent)
             os.chmod(payload.parent, 0o755)
             GenerationPublisher._fsync_directory(payload.parent)
             return payload
@@ -174,15 +244,21 @@ class AssetGenerationPublisher:
         try:
             payload = self.generation_payload(asset_slot, generation_id)
         except CandidateSafetyError:
-            prepared = GenerationPublisher(self._staging_root, private_root).prepare(generation_id, candidate)
-            payload = private_root / "generations" / generation_id / self._payload_name(candidate.relative_path)
-            os.replace(prepared, payload)
+            generation = GenerationPublisher(self._staging_root, private_root)
+            if isinstance(candidate, VerifiedBundle):
+                prepared = generation.prepare_bundle(generation_id, candidate, allow_hardlinks=hardlink_frozen)
+                payload = self._normalize_bundle(private_root / "generations" / generation_id, prepared, candidate)
+            else:
+                prepared = generation.prepare(generation_id, candidate)
+                payload = private_root / "generations" / generation_id / self._payload_name(candidate.relative_path)
+                os.replace(prepared, payload)
         # The move can be durable while the following mode repair is not. Make
         # recovery idempotently restore the read-only playback contract.
-        os.chmod(payload, 0o444)
+        self._seal_bundle_modes(payload.parent)
         os.chmod(payload.parent, 0o755)
         GenerationPublisher._fsync_directory(payload.parent)
-        if CandidateVerifier(payload.parent).verify(payload.name) != VerifiedCandidate(payload.name, candidate.bytes_verified, candidate.sha256):
+        expected_payload = candidate.payload if isinstance(candidate, VerifiedBundle) else candidate
+        if CandidateVerifier(payload.parent).verify(payload.name) != VerifiedCandidate(payload.name, expected_payload.bytes_verified, expected_payload.sha256):
             raise CandidateSafetyError("asset generation payload differs")
         slot_path = visible_root / slot
         target = Path("..") / ".publisher" / "assets" / slot / "generations" / generation_id
@@ -211,6 +287,50 @@ class AssetGenerationPublisher:
             except FileNotFoundError:
                 pass
         return slot_path / payload.name
+
+    def _normalize_bundle(self, generation_dir: Path, prepared_payload: Path, bundle: VerifiedBundle) -> Path:
+        payload_name = self._payload_name(bundle.payload.relative_path)
+        payload = generation_dir / payload_name
+        if prepared_payload != payload:
+            os.replace(prepared_payload, payload)
+        source_stem = PurePath(bundle.payload.relative_path).stem
+        for member in bundle.members:
+            if member.relative_path == bundle.payload.relative_path:
+                continue
+            name = PurePath(member.relative_path).name
+            if not name.startswith(source_stem + "."):
+                raise CandidateSafetyError("bundle sidecar name is invalid")
+            destination = generation_dir / ("payload" + name.removeprefix(source_stem))
+            source = generation_dir / member.relative_path
+            if source != destination:
+                if destination.exists():
+                    raise CandidateSafetyError("bundle sidecar name conflicts")
+                os.replace(source, destination)
+        self._remove_empty_bundle_directories(generation_dir, bundle)
+        self._fsync_bundle_generation(generation_dir)
+        return payload
+
+    @staticmethod
+    def _remove_empty_bundle_directories(generation_dir: Path, bundle: VerifiedBundle) -> None:
+        parents = {generation_dir / PurePath(member.relative_path).parent for member in bundle.members}
+        for directory in sorted(parents, key=lambda item: len(item.parts), reverse=True):
+            if directory != generation_dir:
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _fsync_bundle_generation(generation_dir: Path) -> None:
+        GenerationPublisher._fsync_directory(generation_dir)
+
+    @staticmethod
+    def _seal_bundle_modes(bundle_dir: Path) -> None:
+        for member in bundle_dir.glob("payload.*"):
+            metadata = member.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise CandidateSafetyError("asset generation bundle is unsafe")
+            os.chmod(member, 0o444)
 
     def visible_generation(self, asset_slot: str) -> str | None:
         slot = self._slot_name(asset_slot)

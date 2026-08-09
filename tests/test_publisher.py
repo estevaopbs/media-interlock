@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import uuid
 import tempfile
+import os
 from pathlib import Path
 
 import _source_tree  # noqa: F401
@@ -85,6 +86,15 @@ class PublisherCustodyTests(unittest.TestCase):
             self.assertEqual(receipt, restored.adopt_terminal(self.terminal()))
             self.assertEqual(PublicationState.CUSTODY_RESERVED, restored.publication(OPERATION_ID).state)
 
+    def test_legacy_publisher_state_requires_an_explicit_bundle_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PublisherStore.open(Path(directory) / "publisher")
+            self.addCleanup(store.close)
+            store._store.put("publisher.publications.v1", "[]")  # type: ignore[attr-defined]
+
+            with self.assertRaisesRegex(ContractError, "explicit migration"):
+                store.load()
+
     def test_catalog_submission_and_observation_are_distinct_durable_boundaries(self) -> None:
         state = PublisherState()
         state.adopt_terminal(self.terminal())
@@ -102,6 +112,185 @@ class PublisherCustodyTests(unittest.TestCase):
         self.assertEqual("jellyfin-item", state.publication(OPERATION_ID).catalog_item_id)
         state.mark_catalog_delivered(OPERATION_ID)
         self.assertEqual(PublicationState.DELIVERED, state.publication(OPERATION_ID).state)
+
+    def test_sealed_bundle_manifest_survives_a_publisher_state_round_trip(self) -> None:
+        from media_interlock.publisher.filesystem import BundleVerifier
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            staging.mkdir()
+            (staging / "movie.mkv").write_bytes(b"video")
+            (staging / "movie.en.srt").write_bytes(b"subtitle")
+            bundle = BundleVerifier(staging, settle_seconds=0).verify("movie.mkv")
+            state = PublisherState()
+            state.adopt_terminal(self.terminal())
+
+            state.mark_bundle_verified(OPERATION_ID, bundle)
+            restored = PublisherState.from_records(state.records())
+
+            self.assertEqual(bundle.payload, restored.publication(OPERATION_ID).bundle().payload)
+            self.assertEqual(bundle.members, restored.publication(OPERATION_ID).bundle().members)
+
+    def test_bootstrap_is_owner_bound_idempotent_and_rejects_manifest_drift(self) -> None:
+        from media_interlock.publisher.filesystem import BundleVerifier
+
+        class Store:
+            def save(self, _: PublisherState) -> None: pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            staging.mkdir()
+            (staging / "movie.mkv").write_bytes(b"video")
+            bundle = BundleVerifier(staging, settle_seconds=0).verify("movie.mkv")
+            state = PublisherState()
+            service = PublisherService(state, Store())
+            arguments = dict(operation_id=OPERATION_ID, source="radarr", upstream_id="bootstrap-import-42", media_id="42", asset_slot="radarr:tmdb-42", item_type="Movie", provider_ids={"Tmdb": "42"}, bundle=bundle, manifest_digest="b" * 64)
+
+            service.bootstrap_bundle(**arguments)
+            service.bootstrap_bundle(**arguments)
+            self.assertEqual("bootstrap", state.publication(OPERATION_ID).provenance)
+            self.assertEqual(PublicationState.CANDIDATE_VERIFIED, state.publication(OPERATION_ID).state)
+            with self.assertRaisesRegex(ContractError, "conflicts"):
+                service.bootstrap_bundle(**(arguments | {"manifest_digest": "c" * 64}))
+
+            absent_operation = "12345678-1234-4678-9234-567812345679"
+            service.bootstrap_bundle(**(arguments | {"operation_id": absent_operation, "provider_ids": {}, "manifest_digest": "c" * 64}))
+            self.assertEqual((), state.publication(absent_operation).provider_ids)
+
+    def test_assisted_intent_cannot_fabricate_fence_custody_and_requires_its_manifest(self) -> None:
+        from media_interlock.publisher.filesystem import BundleVerifier
+
+        class Store:
+            def save(self, _: PublisherState) -> None: pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            staging.mkdir()
+            (staging / "movie.mkv").write_bytes(b"video")
+            bundle = BundleVerifier(staging, settle_seconds=0).verify("movie.mkv")
+            state = PublisherState()
+            service = PublisherService(state, Store())
+            service.record_assisted_intent(operation_id=OPERATION_ID, source="radarr", upstream_id="assisted-import-42", media_id="42", expected_bytes=bundle.bytes_verified, manifest_digest="d" * 64)
+
+            with self.assertRaisesRegex(ContractError, "does not match"):
+                service.complete_assisted_bundle(operation_id=OPERATION_ID, asset_slot="radarr:tmdb-42", item_type="Movie", provider_ids={"Tmdb": "42"}, bundle=bundle, manifest_digest="e" * 64)
+            service.complete_assisted_bundle(operation_id=OPERATION_ID, asset_slot="radarr:tmdb-42", item_type="Movie", provider_ids={"Tmdb": "42"}, bundle=bundle, manifest_digest="d" * 64)
+            service.complete_assisted_bundle(operation_id=OPERATION_ID, asset_slot="radarr:tmdb-42", item_type="Movie", provider_ids={"Tmdb": "42"}, bundle=bundle, manifest_digest="d" * 64)
+            publication = state.publication(OPERATION_ID)
+            self.assertEqual("assisted", publication.provenance)
+            self.assertEqual("assisted", publication.download_id)
+            self.assertEqual(PublicationState.CANDIDATE_VERIFIED, publication.state)
+
+    def test_assisted_intent_cannot_enter_the_fence_correlation_recovery_path(self) -> None:
+        from media_interlock.adapters.arr import ArrCandidate
+
+        class Store:
+            def save(self, _: PublisherState) -> None: pass
+
+        class Correlation:
+            def candidate_identity(self, *_: object) -> ArrCandidate:
+                raise AssertionError("assisted intake must require its completion envelope")
+
+        class Inspection:
+            def verify(self, _: str) -> VerifiedCandidate:
+                raise AssertionError("assisted intake must require its sealed manifest")
+
+        state = PublisherState()
+        service = PublisherService(state, Store())
+        service.record_assisted_intent(
+            operation_id=OPERATION_ID,
+            source="radarr",
+            upstream_id="assisted-import-42",
+            media_id="42",
+            expected_bytes=5,
+            manifest_digest="d" * 64,
+        )
+
+        self.assertFalse(service.correlate_identify_and_verify(OPERATION_ID, Correlation(), Inspection()))
+        self.assertEqual(PublicationState.CUSTODY_RESERVED, state.publication(OPERATION_ID).state)
+
+    def test_worker_passes_the_durable_bundle_to_generation(self) -> None:
+        from media_interlock.adapters.arr import ArrCandidate
+        from media_interlock.publisher.filesystem import BundleVerifier, VerifiedBundle
+
+        class Store:
+            def save(self, _: PublisherState) -> None: pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            staging.mkdir()
+            (staging / "movie.mkv").write_bytes(b"video")
+            (staging / "movie.en.srt").write_bytes(b"subtitle")
+            bundle = BundleVerifier(staging, settle_seconds=0).verify("movie.mkv")
+
+            class Correlation:
+                def candidate_identity(self, *_: object) -> ArrCandidate:
+                    return ArrCandidate("movie.mkv", "radarr:tmdb-42", "Movie", {"Tmdb": "42"})
+
+            class Inspection:
+                def verify(self, _: str) -> VerifiedBundle:
+                    return bundle
+
+            class Generations:
+                def visible_generation(self, _: str) -> None: return None
+                def publish(self, _asset: str, _generation: str, candidate, **__: object) -> Path:
+                    self.candidate = candidate
+                    return Path("/canonical/library/radarr-tmdb-42/payload.mkv")
+
+            state = PublisherState()
+            service = PublisherService(state, Store())
+            service.accept_terminal(self.terminal())
+            self.assertTrue(service.correlate_identify_and_verify(OPERATION_ID, Correlation(), Inspection()))
+            generations = Generations()
+            self.assertIsNotNone(service.commit_asset_generation(OPERATION_ID, generations))
+            self.assertEqual(bundle, generations.candidate)
+
+    def test_hardlinked_bundle_stays_pending_until_exact_freeze_then_copies_with_authority(self) -> None:
+        from media_interlock.adapters.arr import ArrCandidate
+        from media_interlock.publisher.filesystem import BundleVerifier
+        from media_interlock.publisher.service import AssetPublisherWorkProcessor, PathTranslation
+
+        class Store:
+            def save(self, _: PublisherState) -> None: pass
+
+        class Correlation:
+            def candidate_identity(self, *_: object) -> ArrCandidate:
+                return ArrCandidate("imported.mkv", "radarr:tmdb-42", "Movie", {"Tmdb": "42"})
+
+        class Generations:
+            def visible_generation(self, _: str) -> None: return None
+            def publish(self, _asset: str, _generation: str, _candidate: object, **kwargs: object) -> Path:
+                self.hardlink_frozen = kwargs["hardlink_frozen"]
+                return Path("/canonical/library/radarr-tmdb-42/payload.mkv")
+            def garbage_collect(self, *_: object) -> None: pass
+
+        class Catalog:
+            def submit_update(self, *_: object):
+                return type("Submission", (), {"accepted": False})()
+            def observe_catalog(self, *_: object): return None
+            def direct_play_matches(self, *_: object, **__: object) -> bool: return False
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            staging.mkdir()
+            (staging / "payload.mkv").write_bytes(b"video")
+            os.link(staging / "payload.mkv", staging / "imported.mkv")
+            state = PublisherState()
+            service = PublisherService(state, Store())
+            service.accept_terminal(self.terminal())
+            generations = Generations()
+            freezes: list[str] = []
+            processor = AssetPublisherWorkProcessor(
+                service, {"radarr": Correlation()}, BundleVerifier(staging, settle_seconds=0), generations,
+                Catalog(), PathTranslation(Path("/canonical"), "library", "/jellyfin/library"),
+                library_id="2f9e0f39-70de-4502-85ce-7ed03cd2f01f", freeze=lambda operation_id: (freezes.append(operation_id) or True),
+            )
+
+            self.assertTrue(processor(OPERATION_ID))
+            self.assertEqual([OPERATION_ID], freezes)
+            self.assertTrue(generations.hardlink_frozen)
+            self.assertTrue(state.publication(OPERATION_ID).hardlink_frozen)
+            self.assertEqual(PublicationState.CATALOG_PENDING, state.publication(OPERATION_ID).state)
 
     def test_exact_catalog_delivery_requires_observation_and_direct_play(self) -> None:
         from media_interlock.adapters.arr import ArrCandidate
@@ -347,6 +536,131 @@ class PublisherCustodyTests(unittest.TestCase):
 
 
 class CandidateFilesystemTests(unittest.TestCase):
+    def test_bundle_verifier_seals_one_video_and_its_matching_sidecars(self) -> None:
+        from media_interlock.publisher.filesystem import BundleVerifier
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "staging"
+            root.mkdir()
+            (root / "episode.mkv").write_bytes(b"video")
+            (root / "episode.en.srt").write_bytes(b"english")
+            (root / "episode.pt-BR.ass").write_bytes(b"portuguese")
+            (root / "unrelated.mkv").write_bytes(b"other")
+
+            bundle = BundleVerifier(root, settle_seconds=0).verify("episode.mkv")
+
+            self.assertEqual("episode.mkv", bundle.payload.relative_path)
+            self.assertEqual(("episode.en.srt", "episode.mkv", "episode.pt-BR.ass"), tuple(member.relative_path for member in bundle.members))
+            self.assertEqual(len(b"videoenglishportuguese"), bundle.bytes_verified)
+
+    def test_bundle_verifier_rejects_an_unknown_matching_sidecar(self) -> None:
+        from media_interlock.publisher.filesystem import BundleVerifier
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "staging"
+            root.mkdir()
+            (root / "movie.mkv").write_bytes(b"video")
+            (root / "movie.preview.bin").write_bytes(b"unknown")
+
+            with self.assertRaises(CandidateSafetyError):
+                BundleVerifier(root, settle_seconds=0).verify("movie.mkv")
+
+    def test_bundle_policy_requires_configured_language_and_accepts_an_alias(self) -> None:
+        from media_interlock.publisher.filesystem import BundleVerifier
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "staging"
+            root.mkdir()
+            (root / "movie.mkv").write_bytes(b"video")
+            (root / "movie.por.srt").write_bytes(b"subtitle")
+            verifier = BundleVerifier(root, settle_seconds=0, required_languages=("pt-br",), language_aliases={"por": "pt-br"})
+
+            self.assertEqual("movie.mkv", verifier.verify("movie.mkv").payload.relative_path)
+            with self.assertRaises(CandidateSafetyError):
+                BundleVerifier(root, settle_seconds=0, required_languages=("en",)).verify("movie.mkv")
+
+    def test_bundle_inspection_failure_and_embedded_language_evidence_are_fail_closed(self) -> None:
+        from media_interlock.publisher.filesystem import BundleVerifier, MediaInspection
+
+        class Inspector:
+            def inspect(self, _):
+                return MediaInspection(("en",), (), ("container:mkv",))
+
+        class FailingInspector:
+            def inspect(self, _):
+                raise RuntimeError("decoder unavailable")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "staging"
+            root.mkdir()
+            (root / "movie.mkv").write_bytes(b"video")
+
+            bundle = BundleVerifier(root, settle_seconds=0, required_languages=("en",), media_inspector=Inspector()).verify("movie.mkv")
+            self.assertEqual(("en",), bundle.inspection.audio_languages)
+            self.assertEqual("movie.mkv", BundleVerifier(root, settle_seconds=0, required_container_evidence=("container:mkv",)).verify("movie.mkv").payload.relative_path)
+            with self.assertRaises(CandidateSafetyError):
+                BundleVerifier(root, settle_seconds=0, required_container_evidence=("container:mp4",)).verify("movie.mkv")
+            with self.assertRaises(CandidateSafetyError):
+                BundleVerifier(root, settle_seconds=0, media_inspector=FailingInspector()).verify("movie.mkv")
+
+    def test_generation_publisher_copies_a_sealed_bundle_to_independent_inodes(self) -> None:
+        from media_interlock.publisher.filesystem import BundleVerifier
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            canonical = Path(directory) / "canonical"
+            staging.mkdir()
+            canonical.mkdir()
+            (staging / "movie.mkv").write_bytes(b"video")
+            (staging / "movie.en.srt").write_bytes(b"subtitle")
+            bundle = BundleVerifier(staging, settle_seconds=0).verify("movie.mkv")
+
+            payload = GenerationPublisher(staging, canonical).prepare_bundle(OPERATION_ID, bundle)
+
+            copied_sidecar = payload.parent / "movie.en.srt"
+            self.assertEqual(b"video", payload.read_bytes())
+            self.assertEqual(b"subtitle", copied_sidecar.read_bytes())
+            self.assertNotEqual((staging / "movie.mkv").stat().st_ino, payload.stat().st_ino)
+            self.assertNotEqual((staging / "movie.en.srt").stat().st_ino, copied_sidecar.stat().st_ino)
+
+    def test_hardlinked_bundle_requires_frozen_copy_authority_and_never_reuses_the_inode(self) -> None:
+        from media_interlock.publisher.filesystem import BundleVerifier
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            canonical = Path(directory) / "canonical"
+            staging.mkdir()
+            canonical.mkdir()
+            (staging / "payload.mkv").write_bytes(b"video")
+            os.link(staging / "payload.mkv", staging / "movie.mkv")
+            bundle = BundleVerifier(staging, settle_seconds=0).verify("movie.mkv", allow_hardlinks=True)
+
+            with self.assertRaises(CandidateSafetyError):
+                GenerationPublisher(staging, canonical).prepare_bundle(OPERATION_ID, bundle)
+            payload = GenerationPublisher(staging, canonical).prepare_bundle(OPERATION_ID, bundle, allow_hardlinks=True)
+
+            self.assertEqual(b"video", payload.read_bytes())
+            self.assertNotEqual((staging / "movie.mkv").stat().st_ino, payload.stat().st_ino)
+
+    def test_asset_publisher_exposes_a_complete_bundle_only_after_copy(self) -> None:
+        from media_interlock.publisher.filesystem import BundleVerifier
+        from media_interlock.publisher.generation import AssetGenerationPublisher
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            canonical = Path(directory) / "canonical"
+            staging.mkdir()
+            canonical.mkdir()
+            (staging / "movie.mkv").write_bytes(b"video")
+            (staging / "movie.en.srt").write_bytes(b"subtitle")
+            bundle = BundleVerifier(staging, settle_seconds=0).verify("movie.mkv")
+
+            payload = AssetGenerationPublisher(staging, canonical, namespace="library").publish("radarr:movie-a", OPERATION_ID, bundle)
+
+            self.assertEqual(b"video", payload.read_bytes())
+            self.assertEqual(b"subtitle", (payload.parent / "payload.en.srt").read_bytes())
+            self.assertNotEqual((staging / "movie.mkv").stat().st_ino, payload.stat().st_ino)
+
     def test_asset_slots_keep_unrelated_assets_visible_across_updates(self) -> None:
         from media_interlock.publisher.generation import AssetGenerationPublisher
 

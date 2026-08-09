@@ -17,12 +17,13 @@ from ..adapters.sonarr import SonarrAdapter
 from ..adapters.jellyfin import JellyfinAdapter
 from ..adapters.bazarr import BazarrAdapter
 from ..adapters.seerr import SeerrAdapter
+from ..reconciler.fence_client import UnixFenceClient
 from .generation import AssetGenerationPublisher, CanonicalWriterLock
 from .daemon import PublisherDaemon
 from .model import PublisherState
 from .observability import PublisherObservability
-from .service import AssetPublisherWorkProcessor, PathTranslation, PublisherService
-from .filesystem import CandidateVerifier
+from .service import AssetPublisherWorkProcessor, PathTranslation, PublisherService, verified_bundle_from_manifest
+from .filesystem import BundleVerifier
 from .store import PublisherStore
 
 
@@ -60,29 +61,103 @@ def _runtime(config: ProductConfig) -> tuple[PublisherStore, PublisherDaemon, tu
         profile.name: AssetPublisherWorkProcessor(
             service,
             {profile.name: correlations[profile.name]},
-            CandidateVerifier(profile.staging_root),
+            BundleVerifier(
+                profile.staging_root,
+                settle_seconds=profile.bundle_settle_seconds,
+                sidecar_extensions=profile.bundle_sidecar_extensions,
+                required_languages=profile.bundle_required_languages,
+                language_aliases=dict(profile.bundle_language_aliases),
+                required_container_evidence=profile.bundle_required_container_evidence,
+            ),
             AssetGenerationPublisher(profile.staging_root, profile.canonical_root, namespace=profile.namespace),
             catalog,
             PathTranslation(profile.canonical_root, profile.namespace, profile.jellyfin_path_prefix),
             library_id=profile.jellyfin_library_id,
+            freeze=None if config.fence is None else UnixFenceClient(config.fence.socket_path).freeze,
         )
         for profile in profiles
     }
-    def process(operation_id: str) -> None:
+    def process(operation_id: str) -> bool:
         publication = state.publication(operation_id)
         processor = processors.get(publication.source)
         if processor is not None:
-            processor(operation_id)
+            return processor(operation_id)
+        return False
 
     def retry_pending() -> None:
         for record in tuple(state.records()):
             process(str(record["operation_id"]))
+
+    def intake(envelope: Envelope) -> bool:
+        if envelope.kind == "publisher_assisted_intent":
+            service.record_assisted_intent(
+                operation_id=envelope.operation_id,
+                source=str(envelope.body["source"]),
+                upstream_id=str(envelope.body["upstream_id"]),
+                media_id=str(envelope.body["media_id"]),
+                expected_bytes=int(envelope.body["expected_bytes"]),
+                manifest_digest=str(envelope.body["manifest_sha256"]),
+            )
+            return True
+        manifest = envelope.body["manifest"]
+        if not isinstance(manifest, dict):
+            return False
+        source = manifest.get("source")
+        processor = processors.get(source) if isinstance(source, str) else None
+        if processor is None:
+            return False
+        bundle = verified_bundle_from_manifest(manifest, processor._inspection)
+        asset_slot = manifest["asset_slot"]
+        item_type = manifest["item_type"]
+        providers = manifest["provider_ids"]
+        if not isinstance(asset_slot, str) or not isinstance(item_type, str) or providers is not None and not isinstance(providers, dict):
+            return False
+        expected_path = processor._translation.to_jellyfin(processor._translation.logical_payload(asset_slot, bundle.payload.relative_path))
+        if manifest.get("expected_catalog_path") != expected_path:
+            return False
+        arguments = dict(
+            operation_id=envelope.operation_id,
+            source=source,
+            upstream_id=str(manifest["upstream_id"]),
+            media_id=str(manifest["media_id"]),
+            asset_slot=asset_slot,
+            item_type=item_type,
+            provider_ids={} if providers is None else {str(key): str(value) for key, value in providers.items()},
+            bundle=bundle,
+            manifest_digest=str(envelope.body["manifest_sha256"]),
+        )
+        if envelope.kind == "publisher_bootstrap":
+            service.bootstrap_bundle(**arguments)
+        else:
+            publication = state.publication(envelope.operation_id)
+            correlation = correlations.get(source)
+            derive = getattr(correlation, "candidate_identity", None)
+            identity = derive(publication.upstream_id, publication.media_id) if callable(derive) else None
+            if (
+                identity is None
+                or identity.relative_path != bundle.payload.relative_path
+                or identity.asset_slot != arguments["asset_slot"]
+                or identity.item_type != arguments["item_type"]
+                or dict(identity.provider_ids) != arguments["provider_ids"]
+            ):
+                return False
+            service.complete_assisted_bundle(
+                operation_id=envelope.operation_id,
+                asset_slot=arguments["asset_slot"],
+                item_type=arguments["item_type"],
+                provider_ids=arguments["provider_ids"],
+                bundle=arguments["bundle"],
+                manifest_digest=arguments["manifest_digest"],
+            )
+        process(envelope.operation_id)
+        return True
 
     daemon = PublisherDaemon(
         service,
         PublisherObservability(state),
         readiness=readiness,
         process=process,
+        intake=intake,
         retry=retry_pending,
     )
     return store, daemon, writer_locks

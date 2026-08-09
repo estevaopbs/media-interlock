@@ -175,6 +175,24 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(7, config.sources["radarr"].download_client_id)
         self.assertEqual("/srv/downloads/episodes", str(config.sources["sonarr"].qbittorrent_save_path))
         self.assertEqual("shared-qbittorrent-mutation/v1", config.fence.mutation_lock.version)
+        self.assertEqual(2, config.publisher.sources["radarr"].bundle_settle_seconds)
+
+    def test_bundle_settle_policy_is_bounded_per_source(self) -> None:
+        content = VALID_CONFIG.replace('namespace = "movies"', 'namespace = "movies"\nbundle_settle_seconds = 7', 1)
+
+        config = load_config(self.write(content))
+
+        self.assertEqual(7, config.publisher.sources["radarr"].bundle_settle_seconds)
+        with self.assertRaisesRegex(ConfigError, "bundle_settle_seconds"):
+            load_config(self.write(content.replace("bundle_settle_seconds = 7", "bundle_settle_seconds = 61")))
+
+    def test_bundle_container_evidence_policy_is_strict(self) -> None:
+        content = VALID_CONFIG.replace('namespace = "movies"', 'namespace = "movies"\nbundle_required_container_evidence = ["container:mkv"]', 1)
+        config = load_config(self.write(content))
+
+        self.assertEqual(("container:mkv",), config.publisher.sources["radarr"].bundle_required_container_evidence)
+        with self.assertRaisesRegex(ConfigError, "container_evidence"):
+            load_config(self.write(content.replace("container:mkv", "codec:h264")))
 
     def test_rejects_unknown_and_ambiguous_configuration_before_effects(self) -> None:
         with self.assertRaisesRegex(ConfigError, "unknown key"):

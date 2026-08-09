@@ -8,9 +8,11 @@ physical headroom, and exact local quiescence. It has a private durable
 reservation store, version-1 local Unix endpoint, bounded health/metrics,
 optional configured-indexer Prowlarr readiness, terminal observation,
 conservative custody receipts, and restart reconciliation. Publisher has a
-private durable publication store, per-asset sealed bundles and stable slots,
-asset-local predecessor retention, Arr identity correlation, bounded Jellyfin
-catalog observation, and exact static direct-play verification before delivery.
+private durable publication store, twice-observed sealed asset bundles, exact
+Fence freezes for hardlinked staging copies, independent canonical inodes,
+stable slots, asset-local predecessor retention, distinct bootstrap/assisted
+provenance, Arr identity correlation, bounded Jellyfin catalog observation,
+and exact static direct-play verification before delivery.
 
 Reconciler has a private durable intent store, typed movie and episode policy,
 native ordered Arr release selection, causal Queue/History polling, exact

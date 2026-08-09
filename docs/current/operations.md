@@ -57,6 +57,17 @@ the paths and observable upstream settings; deployment manifests, identities,
 mounts, ACLs, and credentials enforce the parts outside the process. Both are
 required, and negative probes belong to downstream acceptance.
 
+Each Publisher source profile also declares a bounded bundle settle interval,
+accepted sidecar extensions, and optional required language aliases and
+container evidence. These narrow eligibility only: Publisher always performs
+two no-follow bundle observations and independent-inode canonical copies. If a
+profile can receive Arr hardlinks, the Publisher must be configured with the
+Fence socket; otherwise that candidate remains pending. Bootstrap and assisted
+candidate intake use the Publisher's local versioned socket with sealed
+owner-bound manifests. A downstream tool may prepare those inputs, but it owns
+the one-off selection or migration policy and must not expect a Fence receipt
+from either intake path.
+
 ## Observability
 
 Human CLI output explains the blocked invariant without printing private media

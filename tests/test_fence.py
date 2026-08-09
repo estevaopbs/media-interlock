@@ -35,6 +35,17 @@ def bound(state: FenceState, *, size: int = 400) -> None:
 
 
 class FenceStateTests(unittest.TestCase):
+    def test_terminal_reservation_requires_an_exact_freeze_before_hardlink_custody_release(self) -> None:
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        bound(state)
+        terminal = state.complete(OPERATION_ID)
+
+        state.request_freeze(OPERATION_ID)
+        state.mark_qbittorrent_frozen(OPERATION_ID)
+
+        self.assertEqual(ReservationState.QBITTORRENT_FROZEN, state.reservation(OPERATION_ID).state)
+        self.assertTrue(state.accept_custody(custody_receipt(OPERATION_ID, terminal.body["fence_reservation_id"], "publisher-r-1")))
+
     def test_pre_admission_reserves_before_arr_has_a_download_identity(self) -> None:
         state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
 
@@ -121,6 +132,65 @@ class FenceStateTests(unittest.TestCase):
 
 
 class FenceServiceTests(unittest.TestCase):
+    def test_freeze_pauses_only_the_exact_terminal_owned_hash_under_the_lease(self) -> None:
+        events: list[str] = []
+
+        class Store:
+            def save(self, _: FenceState) -> None: events.append("save")
+
+        class Lease:
+            def acquire(self):
+                class Held:
+                    def __enter__(self): events.append("lease-enter")
+                    def __exit__(self, *_: object): events.append("lease-exit")
+                return Held()
+
+        class Qbittorrent:
+            active = True
+            def observe_active(self, torrent_hash: str, *_: object, **__: object) -> QbittorrentActivityObservation:
+                events.append(f"observe:{torrent_hash}")
+                return QbittorrentActivityObservation("observed", self.active)
+            def pause(self, torrent_hash: str) -> bool:
+                events.append(f"pause:{torrent_hash}")
+                self.active = False
+                return True
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        bound(state)
+        state.complete(OPERATION_ID)
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE}, lease=Lease())
+
+        self.assertTrue(service.freeze(OPERATION_ID))
+        self.assertEqual(ReservationState.QBITTORRENT_FROZEN, state.reservation(OPERATION_ID).state)
+        self.assertEqual([f"pause:{HASH}"], [event for event in events if event.startswith("pause:")])
+        self.assertLess(events.index("lease-enter"), events.index(f"observe:{HASH}"))
+
+    def test_recovery_reestablishes_a_crashed_freeze_intent_without_touching_a_foreign_hash(self) -> None:
+        calls: list[str] = []
+
+        class Store:
+            def save(self, _: FenceState) -> None: pass
+
+        class Qbittorrent:
+            active = True
+            def observe_active(self, torrent_hash: str, *_: object, **__: object) -> QbittorrentActivityObservation:
+                calls.append(f"observe:{torrent_hash}")
+                return QbittorrentActivityObservation("observed", self.active)
+            def pause(self, torrent_hash: str) -> bool:
+                calls.append(f"pause:{torrent_hash}")
+                self.active = False
+                return True
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        bound(state)
+        state.complete(OPERATION_ID)
+        state.request_freeze(OPERATION_ID)  # durable intent survived a crash before the pause effect
+
+        FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE}).recover()
+
+        self.assertEqual(ReservationState.QBITTORRENT_FROZEN, state.reservation(OPERATION_ID).state)
+        self.assertEqual([f"pause:{HASH}"], [call for call in calls if call.startswith("pause:")])
+
     def test_quiescence_pauses_only_the_exact_active_owned_hash_then_rechecks_before_resume(self) -> None:
         events: list[str] = []
 

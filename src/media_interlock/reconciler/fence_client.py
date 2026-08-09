@@ -5,7 +5,7 @@ from __future__ import annotations
 import socket
 from pathlib import Path
 
-from ..contracts import Envelope, StatusCode, acquisition_grab_binding, acquisition_pre_admission
+from ..contracts import Envelope, StatusCode, acquisition_freeze, acquisition_grab_binding, acquisition_pre_admission
 from ..fence.model import AdmissionDecision, PreAdmissionIntent
 
 
@@ -47,4 +47,8 @@ class UnixFenceClient:
 
     def bind_grab(self, operation_id: str, download_id: str, torrent_hash: str) -> bool:
         response = self._call(acquisition_grab_binding(operation_id=operation_id, download_id=download_id, torrent_hash=torrent_hash))
+        return response is not None and response.kind == "status" and response.body.get("code") == StatusCode.OK.value
+
+    def freeze(self, operation_id: str) -> bool:
+        response = self._call(acquisition_freeze(operation_id=operation_id))
         return response is not None and response.kind == "status" and response.body.get("code") == StatusCode.OK.value

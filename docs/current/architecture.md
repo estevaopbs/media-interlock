@@ -38,6 +38,15 @@ crash therefore fails conservatively instead of losing accounting. If Publisher
 is unavailable or rejects ambiguity, Fence retains the hold and backpressures
 new admission according to available capacity.
 
+If Arr's staging import is hardlinked to a completed torrent, Publisher first
+requests the Fence's owner-bound exact freeze. Fence records the freeze intent,
+holds the shared qBittorrent mutation lease while it pauses and observes the
+governed hash, and retains that state through recovery. Publisher then seals,
+copies, verifies, fsyncs, and atomically commits independent canonical bundle
+inodes; a pending copy returns no custody receipt. Bootstrap and assisted
+existing-candidate intake enter Publisher through separate owner-bound manifests
+and never enter this Fence custody flow.
+
 Reconciler persists an Arr release selector, causal watermark and expected size
 before Fence pre-admission, which deliberately has no locator or download ID.
 Arr then owns the authenticated release grab and download tracking with its

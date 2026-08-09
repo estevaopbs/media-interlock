@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Callable, Protocol
 from pathlib import Path
 from pathlib import PurePath
 import re
@@ -11,7 +11,38 @@ from ..contracts import ContractError, Envelope
 from ..adapters.arr import ArrCandidate
 from ..adapters.jellyfin import CatalogExpectation, CatalogObservation
 from .model import PublicationState, PublisherState
-from .filesystem import VerifiedCandidate
+from .filesystem import VerifiedBundle, VerifiedCandidate
+
+
+def verified_bundle_from_manifest(manifest: object, inspection: "CandidateInspection") -> VerifiedBundle:
+    """Re-observe a local source; a caller-supplied manifest is comparison-only."""
+    if not isinstance(manifest, dict):
+        raise ContractError("publisher intake manifest is invalid")
+    relative = manifest.get("candidate_relative_path")
+    members = manifest.get("bundle_members")
+    if not isinstance(relative, str) or not isinstance(members, list):
+        raise ContractError("publisher intake manifest is invalid")
+    observed = inspection.verify(relative)
+    if not isinstance(observed, VerifiedBundle):
+        raise ContractError("publisher intake requires a complete bundle")
+    expected = tuple(sorted(
+        (
+            member.get("path"), member.get("bytes"), member.get("allocated"), member.get("device"),
+            member.get("inode"), member.get("modified_ns"), member.get("sha256")
+        )
+        for member in members if isinstance(member, dict)
+    ))
+    actual = tuple(sorted((member.relative_path, member.bytes_verified, member.allocated_bytes, member.device, member.inode, member.modified_ns, member.sha256) for member in observed.members))
+    inspection = manifest.get("inspection")
+    expected_inspection = (
+        tuple(inspection.get("audio_languages", ())) if isinstance(inspection, dict) else (),
+        tuple(inspection.get("subtitle_languages", ())) if isinstance(inspection, dict) else (),
+        tuple(inspection.get("container_evidence", ())) if isinstance(inspection, dict) else (),
+    )
+    actual_inspection = (observed.inspection.audio_languages, observed.inspection.subtitle_languages, observed.inspection.container_evidence)
+    if len(expected) != len(members) or actual != expected or actual_inspection != expected_inspection:
+        raise ContractError("publisher intake source differs from the sealed manifest")
+    return observed
 
 
 class PublicationStore(Protocol):
@@ -23,13 +54,13 @@ class CandidateCorrelation(Protocol):
 
 
 class CandidateInspection(Protocol):
-    def verify(self, relative_path: str) -> VerifiedCandidate: ...
+    def verify(self, relative_path: str, *, allow_hardlinks: bool = False) -> VerifiedCandidate | VerifiedBundle: ...
 
 
 class AssetGenerationControl(Protocol):
     def visible_generation(self, asset_slot: str) -> str | None: ...
 
-    def publish(self, asset_slot: str, generation_id: str, candidate: VerifiedCandidate, *, previous_generation_id: str | None = None) -> Path: ...
+    def publish(self, asset_slot: str, generation_id: str, candidate: VerifiedCandidate | VerifiedBundle, *, previous_generation_id: str | None = None, hardlink_frozen: bool = False) -> Path: ...
 
     def garbage_collect(self, asset_slot: str, retained_generation_ids: set[str]) -> None: ...
 
@@ -77,18 +108,48 @@ class PublisherService:
         self._state.replace_with(candidate)
         return receipt
 
+    def bootstrap_bundle(self, *, operation_id: str, source: str, upstream_id: str, media_id: str, asset_slot: str, item_type: str, provider_ids: dict[str, str], bundle: VerifiedBundle, manifest_digest: str) -> None:
+        durable = self._state.clone()
+        durable.adopt_bootstrap(
+            operation_id=operation_id,
+            source=source,
+            upstream_id=upstream_id,
+            media_id=media_id,
+            asset_slot=asset_slot,
+            item_type=item_type,
+            provider_ids=provider_ids,
+            bundle=bundle,
+            manifest_digest=manifest_digest,
+        )
+        self._persist(durable)
+
+    def record_assisted_intent(self, *, operation_id: str, source: str, upstream_id: str, media_id: str, expected_bytes: int, manifest_digest: str) -> None:
+        durable = self._state.clone()
+        durable.record_assisted_intent(operation_id=operation_id, source=source, upstream_id=upstream_id, media_id=media_id, expected_bytes=expected_bytes, manifest_digest=manifest_digest)
+        self._persist(durable)
+
+    def complete_assisted_bundle(self, *, operation_id: str, asset_slot: str, item_type: str, provider_ids: dict[str, str], bundle: VerifiedBundle, manifest_digest: str) -> None:
+        durable = self._state.clone()
+        durable.complete_assisted(operation_id=operation_id, asset_slot=asset_slot, item_type=item_type, provider_ids=provider_ids, bundle=bundle, manifest_digest=manifest_digest)
+        self._persist(durable)
+
     def _persist(self, candidate: PublisherState) -> None:
         self._store.save(candidate)
         self._state.replace_with(candidate)
 
-    def verify_candidate(self, operation_id: str, candidate: VerifiedCandidate) -> None:
+    def verify_candidate(self, operation_id: str, candidate: VerifiedCandidate | VerifiedBundle) -> None:
         durable = self._state.clone()
-        durable.mark_candidate_verified(operation_id, candidate.relative_path, candidate.bytes_verified, candidate.sha256)
+        if isinstance(candidate, VerifiedBundle):
+            durable.mark_bundle_verified(operation_id, candidate)
+        elif isinstance(candidate, VerifiedCandidate):
+            durable.mark_candidate_verified(operation_id, candidate.relative_path, candidate.bytes_verified, candidate.sha256)
+        else:
+            raise ContractError("candidate inspection result is invalid")
         self._persist(durable)
 
     def correlate_and_verify(self, operation_id: str, correlation: CandidateCorrelation, inspection: CandidateInspection) -> bool:
         publication = self._state.publication(operation_id)
-        if publication.state.name != "CUSTODY_RESERVED":
+        if publication.state.name != "CUSTODY_RESERVED" or publication.provenance != "fence":
             return False
         relative_path = correlation.candidate_relative_path(publication.download_id, publication.media_id)
         if relative_path is None:
@@ -100,9 +161,9 @@ class PublisherService:
         self.verify_candidate(operation_id, candidate)
         return True
 
-    def correlate_identify_and_verify(self, operation_id: str, correlation: object, inspection: CandidateInspection) -> bool:
+    def correlate_identify_and_verify(self, operation_id: str, correlation: object, inspection: CandidateInspection, *, freeze: Callable[[str], bool] | None = None) -> bool:
         publication = self._state.publication(operation_id)
-        if publication.state is not PublicationState.CUSTODY_RESERVED:
+        if publication.state is not PublicationState.CUSTODY_RESERVED or publication.provenance != "fence":
             return False
         derive = getattr(correlation, "candidate_identity", None)
         if not callable(derive):
@@ -110,12 +171,23 @@ class PublisherService:
         identity = derive(publication.download_id, publication.media_id)
         if not isinstance(identity, ArrCandidate):
             return False
+        requires_freeze = getattr(inspection, "requires_freeze", None)
         try:
-            candidate = inspection.verify(identity.relative_path)
+            hardlinked = bool(requires_freeze(identity.relative_path)) if callable(requires_freeze) else False
+            if hardlinked and (freeze is None or not freeze(operation_id)):
+                return False
+            candidate = inspection.verify(identity.relative_path, allow_hardlinks=True) if hardlinked else inspection.verify(identity.relative_path)
         except Exception:
             return False
         durable = self._state.clone()
-        durable.mark_candidate_verified(operation_id, candidate.relative_path, candidate.bytes_verified, candidate.sha256)
+        if hardlinked:
+            durable.mark_hardlink_frozen(operation_id)
+        if isinstance(candidate, VerifiedBundle):
+            durable.mark_bundle_verified(operation_id, candidate)
+        elif isinstance(candidate, VerifiedCandidate):
+            durable.mark_candidate_verified(operation_id, candidate.relative_path, candidate.bytes_verified, candidate.sha256)
+        else:
+            return False
         durable.bind_asset_identity(operation_id, identity.asset_slot, identity.item_type, identity.provider_ids)
         self._persist(durable)
         return True
@@ -145,12 +217,14 @@ class PublisherService:
         if publication.state is not PublicationState.GENERATION_INTENT:
             return None
         assert publication.asset_slot and publication.generation_id and publication.candidate_relative_path and publication.candidate_bytes is not None and publication.candidate_sha256
+        candidate = publication.bundle() or VerifiedCandidate(publication.candidate_relative_path, publication.candidate_bytes, publication.candidate_sha256)
         try:
             path = generations.publish(
                 publication.asset_slot,
                 publication.generation_id,
-                VerifiedCandidate(publication.candidate_relative_path, publication.candidate_bytes, publication.candidate_sha256),
+                candidate,
                 previous_generation_id=publication.previous_generation_id,
+                hardlink_frozen=publication.hardlink_frozen,
             )
         except Exception:
             return None
@@ -163,7 +237,7 @@ class PublisherService:
         publication = self._state.publication(operation_id)
         if publication.state is not PublicationState.CATALOG_PENDING:
             return False
-        assert publication.asset_slot and publication.item_type and publication.provider_ids and publication.candidate_bytes is not None and publication.candidate_sha256
+        assert publication.asset_slot and publication.item_type and publication.provider_ids is not None and publication.candidate_bytes is not None and publication.candidate_sha256
         assert publication.candidate_relative_path is not None
         internal_path = translation.to_jellyfin(translation.logical_payload(publication.asset_slot, publication.candidate_relative_path))
         def observe() -> CatalogObservation | None:
@@ -256,7 +330,7 @@ class PublisherService:
 class AssetPublisherWorkProcessor:
     """Single-operation worker for the per-asset catalog-confirmed publisher."""
 
-    def __init__(self, service: PublisherService, correlations: dict[str, object], inspection: CandidateInspection, generations: AssetGenerationControl, catalog: ExactCatalog, translation: PathTranslation, *, library_id: str) -> None:
+    def __init__(self, service: PublisherService, correlations: dict[str, object], inspection: CandidateInspection, generations: AssetGenerationControl, catalog: ExactCatalog, translation: PathTranslation, *, library_id: str, freeze: Callable[[str], bool] | None = None) -> None:
         self._service = service
         self._correlations = correlations
         self._inspection = inspection
@@ -264,14 +338,15 @@ class AssetPublisherWorkProcessor:
         self._catalog = catalog
         self._translation = translation
         self._library_id = library_id
+        self._freeze = freeze
 
-    def __call__(self, operation_id: str) -> None:
+    def __call__(self, operation_id: str) -> bool:
         try:
             publication = self._service._state.publication(operation_id)
             if publication.state is PublicationState.CUSTODY_RESERVED:
                 correlation = self._correlations.get(publication.source)
-                if correlation is None or not self._service.correlate_identify_and_verify(operation_id, correlation, self._inspection):
-                    return
+                if correlation is None or not self._service.correlate_identify_and_verify(operation_id, correlation, self._inspection, freeze=self._freeze):
+                    return False
             publication = self._service._state.publication(operation_id)
             if publication.state is PublicationState.CANDIDATE_VERIFIED:
                 self._service.commit_asset_generation(operation_id, self._generations)
@@ -279,5 +354,7 @@ class AssetPublisherWorkProcessor:
             if publication.state is PublicationState.CATALOG_PENDING:
                 if self._service.observe_and_deliver_asset(operation_id, self._catalog, self._translation, library_id=self._library_id):
                     self._service.garbage_collect_assets(self._generations)
+            publication = self._service._state.publication(operation_id)
+            return publication.state in {PublicationState.CATALOG_PENDING, PublicationState.DELIVERED}
         except (ContractError, OSError, ValueError, RuntimeError):
-            return
+            return False

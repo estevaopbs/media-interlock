@@ -19,6 +19,10 @@ modeled upstream response is not evidence that a live deployment is safe.
 The integrated flow includes completed-download custody transfer: Fence retains
 its reservation until Publisher durably adopts it, Publisher unavailability
 backpressures admission, and every crash point conserves at least one owner.
+The Publisher gates also cover double-observed bundles, sidecar and inspection
+policy, source drift, independently copied canonical inodes, and exact
+hardlink freezes. Bootstrap and assisted intake prove separate provenance,
+manifest replay, and recovery rules.
 Deployment tests also reject overlapping roots, competing canonical writers,
 auto-resuming downloads, and a competing qBittorrent resume credential.
 

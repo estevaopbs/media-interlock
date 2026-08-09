@@ -23,6 +23,8 @@ class ReservationState(StrEnum):
     PAUSE_INTENT_RECORDED = "pause_intent_recorded"
     QBITTORRENT_PAUSED = "qbittorrent_paused"
     TERMINAL = "terminal"
+    FREEZE_INTENT_RECORDED = "freeze_intent_recorded"
+    QBITTORRENT_FROZEN = "qbittorrent_frozen"
     RELEASED = "released"
 
 
@@ -284,6 +286,18 @@ class FenceState:
             raise ContractError("qBittorrent active transition is invalid")
         reservation.state = ReservationState.QBITTORRENT_ACTIVE
 
+    def request_freeze(self, operation_id: str) -> None:
+        reservation = self.reservation(operation_id)
+        if reservation.state is not ReservationState.TERMINAL or not reservation.torrent_hash:
+            raise ContractError("qBittorrent freeze intent transition is invalid")
+        reservation.state = ReservationState.FREEZE_INTENT_RECORDED
+
+    def mark_qbittorrent_frozen(self, operation_id: str) -> None:
+        reservation = self.reservation(operation_id)
+        if reservation.state is not ReservationState.FREEZE_INTENT_RECORDED:
+            raise ContractError("qBittorrent freeze observation transition is invalid")
+        reservation.state = ReservationState.QBITTORRENT_FROZEN
+
     def complete(self, operation_id: str) -> Envelope:
         reservation = self.reservation(operation_id)
         if reservation.state is not ReservationState.QBITTORRENT_ACTIVE:
@@ -293,7 +307,7 @@ class FenceState:
 
     def terminal_observation(self, operation_id: str) -> Envelope:
         reservation = self.reservation(operation_id)
-        if reservation.state is not ReservationState.TERMINAL:
+        if reservation.state not in {ReservationState.TERMINAL, ReservationState.QBITTORRENT_FROZEN}:
             raise ContractError("terminal acquisition is unavailable")
         assert reservation.download_id is not None
         return terminal_acquisition(operation_id=reservation.operation_id, fence_reservation_id=reservation.reservation_id, source=reservation.source, upstream_id=reservation.upstream_id, media_id=reservation.media_id, bytes_reserved=reservation.bytes_reserved, download_id=reservation.download_id)
@@ -307,7 +321,7 @@ class FenceState:
             return False
         if reservation.state is ReservationState.RELEASED:
             return reservation.publisher_reservation_id == publisher_reservation_id
-        if reservation.state is not ReservationState.TERMINAL:
+        if reservation.state not in {ReservationState.TERMINAL, ReservationState.QBITTORRENT_FROZEN}:
             return False
         reservation.publisher_reservation_id = publisher_reservation_id
         reservation.state = ReservationState.RELEASED

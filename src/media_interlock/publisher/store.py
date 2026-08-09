@@ -11,7 +11,8 @@ from .model import PublisherState
 
 
 class PublisherStore:
-    _KEY = "publisher.publications.v1"
+    _KEY = "publisher.publications.v3"
+    _LEGACY_KEYS = ("publisher.publications.v1", "publisher.publications.v2")
 
     def __init__(self, store: SqliteStore) -> None:
         self._store = store
@@ -23,6 +24,8 @@ class PublisherStore:
     def load(self) -> PublisherState:
         raw = self._store.get(self._KEY)
         if raw is None:
+            if any(self._store.get(key) is not None for key in self._LEGACY_KEYS):
+                raise ContractError("durable Publisher state requires an explicit migration")
             return PublisherState()
         try:
             records = json.loads(raw)

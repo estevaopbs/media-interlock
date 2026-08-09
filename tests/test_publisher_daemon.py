@@ -7,9 +7,9 @@ from pathlib import Path
 
 import _source_tree  # noqa: F401
 
-from media_interlock.contracts import Envelope, StatusCode, terminal_acquisition
+from media_interlock.contracts import Envelope, StatusCode, publisher_assisted_intent, terminal_acquisition
 from media_interlock.publisher.daemon import PublisherDaemon
-from media_interlock.publisher.model import PublisherState
+from media_interlock.publisher.model import PublicationState, PublisherState
 from media_interlock.publisher.observability import PublisherObservability
 from media_interlock.publisher.service import PublisherService
 
@@ -79,6 +79,41 @@ class PublisherDaemonTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("custody_receipt", receipt.kind)
         self.assertEqual([terminal.operation_id], seen)
+
+    async def test_pending_processor_retains_fence_custody_until_adoption_is_committed(self) -> None:
+        class Store:
+            def save(self, _: PublisherState) -> None:
+                pass
+
+        state = PublisherState()
+        daemon = PublisherDaemon(PublisherService(state, Store()), PublisherObservability(state), readiness=lambda: True, process=lambda _: False)
+        terminal = terminal_acquisition(operation_id="12345678-1234-4678-9234-567812345678", fence_reservation_id="fence:12345678-1234-4678-9234-567812345678", source="radarr", upstream_id="grab-42", media_id="movie-42", bytes_reserved=400, download_id="a" * 40)
+
+        response = daemon._dispatch(terminal)
+
+        self.assertEqual("status", response.kind)
+        self.assertEqual(StatusCode.INHIBITED.value, response.body["code"])
+        self.assertEqual(PublicationState.CUSTODY_RESERVED, state.publication(terminal.operation_id).state)
+
+    async def test_owner_intake_is_dispatched_without_a_fence_receipt(self) -> None:
+        class Store:
+            def save(self, _: PublisherState) -> None:
+                pass
+
+        seen: list[str] = []
+        daemon = PublisherDaemon(
+            PublisherService(PublisherState(), Store()), PublisherObservability(PublisherState()),
+            readiness=lambda: True, intake=lambda envelope: seen.append(envelope.kind) is None,
+        )
+        request = publisher_assisted_intent(
+            operation_id="12345678-1234-4678-9234-567812345678", source="radarr", upstream_id="import-42", media_id="42", expected_bytes=5, manifest_sha256="a" * 64,
+        )
+
+        response = daemon._dispatch(request)
+
+        self.assertEqual("status", response.kind)
+        self.assertEqual(StatusCode.OK.value, response.body["code"])
+        self.assertEqual(["publisher_assisted_intent"], seen)
 
     async def test_daemon_exposes_a_retry_tick_for_catalog_pending_work(self) -> None:
         class Store:

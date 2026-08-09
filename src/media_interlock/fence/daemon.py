@@ -39,6 +39,9 @@ class FenceDaemon:
         if envelope.kind == "acquisition_grab_binding":
             bound = self._service.bind_grab(envelope.operation_id, str(envelope.body["download_id"]), str(envelope.body["torrent_hash"]))
             return status_response(envelope.operation_id, StatusCode.OK if bound else StatusCode.INHIBITED, "grab bound" if bound else "grab pending")
+        if envelope.kind == "acquisition_freeze":
+            frozen = self._service.freeze(envelope.operation_id)
+            return status_response(envelope.operation_id, StatusCode.OK if frozen else StatusCode.INHIBITED, "acquisition frozen" if frozen else "acquisition freeze pending")
         if envelope.kind == "observe":
             terminal = self._service.observe(envelope.operation_id)
             return terminal if terminal is not None else status_response(envelope.operation_id, StatusCode.OK, "no terminal acquisition")

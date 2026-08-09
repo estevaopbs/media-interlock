@@ -40,8 +40,11 @@ durable intent with observed qBittorrent effects and never opens admission merel
 because a generic timeout elapsed.
 
 Fence's local socket accepts canonical version-1 pre-admission and observed
-grab bindings, custody receipts, status, metrics, explicit transfer-observation,
-and quiescence requests. It persists selector and observed identity
+grab bindings, the owner-bound terminal freeze request, custody receipts,
+status, metrics, explicit transfer-observation, and quiescence requests. A
+freeze records intent, uses the shared lease to pause and re-observe only the
+exact owned terminal hash, and remains recoverable until Publisher's receipt.
+It persists selector and observed identity
 fingerprints but no release locator. A binding rejects a download ID/hash pair
 unless the former canonically lowers to the latter. Terminal observations carry Arr's real
 download ID and are persisted before the socket returns them. Status reports

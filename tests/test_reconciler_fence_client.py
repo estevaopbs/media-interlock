@@ -20,10 +20,10 @@ class UnixFenceClientTests(unittest.TestCase):
             path = Path(directory) / "fence.sock"
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             listener.bind(str(path))
-            listener.listen(2)
+            listener.listen(3)
 
             def serve() -> None:
-                for _ in range(2):
+                for _ in range(3):
                     connection, _ = listener.accept()
                     with connection:
                         raw = bytearray()
@@ -41,6 +41,8 @@ class UnixFenceClientTests(unittest.TestCase):
 
             self.assertTrue(client.pre_admit(PreAdmissionIntent("12345678-1234-4678-9234-567812345678", "radarr", "42", "a" * 64, 400, "7")).admitted)
             self.assertTrue(client.bind_grab("12345678-1234-4678-9234-567812345678", "A" * 40, "a" * 40))
+            self.assertTrue(client.freeze("12345678-1234-4678-9234-567812345678"))
 
-        self.assertEqual(["acquisition_pre_admission", "acquisition_grab_binding"], [envelope.kind for envelope in seen])
-        self.assertEqual({"download_id": "A" * 40, "torrent_hash": "a" * 40}, seen[-1].body)
+        self.assertEqual(["acquisition_pre_admission", "acquisition_grab_binding", "acquisition_freeze"], [envelope.kind for envelope in seen])
+        self.assertEqual({"download_id": "A" * 40, "torrent_hash": "a" * 40}, seen[-2].body)
+        self.assertEqual({}, seen[-1].body)

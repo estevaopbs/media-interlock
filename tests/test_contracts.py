@@ -14,6 +14,9 @@ from media_interlock.contracts import (
     acquisition_pre_admission,
     custody_receipt,
     quiesce_request,
+    publisher_assisted_complete,
+    publisher_assisted_intent,
+    publisher_bootstrap,
     terminal_acquisition,
 )
 
@@ -22,6 +25,25 @@ OPERATION_ID = str(uuid.UUID("12345678-1234-4678-9234-567812345678"))
 
 
 class ContractTests(unittest.TestCase):
+    def test_owner_bound_bootstrap_and_assisted_contracts_require_one_exact_manifest(self) -> None:
+        manifest = {
+            "source": "radarr", "upstream_id": "import-42", "media_id": "42", "asset_slot": "radarr:tmdb-42",
+            "item_type": "Movie", "provider_ids": {"Tmdb": "42"}, "candidate_relative_path": "movie.mkv",
+            "bundle_members": [{"path": "movie.mkv", "bytes": 5, "allocated": 4096, "device": 1, "inode": 2, "modified_ns": 3, "sha256": "a" * 64}],
+            "inspection": {"audio_languages": [], "subtitle_languages": [], "container_evidence": ["container:mkv"]},
+            "expected_catalog_path": "/jellyfin/library/radarr-tmdb-42/payload.mkv",
+        }
+
+        bootstrap = publisher_bootstrap(operation_id=OPERATION_ID, manifest=manifest)
+        assisted = publisher_assisted_complete(operation_id=OPERATION_ID, manifest=manifest)
+        intent = publisher_assisted_intent(operation_id=OPERATION_ID, source="radarr", upstream_id="import-42", media_id="42", expected_bytes=5, manifest_sha256=bootstrap.body["manifest_sha256"])
+
+        self.assertEqual("publisher_bootstrap", bootstrap.kind)
+        self.assertEqual("publisher_assisted_complete", assisted.kind)
+        self.assertEqual("publisher_assisted_intent", intent.kind)
+        with self.assertRaises(ContractError):
+            Envelope("v1", "publisher_bootstrap", OPERATION_ID, bootstrap.body | {"manifest_sha256": "b" * 64})
+        self.assertIsNone(publisher_bootstrap(operation_id=OPERATION_ID, manifest=manifest | {"provider_ids": None}).body["manifest"]["provider_ids"])
     def test_quiescence_request_is_a_versioned_empty_authority_toggle(self) -> None:
         request = quiesce_request(OPERATION_ID, enabled=True)
 
