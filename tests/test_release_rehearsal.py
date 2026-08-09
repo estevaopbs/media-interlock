@@ -256,7 +256,7 @@ class ReleaseRehearsalTests(unittest.TestCase):
                 receipt = exchange(runtime / "publisher.sock", terminal); self.assertEqual("custody_receipt", receipt.kind)
                 self.assertEqual("ok", exchange(runtime / "fence.sock", receipt).body["code"])
                 pending = exchange(runtime / "publisher.sock", publisher_operation_query(operation_id))
-                self.assertEqual({"state": "pending"}, dict(pending.body))
+                self.assertEqual("pending", pending.body["state"])
                 # A 204 left this generation CATALOG_PENDING.  Restart before
                 # it becomes observable: recovery must observe/adopt the
                 # durable candidate instead of publishing or notifying again.

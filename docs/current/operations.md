@@ -85,14 +85,20 @@ To recover a Publisher result after any timeout, send one canonical JSON frame
 to the configured Publisher socket using the public wheel's
 `publisher_operation_query(operation_id)` contract helper. The daemon returns
 `publisher_operation_status` for `accepted`, `pending`, `catalog-confirmed`,
-`conflict`, or `unavailable`. A conflict for an existing operation is durable
-and fail-closed, so a lost conflict response is recovered by the same query. It
+`conflict`, or `unavailable`. A conflict marker that commits for an existing
+operation is durable and fail-closed, so a lost response is recovered by the
+same query. It
 returns `publisher_operation_receipt` only for
 `visible-confirmed`, after exact Jellyfin binding and static direct-play digest
 verification. The receipt contains the public source/upstream/media/asset,
 generation/digest, library/item/media-source, and expected-catalog-path binding.
 Consumers retry the same query and compare the same receipt; they never inspect
 Publisher SQLite or private generation paths.
+For every known nonterminal operation, compare the response's source,
+upstream/media IDs, expected bytes, and `binding_sha256` with the original
+request. The owner-bound digest equals the manifest SHA-256. This comparison
+still identifies a conflicting replay if the store rejected a later conflict
+marker and that `unavailable` response was lost.
 
 ## Observability
 

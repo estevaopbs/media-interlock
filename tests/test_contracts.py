@@ -17,6 +17,7 @@ from media_interlock.contracts import (
     publisher_assisted_complete,
     publisher_assisted_intent,
     publisher_bootstrap,
+    publisher_operation_binding_sha256,
     publisher_operation_query,
     publisher_operation_receipt,
     publisher_operation_status,
@@ -30,7 +31,10 @@ OPERATION_ID = str(uuid.UUID("12345678-1234-4678-9234-567812345678"))
 class ContractTests(unittest.TestCase):
     def test_publisher_operation_contract_separates_nonterminal_status_from_terminal_receipt(self) -> None:
         query = publisher_operation_query(OPERATION_ID)
-        pending = publisher_operation_status(OPERATION_ID, "pending")
+        pending = publisher_operation_status(
+            OPERATION_ID, "pending", source="radarr", upstream_id="import-42", media_id="42",
+            expected_bytes=5, binding_sha256="b" * 64,
+        )
         receipt = publisher_operation_receipt(
             OPERATION_ID,
             source="radarr",
@@ -46,12 +50,17 @@ class ContractTests(unittest.TestCase):
         )
 
         self.assertEqual({}, dict(query.body))
-        self.assertEqual({"state": "pending"}, dict(pending.body))
+        self.assertEqual("pending", pending.body["state"])
+        self.assertEqual("b" * 64, pending.body["binding_sha256"])
         self.assertEqual("publisher_operation_receipt", receipt.kind)
         self.assertEqual("visible-confirmed", receipt.body["state"])
         self.assertEqual(receipt, Envelope.decode(receipt.encode()))
-        for state in ("accepted", "pending", "catalog-confirmed", "conflict", "unavailable"):
-            self.assertEqual(state, publisher_operation_status(OPERATION_ID, state).body["state"])
+        for state in ("accepted", "pending", "catalog-confirmed", "conflict"):
+            self.assertEqual(state, publisher_operation_status(
+                OPERATION_ID, state, source="radarr", upstream_id="import-42", media_id="42",
+                expected_bytes=5, binding_sha256="b" * 64,
+            ).body["state"])
+        self.assertEqual("unavailable", publisher_operation_status(OPERATION_ID, "unavailable").body["state"])
         with self.assertRaises(ContractError):
             publisher_operation_status(OPERATION_ID, "visible-confirmed")
         with self.assertRaises(ContractError):
@@ -73,6 +82,8 @@ class ContractTests(unittest.TestCase):
         self.assertEqual("publisher_bootstrap", bootstrap.kind)
         self.assertEqual("publisher_assisted_complete", assisted.kind)
         self.assertEqual("publisher_assisted_intent", intent.kind)
+        self.assertEqual(bootstrap.body["manifest_sha256"], publisher_operation_binding_sha256(bootstrap))
+        self.assertEqual(assisted.body["manifest_sha256"], publisher_operation_binding_sha256(assisted))
         with self.assertRaises(ContractError):
             Envelope("v1", "publisher_bootstrap", OPERATION_ID, bootstrap.body | {"manifest_sha256": "b" * 64})
         self.assertIsNone(publisher_bootstrap(operation_id=OPERATION_ID, manifest=manifest | {"provider_ids": None}).body["manifest"]["provider_ids"])

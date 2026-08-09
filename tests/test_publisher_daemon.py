@@ -189,7 +189,7 @@ class PublisherDaemonTests(unittest.IsolatedAsyncioTestCase):
             try:
                 self.assertEqual("accepted", (await self.exchange(path, publisher_operation_query(operation_id))).body["state"])
                 pending = await self.exchange(path, complete)
-                self.assertEqual({"state": "pending"}, dict(pending.body))
+                self.assertEqual("pending", pending.body["state"])
                 self.assertEqual([operation_id], process_calls)
 
                 # Simulate a response lost after the durable request was handled.
@@ -236,7 +236,7 @@ class PublisherDaemonTests(unittest.IsolatedAsyncioTestCase):
             server = await asyncio.start_unix_server(daemon.handle, path=path)
             try:
                 confirmed = await self.exchange(path, publisher_operation_query(operation_id))
-                self.assertEqual({"state": "catalog-confirmed"}, dict(confirmed.body))
+                self.assertEqual("catalog-confirmed", confirmed.body["state"])
                 metrics = await self.exchange(path, Envelope("v1", "metrics", operation_id, {}))
                 for private_value in (operation_id, "a" * 64, "item-1", "source-1", "/jellyfin/library/radarr-tmdb-42/payload.mkv"):
                     self.assertNotIn(private_value, metrics.body["text"])
@@ -248,8 +248,37 @@ class PublisherDaemonTests(unittest.IsolatedAsyncioTestCase):
                 await writer.drain()
                 writer.close()
                 await writer.wait_closed()
-                self.assertEqual({"state": "conflict"}, dict((await self.exchange(path, publisher_operation_query(operation_id))).body))
-                self.assertEqual({"state": "conflict"}, dict((await self.exchange(path, conflicting)).body))
+                self.assertEqual("conflict", (await self.exchange(path, publisher_operation_query(operation_id))).body["state"])
+                self.assertEqual("conflict", (await self.exchange(path, conflicting)).body["state"])
+            finally:
+                server.close()
+                await server.wait_closed()
+
+    async def test_failed_conflict_persistence_still_exposes_the_durable_accepted_binding(self) -> None:
+        class FailingStore:
+            def save(self, _: PublisherState) -> None:
+                raise OSError("full")
+
+        operation_id = "12345678-1234-4678-9234-567812345678"
+        state = PublisherState()
+        state.record_assisted_intent(
+            operation_id=operation_id, source="radarr", upstream_id="original", media_id="42", expected_bytes=5,
+            manifest_digest="b" * 64,
+        )
+        daemon = PublisherDaemon(
+            PublisherService(state, FailingStore()), PublisherObservability(state), readiness=lambda: True, intake=lambda _: False,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "publisher.sock"
+            server = await asyncio.start_unix_server(daemon.handle, path=path)
+            try:
+                unavailable = await self.exchange(path, publisher_assisted_complete(operation_id=operation_id, manifest=self.manifest()))
+                self.assertEqual({"state": "unavailable"}, dict(unavailable.body))
+                accepted = await self.exchange(path, publisher_operation_query(operation_id))
+                self.assertEqual("accepted", accepted.body["state"])
+                self.assertEqual("original", accepted.body["upstream_id"])
+                self.assertEqual("b" * 64, accepted.body["binding_sha256"])
+                self.assertNotEqual(publisher_assisted_complete(operation_id=operation_id, manifest=self.manifest()).body["manifest_sha256"], accepted.body["binding_sha256"])
             finally:
                 server.close()
                 await server.wait_closed()

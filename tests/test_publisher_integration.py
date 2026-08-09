@@ -202,7 +202,7 @@ class PublisherVerticalIntegrationTests(unittest.TestCase):
                 writer.write(publisher_operation_query(operation_id).encode())
                 await writer.drain()
                 pending = Envelope.decode(await reader.readuntil(b"\n"))
-                self.assertEqual({"state": "pending"}, dict(pending.body))
+                self.assertEqual("pending", pending.body["state"])
                 writer.close()
                 await writer.wait_closed()
 

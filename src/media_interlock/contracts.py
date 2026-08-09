@@ -161,7 +161,22 @@ class Envelope:
             if set(normalized) != expected or normalized["source"] not in {"radarr", "sonarr"} or not all(isinstance(normalized[name], str) and normalized[name] for name in expected - {"source", "expected_bytes"}) or not _sha256(normalized["manifest_sha256"]) or isinstance(normalized["expected_bytes"], bool) or not isinstance(normalized["expected_bytes"], int) or normalized["expected_bytes"] <= 0:
                 raise ContractError("publisher assisted intent fields are invalid")
         elif self.kind == "publisher_operation_status":
-            if set(normalized) != {"state"} or normalized.get("state") not in PUBLISHER_OPERATION_STATES:
+            state = normalized.get("state")
+            bound_fields = {"binding_sha256", "expected_bytes", "media_id", "source", "state", "upstream_id"}
+            bound = set(normalized) == bound_fields
+            if (
+                state not in PUBLISHER_OPERATION_STATES
+                or (set(normalized) != {"state"} and not bound)
+                or (state != "unavailable" and not bound)
+                or (bound and (
+                    normalized.get("source") not in {"radarr", "sonarr"}
+                    or not all(isinstance(normalized.get(name), str) and normalized[name] for name in ("upstream_id", "media_id"))
+                    or isinstance(normalized.get("expected_bytes"), bool)
+                    or not isinstance(normalized.get("expected_bytes"), int)
+                    or normalized["expected_bytes"] <= 0
+                    or not _sha256(normalized.get("binding_sha256"))
+                ))
+            ):
                 raise ContractError("publisher operation status fields are invalid")
         elif self.kind == "publisher_operation_receipt":
             expected = {
@@ -256,8 +271,36 @@ def publisher_operation_query(operation_id: str) -> Envelope:
     return Envelope(CONTRACT_VERSION, "publisher_operation_query", _operation_id(operation_id), {})
 
 
-def publisher_operation_status(operation_id: str, state: str) -> Envelope:
-    return Envelope(CONTRACT_VERSION, "publisher_operation_status", _operation_id(operation_id), {"state": state})
+def publisher_operation_status(
+    operation_id: str,
+    state: str,
+    *,
+    source: str | None = None,
+    upstream_id: str | None = None,
+    media_id: str | None = None,
+    expected_bytes: int | None = None,
+    binding_sha256: str | None = None,
+) -> Envelope:
+    details = (source, upstream_id, media_id, expected_bytes, binding_sha256)
+    body: dict[str, object] = {"state": state}
+    if any(value is not None for value in details):
+        body |= {
+            "binding_sha256": binding_sha256,
+            "expected_bytes": expected_bytes,
+            "media_id": media_id,
+            "source": source,
+            "upstream_id": upstream_id,
+        }
+    return Envelope(CONTRACT_VERSION, "publisher_operation_status", _operation_id(operation_id), body)
+
+
+def publisher_operation_binding_sha256(request: Envelope) -> str:
+    if request.kind in {"publisher_bootstrap", "publisher_assisted_intent", "publisher_assisted_complete"}:
+        return str(request.body["manifest_sha256"])
+    if request.kind == "terminal_acquisition":
+        encoded = json.dumps(dict(request.body), sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+    raise ContractError("message has no Publisher operation binding")
 
 
 def publisher_operation_receipt(

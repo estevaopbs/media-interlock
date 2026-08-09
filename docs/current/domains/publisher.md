@@ -72,6 +72,13 @@ uses the envelope `operation_id`. Its nonterminal response is
   operation this state is durably absorbing and survives a lost response;
 - `unavailable`: the operation is unknown or cannot be represented safely.
 
+Every status for a known operation also binds its durable source, upstream and
+media identities, expected bytes, and `binding_sha256`. For bootstrap and
+assisted intake that digest equals the request's manifest SHA-256. A caller must
+compare these fields with its submitted identity: a mismatch is a conflict even
+if failure to persist the conflict marker left the original operation's state
+as `accepted`. An unknown or pre-intake unavailable result has no binding.
+
 Only full static direct-play verification changes the public result to
 `publisher_operation_receipt` with `state=visible-confirmed`. That terminal,
 idempotent receipt binds source, upstream and media identities, asset slot,

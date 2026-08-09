@@ -33,6 +33,9 @@ confirmed separation, conflict and unavailable replies, wrong-binding
 inhibition, idempotent retry after a lost response, and one exact terminal
 receipt only after direct-play verification. Metrics are checked separately for
 absence of paths, titles, hashes, and operation IDs.
+Conflict recovery also injects a durable-store write failure: re-query must
+expose the original accepted identity and manifest binding, never an unbound
+success that the conflicting caller could mistake for its own request.
 Deployment tests also reject overlapping roots, competing canonical writers,
 auto-resuming downloads, and a competing qBittorrent resume credential.
 

@@ -7,7 +7,14 @@ from pathlib import Path
 from pathlib import PurePath
 import re
 
-from ..contracts import ContractError, Envelope, publisher_operation_receipt, publisher_operation_status
+from ..contracts import (
+    ContractError,
+    Envelope,
+    publisher_operation_binding_sha256,
+    publisher_operation_receipt,
+    publisher_operation_status,
+    terminal_acquisition,
+)
 from ..adapters.arr import ArrCandidate
 from ..adapters.jellyfin import CatalogExpectation, CatalogObservation
 from .model import PublicationState, PublisherState
@@ -114,19 +121,36 @@ class PublisherService:
             publication = self._state.publication(operation_id)
         except KeyError:
             return publisher_operation_status(operation_id, "unavailable")
+        binding_sha256 = publication.intake_manifest_digest
+        if binding_sha256 is None:
+            binding_sha256 = publisher_operation_binding_sha256(terminal_acquisition(
+                operation_id=operation_id,
+                fence_reservation_id=publication.fence_reservation_id,
+                source=publication.source,
+                upstream_id=publication.upstream_id,
+                media_id=publication.media_id,
+                bytes_reserved=publication.bytes_reserved,
+                download_id=publication.download_id,
+            ))
+        status = lambda state: publisher_operation_status(
+            operation_id,
+            state,
+            source=publication.source,
+            upstream_id=publication.upstream_id,
+            media_id=publication.media_id,
+            expected_bytes=publication.bytes_reserved,
+            binding_sha256=binding_sha256,
+        )
         if publication.public_conflict:
-            return publisher_operation_status(operation_id, "conflict")
+            return status("conflict")
         if publication.state is PublicationState.CUSTODY_RESERVED:
-            return publisher_operation_status(operation_id, "accepted")
+            return status("accepted")
         if publication.state in {PublicationState.CANDIDATE_VERIFIED, PublicationState.GENERATION_INTENT}:
-            return publisher_operation_status(operation_id, "pending")
+            return status("pending")
         if publication.state is PublicationState.CATALOG_PENDING:
             if publication.catalog_item_id is not None and (not publication.catalog_library_id or not publication.expected_catalog_path):
-                return publisher_operation_status(operation_id, "unavailable")
-            return publisher_operation_status(
-                operation_id,
-                "catalog-confirmed" if publication.catalog_item_id is not None else "pending",
-            )
+                return status("unavailable")
+            return status("catalog-confirmed" if publication.catalog_item_id is not None else "pending")
         required = (
             publication.asset_slot,
             publication.generation_id,
@@ -137,7 +161,7 @@ class PublisherService:
             publication.expected_catalog_path,
         )
         if publication.state is not PublicationState.DELIVERED or not all(isinstance(value, str) and value for value in required):
-            return publisher_operation_status(operation_id, "unavailable")
+            return status("unavailable")
         return publisher_operation_receipt(
             operation_id,
             source=publication.source,
