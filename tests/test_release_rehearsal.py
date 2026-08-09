@@ -85,10 +85,12 @@ class ReleaseRehearsalTests(unittest.TestCase):
         episode_release = {"approved": True, "protocol": "torrent", "guid": "release-84", "title": "fixture.episode", "size": len(episode_media), "downloadUrl": "https://indexer.invalid/episode"}
         events: list[str] = []
         mutation_hashes: list[str] = []
+        peer_mutation_hashes: list[str] = []
         grabbed = {"radarr": False, "sonarr": False}
         catalog_visible = [False]
         torrent = {"hash": torrent_hash, "category": "media-interlock-radarr", "save_path": "", "size": len(media), "state": "pausedDL", "tags": "", "progress": 0}
         episode_torrent = {"hash": episode_hash, "category": "media-interlock-sonarr", "save_path": "", "size": len(episode_media), "state": "pausedDL", "tags": "", "progress": 0}
+        peer_torrent = {"hash": "d" * 40, "category": "synthetic-peer", "save_path": "/synthetic/peer", "size": 456, "state": "pausedDL", "tags": "peer", "progress": 0}
         foreign_torrent = {"hash": "b" * 40, "category": "synthetic-unrelated", "save_path": "/synthetic/unrelated", "size": 123, "state": "pausedDL", "tags": "foreign", "progress": 0}
         foreign_before = dict(foreign_torrent)
 
@@ -121,7 +123,7 @@ class ReleaseRehearsalTests(unittest.TestCase):
                 elif parsed.path == "/api/v2/app/preferences": self._json({"start_paused_enabled": True})
                 elif parsed.path == "/api/v2/torrents/info":
                     requested = query.get("hashes", [""])[0]
-                    self._json([foreign_torrent] if requested == foreign_torrent["hash"] else [torrent] if requested == torrent_hash else [episode_torrent] if requested == episode_hash else [])
+                    self._json([foreign_torrent] if requested == foreign_torrent["hash"] else [peer_torrent] if requested == peer_torrent["hash"] else [torrent] if requested == torrent_hash else [episode_torrent] if requested == episode_hash else [])
                 elif parsed.path == "/api/v1/health": self._json([])
                 elif parsed.path == "/api/v1/indexer": self._json([{"enable": True}])
                 elif parsed.path == "/System/Info": self._json({"Version": "10.11.11"})
@@ -156,10 +158,12 @@ class ReleaseRehearsalTests(unittest.TestCase):
                 elif self.path == "/api/v2/torrents/start":
                     from urllib.parse import parse_qs
                     fields = parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())
-                    mutation_hashes.append(fields["hashes"][0])
-                    selected = torrent if fields["hashes"] == [torrent_hash] else episode_torrent if fields["hashes"] == [episode_hash] else None
+                    selected = torrent if fields["hashes"] == [torrent_hash] else episode_torrent if fields["hashes"] == [episode_hash] else peer_torrent if fields["hashes"] == [peer_torrent["hash"]] else None
                     if selected is None: self.send_error(400); return
-                    selected["state"] = "downloading"; events.append("resume:radarr" if selected is torrent else "resume:sonarr"); self.send_response(200); self.end_headers()
+                    selected["state"] = "downloading"
+                    if selected is peer_torrent: peer_mutation_hashes.append(peer_torrent["hash"])
+                    else: mutation_hashes.append(fields["hashes"][0]); events.append("resume:radarr" if selected is torrent else "resume:sonarr")
+                    self.send_response(200); self.end_headers()
                 elif self.path == "/Library/Media/Updated": events.append("catalog-submit:radarr" if len([item for item in events if item == "catalog-submit:radarr"]) == 0 else "catalog-submit:sonarr"); self.send_response(204); self.end_headers()
                 else: self.send_error(404)
 
@@ -201,8 +205,11 @@ class ReleaseRehearsalTests(unittest.TestCase):
             root = Path(directory); staging = root / "staging"; canonical = root / "canonical"; runtime = root / "runtime"
             sonarr_staging = root / "sonarr-staging"; sonarr_canonical = root / "sonarr-canonical"
             staging.mkdir(); canonical.mkdir(); runtime.mkdir(); sonarr_staging.mkdir(); sonarr_canonical.mkdir(); lock_path = root / "qbittorrent-mutation.lock"; lock_path.touch(mode=0o600); (staging / "movie.mkv").write_bytes(media); (sonarr_staging / "episode.mkv").write_bytes(episode_media); torrent["save_path"] = str(root / "downloads-movies"); episode_torrent["save_path"] = str(root / "downloads-episodes")
+            http = ThreadingHTTPServer(("127.0.0.1", 0), Handler); http_thread = threading.Thread(target=http.serve_forever); http_thread.start()
+            self.addCleanup(http.server_close); self.addCleanup(http_thread.join); self.addCleanup(http.shutdown)
+            host, port = http.server_address; base = f"http://{host}:{port}"; config_path = root / "media-interlock.toml"
             peer = subprocess.Popen(
-                [sys.executable, "-c", "import fcntl, os, sys, time; fd=os.open(sys.argv[1], os.O_RDONLY); fcntl.flock(fd, fcntl.LOCK_EX); print('held', flush=True); time.sleep(60)", str(lock_path)],
+                [sys.executable, "-c", "import fcntl, os, sys, time, urllib.parse, urllib.request; fd=os.open(sys.argv[1], os.O_RDONLY); fcntl.flock(fd, fcntl.LOCK_EX); request=urllib.request.Request(sys.argv[2], data=urllib.parse.urlencode({'hashes': sys.argv[3]}).encode(), method='POST'); urllib.request.urlopen(request).read(); print('held', flush=True); time.sleep(60)", str(lock_path), base + "/api/v2/torrents/start", peer_torrent["hash"]],
                 stdout=subprocess.PIPE,
                 text=True,
             )
@@ -218,9 +225,6 @@ class ReleaseRehearsalTests(unittest.TestCase):
             with peer_lease.acquire():
                 pass
             peer_lease.close()
-            http = ThreadingHTTPServer(("127.0.0.1", 0), Handler); http_thread = threading.Thread(target=http.serve_forever); http_thread.start()
-            self.addCleanup(http.server_close); self.addCleanup(http_thread.join); self.addCleanup(http.shutdown)
-            host, port = http.server_address; base = f"http://{host}:{port}"; config_path = root / "media-interlock.toml"
             source_rows = lambda name, kind, client_id, category, save, stage, canon, namespace, library: [f"[sources.{name}]", f'kind = "{kind}"', f"download_client_id = {client_id}", f'category = "{category}"', f'qbittorrent_save_path = "{save}"', f'arr_import_path_prefix = "/imports/{name}"', f'staging_root = "{stage}"', f'canonical_root = "{canon}"', 'download_pool = "video"', 'staging_pool = "video"', 'canonical_pool = "video"', f'namespace = "{namespace}"', f'jellyfin_library_id = "{library}"', f'jellyfin_path_prefix = "/jellyfin/{namespace}"', ""]
             rows = ["[shared]", f'runtime_dir = "{runtime}"', "", "[fence]", f'state_dir = "{root / "fence-state"}"', f'socket_path = "{runtime / "fence.sock"}"', "capacity_bytes = 10000", "max_inflight = 1", f'mutation_lock_path = "{root / "qbittorrent-mutation.lock"}"', 'mutation_lock_version = "shared-qbittorrent-mutation/v1"', "mutation_lock_timeout_ms = 10", "", "[publisher]", f'state_dir = "{root / "publisher-state"}"', f'socket_path = "{runtime / "publisher.sock"}"', "", "[reconciler]", f'state_dir = "{root / "reconciler-state"}"', f'socket_path = "{runtime / "reconciler.sock"}"', "", "[reconciler.movie]", "minimum_age_days = 0", "terminal_horizon_days = 1", "cooldown_seconds = 0", "max_attempts = 3", "max_searches_per_run = 1", "", "[reconciler.episode]", "minimum_age_days = 0", "terminal_horizon_days = 1", "cooldown_seconds = 0", "max_attempts = 3", "max_searches_per_run = 1", "", "[capacity_pools.video]", f'probe_path = "{root}"', "minimum_free_bytes = 0", "safety_margin_bytes = 0", ""]
             rows.extend(source_rows("radarr", "movie", 7, "media-interlock-radarr", root / "downloads-movies", staging, canonical, "library", "2f9e0f39-70de-4502-85ce-7ed03cd2f01f"))
@@ -296,3 +300,5 @@ class ReleaseRehearsalTests(unittest.TestCase):
             events,
         )
         self.assertEqual([torrent_hash, torrent_hash, "c" * 40, "c" * 40], mutation_hashes)
+        self.assertEqual(["d" * 40], peer_mutation_hashes)
+        self.assertEqual("downloading", peer_torrent["state"])
