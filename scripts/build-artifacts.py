@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import venv
 from pathlib import Path
 
@@ -20,6 +23,25 @@ def _output(command: list[str], *, cwd: Path) -> str:
     return subprocess.run(command, cwd=cwd, check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
 
 
+def _source_identity(root: Path) -> tuple[str, str]:
+    if _output(["git", "status", "--porcelain"], cwd=root):
+        raise ValueError("artifact builds require a clean checkout")
+    revision = _output(["git", "rev-parse", "HEAD"], cwd=root)
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    version = project.get("project", {}).get("version")
+    if not isinstance(version, str) or not version:
+        raise ValueError("project version is unavailable")
+    return revision, version
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as artifact:
+        while chunk := artifact.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
@@ -28,9 +50,13 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[1]
     output = arguments.output.resolve()
-    output.mkdir(mode=0o700, parents=True, exist_ok=True)
     if arguments.source_date_epoch < 0:
         parser.error("--source-date-epoch must be non-negative")
+    try:
+        revision, version = _source_identity(root)
+    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+        parser.error(str(exc))
+    output.mkdir(mode=0o700, parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="media-interlock-build-") as directory:
         environment = Path(directory) / "venv"
         venv.EnvBuilder(with_pip=True, clear=True).create(environment)
@@ -48,14 +74,40 @@ def main(argv: list[str] | None = None) -> int:
                 os.environ.pop("SOURCE_DATE_EPOCH", None)
             else:
                 os.environ["SOURCE_DATE_EPOCH"] = old_epoch
-    for component in ("fence", "publisher"):
+    wheels = tuple(output.glob("*.whl"))
+    if len(wheels) != 1:
+        raise RuntimeError("artifact build did not produce exactly one wheel")
+    images: list[dict[str, str]] = []
+    for component in ("reconciler", "fence", "publisher"):
         tag = f"media-interlock-{component}:local"
-        _run([arguments.oci_engine, "build", "--build-arg", f"SOURCE_DATE_EPOCH={arguments.source_date_epoch}", "--target", component, "--tag", tag, "--file", "Containerfile", "."], cwd=root)
+        _run([
+            arguments.oci_engine, "build",
+            "--build-arg", f"SOURCE_DATE_EPOCH={arguments.source_date_epoch}",
+            "--build-arg", f"SOURCE_REVISION={revision}",
+            "--build-arg", f"PACKAGE_VERSION={version}",
+            "--target", component, "--tag", tag, "--file", "Containerfile", ".",
+        ], cwd=root)
         _run([arguments.oci_engine, "image", "save", "--format", "oci-archive", "--output", str(output / f"media-interlock-{component}.oci.tar"), tag], cwd=root)
+        digest = _output([arguments.oci_engine, "image", "inspect", "--format", "{{.Digest}}", tag], cwd=root)
         (output / f"media-interlock-{component}.manifest-digest").write_text(
-            _output([arguments.oci_engine, "image", "inspect", "--format", "{{.Digest}}", tag], cwd=root) + "\n",
+            digest + "\n",
             encoding="utf-8",
         )
+        images.append({"component": component, "archive": f"media-interlock-{component}.oci.tar", "manifest_digest": digest})
+    (output / "artifacts.json").write_text(
+        json.dumps(
+            {
+                "schema": "media-interlock.artifacts/v1",
+                "source_revision": revision,
+                "version": version,
+                "wheel": {"filename": wheels[0].name, "sha256": _sha256(wheels[0])},
+                "images": images,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n",
+        encoding="utf-8",
+    )
     return 0
 
 

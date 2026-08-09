@@ -16,6 +16,11 @@ modeled upstream response is not evidence that a live deployment is safe.
 5. A bounded release rehearsal integrates all configured adapters using
    synthetic media and disposable state.
 
+The release rehearsal executes both governed source profiles against production
+HTTP adapters and the real Unix daemon contracts. It uses a shared lock inode,
+proves a synthetic peer's cross-process contention and crash release, and
+asserts that its opaque unrelated qBittorrent transfer remains unchanged.
+
 The integrated flow includes completed-download custody transfer: Fence retains
 its reservation until Publisher durably adopts it, Publisher unavailability
 backpressures admission, and every crash point conserves at least one owner.
@@ -56,7 +61,8 @@ A release candidate requires:
 - focused and affected test gates green from a clean checkout;
 - all adapters declared for that release pinned and contract-tested;
 - wheel byte identity and OCI manifest digests reproduced from hash-locked
-  build inputs, with archive tar files treated only as local transport;
+  build inputs, with one canonical local artifact manifest binding source and
+  all three image identities and archive tar files treated only as transport;
 - documentation index, byte budgets, link checks, diff check, and secret scan;
 - negative tests for fail-closed ambiguity and missing capability;
 - disposable restart/crash rehearsal for effects changed in the cycle;

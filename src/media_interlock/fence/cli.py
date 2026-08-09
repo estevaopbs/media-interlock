@@ -9,6 +9,7 @@ import stat
 import uuid
 from pathlib import Path
 
+from .. import __version__
 from ..adapters.prowlarr import ProwlarrAdapter
 from ..adapters.qbittorrent import QbittorrentAdapter
 from ..adapters.radarr import RadarrAdapter
@@ -128,12 +129,22 @@ async def _serve(socket_path: Path, daemon: FenceDaemon) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="media-interlock-fence")
-    parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument("--config", type=Path)
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--version", action="store_true")
+    parser.add_argument("--check-config", action="store_true")
     arguments = parser.parse_args(argv)
+    if arguments.version:
+        print(__version__)
+        return 0
+    if arguments.config is None:
+        parser.error("--config is required")
     try:
         config = load_config(arguments.config)
+        if arguments.check_config:
+            print(render_result("ok", "configuration valid", as_json=arguments.json))
+            return 0
         if arguments.status:
             ready = _component_ready(config.fence.socket_path) if config.fence is not None else False
             print(render_result("ok" if ready else "inhibited", "ready" if ready else "unavailable", as_json=arguments.json))

@@ -9,11 +9,19 @@ RUN python -m pip install --no-cache-dir --require-hashes --no-deps --requiremen
 
 FROM docker.io/library/python@sha256:ff83a535339812dd72e69c93b3c48ddf7c85a324d6330af5797c82a255dbeef4 AS runtime
 
-RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin media-interlock
+ARG SOURCE_REVISION=unknown
+ARG PACKAGE_VERSION=0.0.0
+LABEL org.opencontainers.image.source="https://github.com/estevaopbs/media-interlock" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.version="${PACKAGE_VERSION}" \
+      org.opencontainers.image.licenses="MIT"
 COPY --from=build /wheel/*.whl /tmp/
 RUN python -m pip install --no-cache-dir /tmp/*.whl \
  && rm -f /tmp/*.whl
-USER media-interlock
+USER 65532:65532
+
+FROM runtime AS reconciler
+ENTRYPOINT ["media-interlock-reconciler"]
 
 FROM runtime AS fence
 ENTRYPOINT ["media-interlock-fence"]

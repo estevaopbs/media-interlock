@@ -23,8 +23,10 @@ The release rehearsal runs the production HTTP adapter code against disposable
 pinned-shape upstreams, invokes the Reconciler CLI, crosses both daemon Unix
 contracts, restarts Fence and Publisher at durable boundaries, and proves exact
 Jellyfin catalog and direct-play delivery. The local build produces a
-source-date-controlled wheel and OCI image manifest digests using a hash-locked
-build bootstrap. Archive tar timestamps are not a reproducibility identity.
+source-date-controlled wheel and Reconciler, Fence, and Publisher OCI image
+manifest digests using a hash-locked build bootstrap. Its canonical artifact
+manifest binds the source revision, version, wheel hash, and image identities.
+Archive tar timestamps are not a reproducibility identity.
 
 Consequently:
 

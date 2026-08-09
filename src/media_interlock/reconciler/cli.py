@@ -6,6 +6,7 @@ import argparse
 import uuid
 from pathlib import Path
 
+from .. import __version__
 from ..adapters.radarr import RadarrAdapter
 from ..adapters.sonarr import SonarrAdapter
 from ..cli import render_result
@@ -18,13 +19,30 @@ from .store import ReconcilerStore
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="media-interlock-reconciler")
-    parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--source", choices=("radarr", "sonarr"), required=True)
-    parser.add_argument("--entity", required=True)
-    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--source", choices=("radarr", "sonarr"))
+    parser.add_argument("--entity")
+    parser.add_argument("--checkpoint")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--version", action="store_true")
+    parser.add_argument("--check-config", action="store_true")
     arguments = parser.parse_args(argv)
+    if arguments.version:
+        print(__version__)
+        return 0
+    if arguments.config is None:
+        parser.error("--config is required")
+    if arguments.check_config:
+        try:
+            load_config(arguments.config)
+        except ConfigError as exc:
+            print(render_result("invalid_contract", str(exc), as_json=arguments.json))
+            return 2
+        print(render_result("ok", "configuration valid", as_json=arguments.json))
+        return 0
+    if arguments.source is None or arguments.entity is None or arguments.checkpoint is None:
+        parser.error("--source, --entity, and --checkpoint are required")
     try:
         config = load_config(arguments.config)
         if config.reconciler is None or config.fence is None:

@@ -177,10 +177,13 @@ fields and unsupported versions fail closed. Container deployments mount an
 explicit shared runtime directory. TCP APIs, a web UI, and an embedded scheduler
 are not initial features.
 
-Each component exposes a CLI with human-readable and JSON output, health
-status, and metrics. Distribution targets are a Python wheel suitable for
-`pipx` and OCI images for the daemons. Linux is the version-1 platform, on bare
-metal, Docker, or Podman with explicit filesystem and socket mounts.
+Each component exposes bounded `--version` and `--check-config` probes; the
+daemons additionally expose local status and metrics. Distribution targets are
+a Python wheel suitable for `pipx` and OCI images for all three components.
+Every image carries standard source, revision, version, and license labels and
+uses an arbitrary non-root numeric runtime identity; it supplies no deployment
+manifest or privileged ownership setup. Linux is the version-1 platform, on
+bare metal, Docker, or Podman with explicit filesystem and socket mounts.
 
 Backup and disaster recovery are intentionally absent. Operators provision an
 external backup or snapshot system and use upstream-native facilities where

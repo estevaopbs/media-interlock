@@ -14,6 +14,12 @@ media-interlock-publisher
 media-interlock-fence
 ```
 
+All entrypoints provide `--version` without configuration or network access and
+`--config FILE --check-config` for local configuration validation without
+opening state or contacting an adapter. Fence and Publisher additionally accept
+`--config FILE --status` to query their existing local daemon. These probes do
+not supervise, start, stop, or reconfigure another process.
+
 Reconciler runs to completion under an external scheduler or on demand.
 Publisher and fence run independently and expose health, metrics, and versioned
 Unix socket endpoints. `media-interlock-publisher --config FILE --status` and
@@ -27,8 +33,10 @@ component independently, but a release is accepted only after all three are
 integrated as declared in the current release profile.
 
 The local-only artifact gate is `python scripts/build-artifacts.py --output DIR`.
-It never pushes or publishes; its wheel and OCI manifest digest outputs are the
-reproducibility evidence, while the OCI archive files are local transport.
+It requires a clean checkout and emits one wheel plus Reconciler, Fence, and
+Publisher OCI archives, individual manifest-digest files, and a canonical
+`artifacts.json` binding source revision, version, wheel hash, and image
+identities. It never pushes or publishes; OCI archives are local transport.
 
 ## Configuration
 
