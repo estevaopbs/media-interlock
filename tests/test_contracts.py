@@ -17,6 +17,9 @@ from media_interlock.contracts import (
     publisher_assisted_complete,
     publisher_assisted_intent,
     publisher_bootstrap,
+    publisher_operation_query,
+    publisher_operation_receipt,
+    publisher_operation_status,
     terminal_acquisition,
 )
 
@@ -25,6 +28,35 @@ OPERATION_ID = str(uuid.UUID("12345678-1234-4678-9234-567812345678"))
 
 
 class ContractTests(unittest.TestCase):
+    def test_publisher_operation_contract_separates_nonterminal_status_from_terminal_receipt(self) -> None:
+        query = publisher_operation_query(OPERATION_ID)
+        pending = publisher_operation_status(OPERATION_ID, "pending")
+        receipt = publisher_operation_receipt(
+            OPERATION_ID,
+            source="radarr",
+            upstream_id="import-42",
+            media_id="42",
+            asset_slot="radarr:tmdb-42",
+            generation_id=OPERATION_ID,
+            generation_sha256="a" * 64,
+            library_id="library-1",
+            item_id="item-1",
+            media_source_id="source-1",
+            expected_catalog_path="/jellyfin/library/radarr-tmdb-42/payload.mkv",
+        )
+
+        self.assertEqual({}, dict(query.body))
+        self.assertEqual({"state": "pending"}, dict(pending.body))
+        self.assertEqual("publisher_operation_receipt", receipt.kind)
+        self.assertEqual("visible-confirmed", receipt.body["state"])
+        self.assertEqual(receipt, Envelope.decode(receipt.encode()))
+        for state in ("accepted", "pending", "catalog-confirmed", "conflict", "unavailable"):
+            self.assertEqual(state, publisher_operation_status(OPERATION_ID, state).body["state"])
+        with self.assertRaises(ContractError):
+            publisher_operation_status(OPERATION_ID, "visible-confirmed")
+        with self.assertRaises(ContractError):
+            Envelope("v1", "publisher_operation_receipt", OPERATION_ID, dict(receipt.body) | {"generation_sha256": "b"})
+
     def test_owner_bound_bootstrap_and_assisted_contracts_require_one_exact_manifest(self) -> None:
         manifest = {
             "source": "radarr", "upstream_id": "import-42", "media_id": "42", "asset_slot": "radarr:tmdb-42",

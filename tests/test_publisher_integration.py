@@ -14,7 +14,7 @@ import _source_tree  # noqa: F401
 from media_interlock.adapters.jellyfin import JellyfinAdapter
 from media_interlock.adapters.radarr import RadarrAdapter
 from media_interlock.config import SecretReference
-from media_interlock.contracts import terminal_acquisition
+from media_interlock.contracts import publisher_operation_query, terminal_acquisition
 from media_interlock.publisher.generation import AssetGenerationPublisher
 from media_interlock.publisher.model import PublicationState
 from media_interlock.publisher.daemon import PublisherDaemon
@@ -27,6 +27,7 @@ from media_interlock.publisher.filesystem import CandidateVerifier
 class PublisherVerticalIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.requests: list[tuple[str, str, str | None]] = []
+        self.catalog_path = "/jellyfin/library/radarr-tmdb-42/payload.mkv"
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -43,12 +44,12 @@ class PublisherVerticalIntegrationTests(unittest.TestCase):
                     payload = {
                         "Items": [{
                             "Id": "jellyfin-item",
-                            "Path": "/jellyfin/library/radarr-tmdb-42/payload.mkv",
+                            "Path": outer.catalog_path,
                             "Type": "Movie",
                             "ProviderIds": {"Tmdb": "42"},
                             "MediaSources": [{
                                 "Id": "source-id",
-                                "Path": "/jellyfin/library/radarr-tmdb-42/payload.mkv",
+                                "Path": outer.catalog_path,
                                 "Size": len(b"synthetic-media"),
                             }],
                         }],
@@ -132,6 +133,18 @@ class PublisherVerticalIntegrationTests(unittest.TestCase):
                 self.assertEqual("custody_receipt", receipt.kind)
                 writer.close()
                 await writer.wait_closed()
+                reader, writer = await asyncio.open_unix_connection(socket_path)
+                writer.write(publisher_operation_query(operation_id).encode())
+                await writer.drain()
+                public_receipt = Envelope.decode(await reader.readuntil(b"\n"))
+                self.assertEqual("publisher_operation_receipt", public_receipt.kind)
+                self.assertEqual("visible-confirmed", public_receipt.body["state"])
+                self.assertEqual("radarr:tmdb-42", public_receipt.body["asset_slot"])
+                self.assertEqual("jellyfin-item", public_receipt.body["item_id"])
+                self.assertEqual("source-id", public_receipt.body["media_source_id"])
+                self.assertEqual("/jellyfin/library/radarr-tmdb-42/payload.mkv", public_receipt.body["expected_catalog_path"])
+                writer.close()
+                await writer.wait_closed()
             finally:
                 server.close()
                 await server.wait_closed()
@@ -146,3 +159,66 @@ class PublisherVerticalIntegrationTests(unittest.TestCase):
             [request[0] for request in self.requests],
         )
         self.assertTrue(any(path.startswith("/Items?") and "ParentId=2f9e0f39-70de-4502-85ce-7ed03cd2f01f" in path for _, path, _ in self.requests))
+
+    def test_wrong_catalog_binding_stays_pending_over_unix_until_exact_retry(self) -> None:
+        host, port = self.server.server_address
+        key = SecretReference("env", "FIXTURE_KEY")
+        correlation = RadarrAdapter(f"http://{host}:{port}", key, staging_root=self.staging, secret_resolver=lambda _: "fixture-key")
+        catalog = JellyfinAdapter(f"http://{host}:{port}", key, secret_resolver=lambda _: "fixture-key")
+        operation_id = str(uuid.uuid4())
+        terminal = terminal_acquisition(
+            operation_id=operation_id, fence_reservation_id=f"fence:{uuid.uuid4()}", source="radarr",
+            upstream_id="grab-42", media_id="42", bytes_reserved=400, download_id="grab-42",
+        )
+        store = PublisherStore.open(Path(self.temporary.name) / "publisher-wrong-binding")
+        self.addCleanup(store.close)
+        service = PublisherService(store.load(), store)
+        processor = AssetPublisherWorkProcessor(
+            service, {"radarr": correlation}, CandidateVerifier(self.staging),
+            AssetGenerationPublisher(self.staging, self.canonical, namespace="library"), catalog,
+            PathTranslation(self.canonical, "library", "/jellyfin/library"),
+            library_id="2f9e0f39-70de-4502-85ce-7ed03cd2f01f",
+        )
+        daemon = PublisherDaemon(
+            service, PublisherObservability(service._state), readiness=lambda: True, process=processor,
+            retry=lambda: processor(operation_id),
+        )
+        socket_path = Path(self.temporary.name) / "publisher-wrong-binding.sock"
+        self.catalog_path = "/jellyfin/library/wrong/payload.mkv"
+
+        async def exercise() -> None:
+            from media_interlock.contracts import Envelope
+
+            server = await asyncio.start_unix_server(daemon.handle, path=socket_path)
+            try:
+                reader, writer = await asyncio.open_unix_connection(socket_path)
+                writer.write(terminal.encode())
+                await writer.drain()
+                self.assertEqual("custody_receipt", Envelope.decode(await reader.readuntil(b"\n")).kind)
+                writer.close()
+                await writer.wait_closed()
+
+                reader, writer = await asyncio.open_unix_connection(socket_path)
+                writer.write(publisher_operation_query(operation_id).encode())
+                await writer.drain()
+                pending = Envelope.decode(await reader.readuntil(b"\n"))
+                self.assertEqual({"state": "pending"}, dict(pending.body))
+                writer.close()
+                await writer.wait_closed()
+
+                self.catalog_path = "/jellyfin/library/radarr-tmdb-42/payload.mkv"
+                daemon.retry_once()
+                reader, writer = await asyncio.open_unix_connection(socket_path)
+                writer.write(publisher_operation_query(operation_id).encode())
+                await writer.drain()
+                receipt = Envelope.decode(await reader.readuntil(b"\n"))
+                self.assertEqual("publisher_operation_receipt", receipt.kind)
+                self.assertEqual("visible-confirmed", receipt.body["state"])
+                writer.close()
+                await writer.wait_closed()
+            finally:
+                server.close()
+                await server.wait_closed()
+
+        asyncio.run(exercise())
+        self.assertEqual(PublicationState.DELIVERED, store.load().publication(operation_id).state)

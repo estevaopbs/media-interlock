@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
-from ..contracts import ContractError, Envelope, StatusCode, metrics_response, status_response
+from ..contracts import ContractError, Envelope, StatusCode, metrics_response, publisher_operation_status, status_response
 from .observability import PublisherObservability
 from .service import PublisherService
 
@@ -39,21 +39,34 @@ class PublisherDaemon:
             envelope = Envelope.decode(await reader.readuntil(b"\n"))
             writer.write(self._dispatch(envelope).encode())
             await writer.drain()
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ContractError):
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ContractError, OSError):
             pass
         finally:
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                # A caller may lose the response after the durable transition.
+                pass
 
     def _dispatch(self, envelope: Envelope) -> Envelope:
+        if envelope.kind == "publisher_operation_query":
+            return self._service.operation_response(envelope.operation_id)
         if envelope.kind in {"publisher_bootstrap", "publisher_assisted_intent", "publisher_assisted_complete"}:
             if not self._readiness():
-                return status_response(envelope.operation_id, StatusCode.INHIBITED, "Publisher is not ready")
+                return publisher_operation_status(envelope.operation_id, "unavailable")
             try:
                 accepted = self._intake is not None and self._intake(envelope)
             except (ContractError, OSError, RuntimeError, ValueError):
-                accepted = False
-            return status_response(envelope.operation_id, StatusCode.OK if accepted else StatusCode.CONFLICT, "publisher intake accepted" if accepted else "publisher intake rejected")
+                return publisher_operation_status(envelope.operation_id, "conflict")
+            if not accepted:
+                return publisher_operation_status(envelope.operation_id, "conflict")
+            if envelope.kind != "publisher_assisted_intent" and self._process is not None:
+                try:
+                    self._process(envelope.operation_id)
+                except (ContractError, OSError, RuntimeError, ValueError):
+                    pass
+            return self._service.operation_response(envelope.operation_id)
         if envelope.kind == "terminal_acquisition":
             if not self._readiness():
                 return status_response(envelope.operation_id, StatusCode.INHIBITED, "Publisher is not ready")

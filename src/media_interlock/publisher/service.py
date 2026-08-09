@@ -7,7 +7,7 @@ from pathlib import Path
 from pathlib import PurePath
 import re
 
-from ..contracts import ContractError, Envelope
+from ..contracts import ContractError, Envelope, publisher_operation_receipt, publisher_operation_status
 from ..adapters.arr import ArrCandidate
 from ..adapters.jellyfin import CatalogExpectation, CatalogObservation
 from .model import PublicationState, PublisherState
@@ -107,6 +107,46 @@ class PublisherService:
         self._store.save(candidate)
         self._state.replace_with(candidate)
         return receipt
+
+    def operation_response(self, operation_id: str) -> Envelope:
+        """Project private durable progress onto the stable public operation contract."""
+        try:
+            publication = self._state.publication(operation_id)
+        except KeyError:
+            return publisher_operation_status(operation_id, "unavailable")
+        if publication.state is PublicationState.CUSTODY_RESERVED:
+            return publisher_operation_status(operation_id, "accepted")
+        if publication.state in {PublicationState.CANDIDATE_VERIFIED, PublicationState.GENERATION_INTENT}:
+            return publisher_operation_status(operation_id, "pending")
+        if publication.state is PublicationState.CATALOG_PENDING:
+            return publisher_operation_status(
+                operation_id,
+                "catalog-confirmed" if publication.catalog_item_id is not None else "pending",
+            )
+        required = (
+            publication.asset_slot,
+            publication.generation_id,
+            publication.candidate_sha256,
+            publication.catalog_library_id,
+            publication.catalog_item_id,
+            publication.catalog_media_source_id,
+            publication.expected_catalog_path,
+        )
+        if publication.state is not PublicationState.DELIVERED or not all(isinstance(value, str) and value for value in required):
+            return publisher_operation_status(operation_id, "unavailable")
+        return publisher_operation_receipt(
+            operation_id,
+            source=publication.source,
+            upstream_id=publication.upstream_id,
+            media_id=publication.media_id,
+            asset_slot=publication.asset_slot,
+            generation_id=publication.generation_id,
+            generation_sha256=publication.candidate_sha256,
+            library_id=publication.catalog_library_id,
+            item_id=publication.catalog_item_id,
+            media_source_id=publication.catalog_media_source_id,
+            expected_catalog_path=publication.expected_catalog_path,
+        )
 
     def bootstrap_bundle(self, *, operation_id: str, source: str, upstream_id: str, media_id: str, asset_slot: str, item_type: str, provider_ids: dict[str, str], bundle: VerifiedBundle, manifest_digest: str) -> None:
         durable = self._state.clone()
@@ -240,6 +280,11 @@ class PublisherService:
         assert publication.asset_slot and publication.item_type and publication.provider_ids is not None and publication.candidate_bytes is not None and publication.candidate_sha256
         assert publication.candidate_relative_path is not None
         internal_path = translation.to_jellyfin(translation.logical_payload(publication.asset_slot, publication.candidate_relative_path))
+        durable = self._state.clone()
+        durable.bind_catalog_expectation(operation_id, library_id, internal_path)
+        if (publication.catalog_library_id, publication.expected_catalog_path) != (library_id, internal_path):
+            self._persist(durable)
+            publication = self._state.publication(operation_id)
         def observe() -> CatalogObservation | None:
             known_item_id = self._known_item_id(publication.asset_slot, operation_id)
             if known_item_id is False:
@@ -279,6 +324,37 @@ class PublisherService:
             return False
         durable = self._state.clone()
         durable.mark_catalog_delivered(operation_id)
+        self._persist(durable)
+        return True
+
+    def revalidate_delivered_binding(self, operation_id: str, catalog: ExactCatalog, translation: PathTranslation, *, library_id: str) -> bool:
+        """Upgrade a pre-contract delivery only after repeating exact catalog proof."""
+        publication = self._state.publication(operation_id)
+        if publication.state is not PublicationState.DELIVERED:
+            return False
+        assert publication.asset_slot and publication.item_type and publication.provider_ids is not None
+        assert publication.candidate_relative_path and publication.candidate_bytes is not None and publication.candidate_sha256
+        assert publication.catalog_item_id and publication.catalog_media_source_id
+        internal_path = translation.to_jellyfin(translation.logical_payload(publication.asset_slot, publication.candidate_relative_path))
+        if publication.catalog_library_id and publication.expected_catalog_path:
+            return (publication.catalog_library_id, publication.expected_catalog_path) == (library_id, internal_path)
+        observed = catalog.observe_catalog(CatalogExpectation(
+            library_id=library_id,
+            internal_path=internal_path,
+            item_type=publication.item_type,
+            provider_ids=dict(publication.provider_ids),
+            expected_bytes=publication.candidate_bytes,
+            known_item_id=publication.catalog_item_id,
+        ))
+        if (
+            observed is None
+            or observed.item_id != publication.catalog_item_id
+            or observed.media_source_id != publication.catalog_media_source_id
+            or not catalog.direct_play_matches(observed, expected_bytes=publication.candidate_bytes, expected_sha256=publication.candidate_sha256)
+        ):
+            return False
+        durable = self._state.clone()
+        durable.bind_catalog_expectation(operation_id, library_id, internal_path)
         self._persist(durable)
         return True
 
@@ -355,6 +431,10 @@ class AssetPublisherWorkProcessor:
                 if self._service.observe_and_deliver_asset(operation_id, self._catalog, self._translation, library_id=self._library_id):
                     self._service.garbage_collect_assets(self._generations)
             publication = self._service._state.publication(operation_id)
+            if publication.state is PublicationState.DELIVERED and (not publication.catalog_library_id or not publication.expected_catalog_path):
+                return self._service.revalidate_delivered_binding(
+                    operation_id, self._catalog, self._translation, library_id=self._library_id,
+                )
             return publication.state in {PublicationState.CATALOG_PENDING, PublicationState.DELIVERED}
         except (ContractError, OSError, ValueError, RuntimeError):
             return False

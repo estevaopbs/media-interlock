@@ -44,6 +44,8 @@ class Publication:
     item_type: str | None = None
     provider_ids: tuple[tuple[str, str], ...] | None = None
     notification_attempted: bool = False
+    catalog_library_id: str | None = None
+    expected_catalog_path: str | None = None
     catalog_item_id: str | None = None
     catalog_media_source_id: str | None = None
 
@@ -190,15 +192,33 @@ class PublisherState:
 
     def mark_notification_attempted(self, operation_id: str) -> None:
         publication = self.publication(operation_id)
-        if publication.state is not PublicationState.CATALOG_PENDING:
+        if publication.state is not PublicationState.CATALOG_PENDING or not publication.catalog_library_id or not publication.expected_catalog_path:
             raise ContractError("catalog submission transition is invalid")
         self._publications[operation_id] = replace(publication, notification_attempted=True)
+
+    def bind_catalog_expectation(self, operation_id: str, library_id: str, expected_catalog_path: str) -> None:
+        publication = self.publication(operation_id)
+        if (
+            publication.state not in {PublicationState.CATALOG_PENDING, PublicationState.DELIVERED}
+            or not isinstance(library_id, str)
+            or not library_id
+            or not isinstance(expected_catalog_path, str)
+            or not expected_catalog_path.startswith("/")
+            or ".." in expected_catalog_path.split("/")
+        ):
+            raise ContractError("catalog expectation transition is invalid")
+        existing = (publication.catalog_library_id, publication.expected_catalog_path)
+        if existing != (None, None) and existing != (library_id, expected_catalog_path):
+            raise ContractError("catalog expectation conflicts with durable Publisher state")
+        self._publications[operation_id] = replace(publication, catalog_library_id=library_id, expected_catalog_path=expected_catalog_path)
 
     def mark_catalog_observed(self, operation_id: str, item_id: str, media_source_id: str) -> None:
         publication = self.publication(operation_id)
         if (
             publication.state is not PublicationState.CATALOG_PENDING
             or not publication.notification_attempted
+            or not publication.catalog_library_id
+            or not publication.expected_catalog_path
             or not isinstance(item_id, str)
             or not item_id
             or not isinstance(media_source_id, str)
@@ -221,9 +241,12 @@ class PublisherState:
     @classmethod
     def from_records(cls, records: Iterable[Mapping[str, object]]) -> "PublisherState":
         state = cls()
-        expected = {"operation_id", "fence_reservation_id", "publisher_reservation_id", "source", "upstream_id", "download_id", "media_id", "bytes_reserved", "state", "candidate_relative_path", "candidate_bytes", "candidate_sha256", "bundle_members", "bundle_inspection", "hardlink_frozen", "provenance", "intake_manifest_digest", "generation_id", "previous_generation_id", "asset_slot", "item_type", "provider_ids", "notification_attempted", "catalog_item_id", "catalog_media_source_id"}
+        expected = {"operation_id", "fence_reservation_id", "publisher_reservation_id", "source", "upstream_id", "download_id", "media_id", "bytes_reserved", "state", "candidate_relative_path", "candidate_bytes", "candidate_sha256", "bundle_members", "bundle_inspection", "hardlink_frozen", "provenance", "intake_manifest_digest", "generation_id", "previous_generation_id", "asset_slot", "item_type", "provider_ids", "notification_attempted", "catalog_library_id", "expected_catalog_path", "catalog_item_id", "catalog_media_source_id"}
         for record in records:
-            if set(record) != expected:
+            legacy_expected = expected - {"catalog_library_id", "expected_catalog_path"}
+            if set(record) == legacy_expected:
+                record = dict(record) | {"catalog_library_id": None, "expected_catalog_path": None}
+            elif set(record) != expected:
                 raise ContractError("durable Publisher publication has unknown fields")
             try:
                 publication = Publication(
@@ -250,6 +273,8 @@ class PublisherState:
                     item_type=record["item_type"],
                     provider_ids=tuple(tuple(pair) for pair in record["provider_ids"]) if isinstance(record["provider_ids"], (list, tuple)) else None,
                     notification_attempted=record["notification_attempted"],
+                    catalog_library_id=record["catalog_library_id"],
+                    expected_catalog_path=record["expected_catalog_path"],
                     catalog_item_id=record["catalog_item_id"],
                     catalog_media_source_id=record["catalog_media_source_id"],
                 )
@@ -273,6 +298,14 @@ class PublisherState:
                 and all(isinstance(pair, tuple) and len(pair) == 2 and all(isinstance(value, str) and value for value in pair) for pair in publication.provider_ids)
             )
             observed = publication.catalog_item_id is not None or publication.catalog_media_source_id is not None
+            bound = publication.catalog_library_id is not None or publication.expected_catalog_path is not None
+            valid_binding = not bound or (
+                isinstance(publication.catalog_library_id, str)
+                and bool(publication.catalog_library_id)
+                and isinstance(publication.expected_catalog_path, str)
+                and publication.expected_catalog_path.startswith("/")
+                and ".." not in publication.expected_catalog_path.split("/")
+            )
             valid_bundle = (publication.bundle_members is None and publication.bundle_inspection is None) or (
                 publication.bundle_members is not None
                 and publication.bundle_inspection is not None
@@ -287,7 +320,7 @@ class PublisherState:
                 and publication.fence_reservation_id == f"{publication.provenance}:{publication.operation_id}"
                 and publication.download_id == publication.provenance
             )
-            if not all(isinstance(field, str) and field for field in string_fields) or publication.source not in {"radarr", "sonarr"} or not isinstance(publication.bytes_reserved, int) or isinstance(publication.bytes_reserved, bool) or publication.bytes_reserved <= 0 or publication.publisher_reservation_id != f"publisher:{publication.operation_id}" or publication.operation_id in state._publications or not isinstance(publication.hardlink_frozen, bool) or (publication.provenance != "fence" and publication.hardlink_frozen) or not valid_provenance or (progressed and (not isinstance(publication.candidate_relative_path, str) or not publication.candidate_relative_path or not isinstance(publication.candidate_bytes, int) or isinstance(publication.candidate_bytes, bool) or publication.candidate_bytes <= 0 or not isinstance(publication.candidate_sha256, str) or len(publication.candidate_sha256) != 64)) or not valid_bundle or (has_generation and publication.generation_id != publication.operation_id) or (not has_generation and (publication.generation_id is not None or publication.previous_generation_id is not None)) or (has_generation and not previous_is_valid) or not valid_identity or not isinstance(publication.notification_attempted, bool) or (observed and (not publication.notification_attempted or not isinstance(publication.catalog_item_id, str) or not publication.catalog_item_id or not isinstance(publication.catalog_media_source_id, str) or not publication.catalog_media_source_id)) or (not observed and (publication.catalog_item_id is not None or publication.catalog_media_source_id is not None)) or (publication.state is PublicationState.DELIVERED and publication.previous_generation_id is not None):
+            if not all(isinstance(field, str) and field for field in string_fields) or publication.source not in {"radarr", "sonarr"} or not isinstance(publication.bytes_reserved, int) or isinstance(publication.bytes_reserved, bool) or publication.bytes_reserved <= 0 or publication.publisher_reservation_id != f"publisher:{publication.operation_id}" or publication.operation_id in state._publications or not isinstance(publication.hardlink_frozen, bool) or (publication.provenance != "fence" and publication.hardlink_frozen) or not valid_provenance or (progressed and (not isinstance(publication.candidate_relative_path, str) or not publication.candidate_relative_path or not isinstance(publication.candidate_bytes, int) or isinstance(publication.candidate_bytes, bool) or publication.candidate_bytes <= 0 or not isinstance(publication.candidate_sha256, str) or len(publication.candidate_sha256) != 64)) or not valid_bundle or (has_generation and publication.generation_id != publication.operation_id) or (not has_generation and (publication.generation_id is not None or publication.previous_generation_id is not None)) or (has_generation and not previous_is_valid) or not valid_identity or not isinstance(publication.notification_attempted, bool) or not valid_binding or (observed and (not publication.notification_attempted or not isinstance(publication.catalog_item_id, str) or not publication.catalog_item_id or not isinstance(publication.catalog_media_source_id, str) or not publication.catalog_media_source_id)) or (not observed and (publication.catalog_item_id is not None or publication.catalog_media_source_id is not None)) or (publication.state is PublicationState.DELIVERED and (publication.previous_generation_id is not None or not observed)):
                 raise ContractError("durable Publisher publication is invalid")
             state._publications[publication.operation_id] = publication
         return state

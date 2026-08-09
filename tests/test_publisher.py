@@ -103,6 +103,7 @@ class PublisherCustodyTests(unittest.TestCase):
         state.record_generation_intent(OPERATION_ID, None)
         state.mark_generation_committed(OPERATION_ID)
 
+        state.bind_catalog_expectation(OPERATION_ID, "library-1", "/jellyfin/library/radarr-tmdb-42/payload.mkv")
         state.mark_notification_attempted(OPERATION_ID)
         pending = state.publication(OPERATION_ID)
         self.assertEqual(PublicationState.CATALOG_PENDING, pending.state)
@@ -111,7 +112,12 @@ class PublisherCustodyTests(unittest.TestCase):
         self.assertEqual(PublicationState.CATALOG_PENDING, state.publication(OPERATION_ID).state)
         self.assertEqual("jellyfin-item", state.publication(OPERATION_ID).catalog_item_id)
         state.mark_catalog_delivered(OPERATION_ID)
-        self.assertEqual(PublicationState.DELIVERED, state.publication(OPERATION_ID).state)
+        delivered = state.publication(OPERATION_ID)
+        self.assertEqual(PublicationState.DELIVERED, delivered.state)
+        self.assertEqual("library-1", delivered.catalog_library_id)
+        self.assertEqual("/jellyfin/library/radarr-tmdb-42/payload.mkv", delivered.expected_catalog_path)
+        with self.assertRaisesRegex(ContractError, "conflicts"):
+            state.bind_catalog_expectation(OPERATION_ID, "library-2", "/other/payload.mkv")
 
     def test_sealed_bundle_manifest_survives_a_publisher_state_round_trip(self) -> None:
         from media_interlock.publisher.filesystem import BundleVerifier
@@ -130,6 +136,45 @@ class PublisherCustodyTests(unittest.TestCase):
 
             self.assertEqual(bundle.payload, restored.publication(OPERATION_ID).bundle().payload)
             self.assertEqual(bundle.members, restored.publication(OPERATION_ID).bundle().members)
+
+    def test_v012_delivered_record_is_unavailable_until_exact_receipt_binding_is_revalidated(self) -> None:
+        from media_interlock.adapters.jellyfin import CatalogObservation
+        from media_interlock.publisher.service import PathTranslation
+
+        class Store:
+            def save(self, _: PublisherState) -> None:
+                pass
+
+        class Catalog:
+            def observe_catalog(self, expected):
+                self.expected = expected
+                return CatalogObservation("jellyfin-item", "media-source", expected.internal_path, expected.expected_bytes)
+            def direct_play_matches(self, observation, *, expected_bytes: int, expected_sha256: str) -> bool:
+                return observation.media_source_id == "media-source" and expected_bytes == 5 and expected_sha256 == "a" * 64
+
+        state = PublisherState()
+        state.adopt_terminal(self.terminal())
+        state.mark_candidate_verified(OPERATION_ID, "movie.mkv", 5, "a" * 64)
+        state.bind_asset_identity(OPERATION_ID, "radarr:tmdb-42", "Movie", {"Tmdb": "42"})
+        state.record_generation_intent(OPERATION_ID, None)
+        state.mark_generation_committed(OPERATION_ID)
+        state.bind_catalog_expectation(OPERATION_ID, "library-1", "/jellyfin/library/radarr-tmdb-42/payload.mkv")
+        state.mark_notification_attempted(OPERATION_ID)
+        state.mark_catalog_observed(OPERATION_ID, "jellyfin-item", "media-source")
+        state.mark_catalog_delivered(OPERATION_ID)
+        legacy = dict(state.records()[0])
+        legacy.pop("catalog_library_id")
+        legacy.pop("expected_catalog_path")
+        restored = PublisherState.from_records([legacy])
+        service = PublisherService(restored, Store())
+
+        self.assertEqual("unavailable", service.operation_response(OPERATION_ID).body["state"])
+        self.assertTrue(service.revalidate_delivered_binding(
+            OPERATION_ID, Catalog(), PathTranslation(Path("/canonical"), "library", "/jellyfin/library"), library_id="library-1",
+        ))
+        receipt = service.operation_response(OPERATION_ID)
+        self.assertEqual("publisher_operation_receipt", receipt.kind)
+        self.assertEqual("/jellyfin/library/radarr-tmdb-42/payload.mkv", receipt.body["expected_catalog_path"])
 
     def test_bootstrap_is_owner_bound_idempotent_and_rejects_manifest_drift(self) -> None:
         from media_interlock.publisher.filesystem import BundleVerifier
@@ -373,6 +418,7 @@ class PublisherCustodyTests(unittest.TestCase):
         state.bind_asset_identity(OPERATION_ID, "radarr:tmdb-42", "Movie", {"Tmdb": "42"})
         state.record_generation_intent(OPERATION_ID, None)
         state.mark_generation_committed(OPERATION_ID)
+        state.bind_catalog_expectation(OPERATION_ID, "2f9e0f39-70de-4502-85ce-7ed03cd2f01f", "/jellyfin/library/radarr-tmdb-42/payload.mkv")
         state.mark_notification_attempted(OPERATION_ID)
         catalog = Catalog()
 

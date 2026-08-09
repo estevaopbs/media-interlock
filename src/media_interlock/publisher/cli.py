@@ -150,7 +150,6 @@ def _runtime(config: ProductConfig) -> tuple[PublisherStore, PublisherDaemon, tu
                 bundle=arguments["bundle"],
                 manifest_digest=arguments["manifest_digest"],
             )
-        process(envelope.operation_id)
         return True
 
     daemon = PublisherDaemon(

@@ -25,7 +25,7 @@ from media_interlock.adapters.sonarr import SonarrAdapter
 from media_interlock._infra.advisory_lease import AdvisoryLease, LeaseUnavailable
 from media_interlock.config import SecretReference
 from media_interlock.config import load_config
-from media_interlock.contracts import CONTRACT_VERSION, Envelope
+from media_interlock.contracts import CONTRACT_VERSION, Envelope, publisher_operation_query
 from media_interlock.fence import cli as fence_cli
 from media_interlock.fence.store import FenceStore
 from media_interlock.publisher.generation import AssetGenerationPublisher
@@ -255,6 +255,8 @@ class ReleaseRehearsalTests(unittest.TestCase):
                 publisher_stop, publisher_thread = start_daemon(runtime / "publisher.sock", lambda: publisher_cli._runtime(load_config(config_path)))
                 receipt = exchange(runtime / "publisher.sock", terminal); self.assertEqual("custody_receipt", receipt.kind)
                 self.assertEqual("ok", exchange(runtime / "fence.sock", receipt).body["code"])
+                pending = exchange(runtime / "publisher.sock", publisher_operation_query(operation_id))
+                self.assertEqual({"state": "pending"}, dict(pending.body))
                 # A 204 left this generation CATALOG_PENDING.  Restart before
                 # it becomes observable: recovery must observe/adopt the
                 # durable candidate instead of publishing or notifying again.
@@ -267,6 +269,13 @@ class ReleaseRehearsalTests(unittest.TestCase):
                 recovered_store.close()
                 publisher_stop, publisher_thread = start_daemon(runtime / "publisher.sock", lambda: publisher_cli._runtime(load_config(config_path)))
                 self.assertEqual(receipt, exchange(runtime / "publisher.sock", terminal))
+                public_receipt = exchange(runtime / "publisher.sock", publisher_operation_query(operation_id))
+                self.assertEqual("publisher_operation_receipt", public_receipt.kind)
+                self.assertEqual("visible-confirmed", public_receipt.body["state"])
+                self.assertEqual(operation_id, public_receipt.body["generation_id"])
+                self.assertEqual("radarr:tmdb-42", public_receipt.body["asset_slot"])
+                self.assertEqual("/jellyfin/library/radarr-tmdb-42/payload.mkv", public_receipt.body["expected_catalog_path"])
+                self.assertEqual(public_receipt, exchange(runtime / "publisher.sock", publisher_operation_query(operation_id)))
                 self.assertEqual(0, reconciler_cli.main(["--config", str(config_path), "--source", "sonarr", "--entity", "84", "--checkpoint", "fixture", "--json"]))
                 reconciler_store = ReconcilerStore.open(root / "reconciler-state")
                 sonarr_operation_id = next(intent.operation_id for intent in reconciler_store.load().intents() if intent.source == "sonarr")
@@ -275,6 +284,9 @@ class ReleaseRehearsalTests(unittest.TestCase):
                 sonarr_terminal = exchange(runtime / "fence.sock", Envelope(CONTRACT_VERSION, "observe", sonarr_operation_id, {})); self.assertEqual("terminal_acquisition", sonarr_terminal.kind)
                 sonarr_receipt = exchange(runtime / "publisher.sock", sonarr_terminal); self.assertEqual("custody_receipt", sonarr_receipt.kind)
                 self.assertEqual("ok", exchange(runtime / "fence.sock", sonarr_receipt).body["code"])
+                sonarr_public_receipt = exchange(runtime / "publisher.sock", publisher_operation_query(sonarr_operation_id))
+                self.assertEqual("publisher_operation_receipt", sonarr_public_receipt.kind)
+                self.assertEqual("sonarr:tvdb-84", sonarr_public_receipt.body["asset_slot"])
             finally:
                 if fence_stop is not None: fence_stop.set(); fence_thread.join(5)
                 if publisher_stop is not None: publisher_stop.set(); publisher_thread.join(5)

@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 CONTRACT_VERSION = "v1"
 MAX_ENVELOPE_BYTES = 64 * 1024
+PUBLISHER_OPERATION_STATES = frozenset({"accepted", "pending", "catalog-confirmed", "conflict", "unavailable"})
 
 
 class ContractError(ValueError):
@@ -117,7 +118,7 @@ class Envelope:
     def __post_init__(self) -> None:
         if not isinstance(self.version, str) or self.version != CONTRACT_VERSION:
             raise ContractError("unsupported contract version")
-        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_pre_admission", "acquisition_grab_binding", "acquisition_freeze", "terminal_acquisition", "custody_receipt", "publisher_bootstrap", "publisher_assisted_intent", "publisher_assisted_complete", "metrics", "observe", "quiesce"}:
+        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_pre_admission", "acquisition_grab_binding", "acquisition_freeze", "terminal_acquisition", "custody_receipt", "publisher_bootstrap", "publisher_assisted_intent", "publisher_assisted_complete", "publisher_operation_query", "publisher_operation_status", "publisher_operation_receipt", "metrics", "observe", "quiesce"}:
             raise ContractError("unknown contract kind")
         _operation_id(self.operation_id)
         normalized = _json_body(self.body)
@@ -159,6 +160,33 @@ class Envelope:
             expected = {"expected_bytes", "manifest_sha256", "media_id", "source", "upstream_id"}
             if set(normalized) != expected or normalized["source"] not in {"radarr", "sonarr"} or not all(isinstance(normalized[name], str) and normalized[name] for name in expected - {"source", "expected_bytes"}) or not _sha256(normalized["manifest_sha256"]) or isinstance(normalized["expected_bytes"], bool) or not isinstance(normalized["expected_bytes"], int) or normalized["expected_bytes"] <= 0:
                 raise ContractError("publisher assisted intent fields are invalid")
+        elif self.kind == "publisher_operation_status":
+            if set(normalized) != {"state"} or normalized.get("state") not in PUBLISHER_OPERATION_STATES:
+                raise ContractError("publisher operation status fields are invalid")
+        elif self.kind == "publisher_operation_receipt":
+            expected = {
+                "asset_slot", "expected_catalog_path", "generation_id", "generation_sha256", "item_id",
+                "library_id", "media_id", "media_source_id", "source", "state", "upstream_id",
+            }
+            strings = expected - {"source", "state", "generation_sha256", "expected_catalog_path", "asset_slot", "generation_id"}
+            if (
+                set(normalized) != expected
+                or normalized.get("state") != "visible-confirmed"
+                or normalized.get("source") not in {"radarr", "sonarr"}
+                or not all(isinstance(normalized.get(name), str) and normalized[name] for name in strings)
+                or not isinstance(normalized.get("asset_slot"), str)
+                or not normalized["asset_slot"].startswith(normalized["source"] + ":")
+                or not isinstance(normalized.get("generation_id"), str)
+                or normalized["generation_id"] != self.operation_id
+                or not _sha256(normalized.get("generation_sha256"))
+                or not isinstance(normalized.get("expected_catalog_path"), str)
+                or not normalized["expected_catalog_path"].startswith("/")
+                or ".." in normalized["expected_catalog_path"].split("/")
+            ):
+                raise ContractError("publisher operation receipt fields are invalid")
+        elif self.kind == "publisher_operation_query":
+            if normalized:
+                raise ContractError("publisher operation query has fields")
         elif normalized:
             raise ContractError("observe request has fields")
         object.__setattr__(self, "body", normalized)
@@ -222,6 +250,43 @@ def publisher_assisted_intent(*, operation_id: str, source: str, upstream_id: st
 
 def publisher_assisted_complete(*, operation_id: str, manifest: Mapping[str, Any]) -> Envelope:
     return Envelope(CONTRACT_VERSION, "publisher_assisted_complete", _operation_id(operation_id), {"manifest": dict(manifest), "manifest_sha256": _manifest_sha256(manifest)})
+
+
+def publisher_operation_query(operation_id: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "publisher_operation_query", _operation_id(operation_id), {})
+
+
+def publisher_operation_status(operation_id: str, state: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "publisher_operation_status", _operation_id(operation_id), {"state": state})
+
+
+def publisher_operation_receipt(
+    operation_id: str,
+    *,
+    source: str,
+    upstream_id: str,
+    media_id: str,
+    asset_slot: str,
+    generation_id: str,
+    generation_sha256: str,
+    library_id: str,
+    item_id: str,
+    media_source_id: str,
+    expected_catalog_path: str,
+) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "publisher_operation_receipt", _operation_id(operation_id), {
+        "asset_slot": asset_slot,
+        "expected_catalog_path": expected_catalog_path,
+        "generation_id": generation_id,
+        "generation_sha256": generation_sha256,
+        "item_id": item_id,
+        "library_id": library_id,
+        "media_id": media_id,
+        "media_source_id": media_source_id,
+        "source": source,
+        "state": "visible-confirmed",
+        "upstream_id": upstream_id,
+    })
 
 
 def terminal_acquisition(*, operation_id: str, fence_reservation_id: str, source: str, upstream_id: str, media_id: str, bytes_reserved: int, download_id: str) -> Envelope:
