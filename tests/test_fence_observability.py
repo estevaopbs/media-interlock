@@ -11,7 +11,7 @@ from media_interlock.contracts import Envelope, StatusCode, acquisition_pre_admi
 from media_interlock.fence.daemon import FenceDaemon
 from media_interlock.fence.model import FencePolicy, FenceState, PreAdmissionIntent
 from media_interlock.fence.observability import FenceObservability
-from media_interlock.fence.service import FenceService
+from media_interlock.fence.service import FenceService, FenceSource
 
 
 class FenceObservabilityTests(unittest.TestCase):
@@ -22,6 +22,31 @@ class FenceObservabilityTests(unittest.TestCase):
         self.assertEqual("ready", observed.status(qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True)["status"])
         self.assertIn("reserved_bytes 400", observed.metrics())
 
+    def test_metrics_expose_only_the_bounded_shared_lease_probe(self) -> None:
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=2))
+        observed = FenceObservability(state, lease_probe=lambda: (True, 17, 23))
+
+        metrics = observed.metrics()
+
+        self.assertIn("fence_shared_mutation_lease_available 1", metrics)
+        self.assertIn("fence_shared_mutation_lease_device 17", metrics)
+        self.assertIn("fence_shared_mutation_lease_inode 23", metrics)
+
+    def test_tick_uses_only_publisher_readiness_for_bounded_external_polling(self) -> None:
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=2))
+
+        class Service:
+            calls: list[bool] = []
+            def poll_external(self, *, publisher_ready: bool) -> bool:
+                self.calls.append(publisher_ready)
+                return True
+
+        service = Service()
+        daemon = FenceDaemon(service, FenceObservability(state), readiness=lambda: (False, False, True))  # type: ignore[arg-type]
+
+        self.assertTrue(daemon.tick())
+        self.assertEqual([True], service.calls)
+
 
 class FenceUnixDaemonTests(unittest.IsolatedAsyncioTestCase):
     async def test_pre_admission_over_unix_persists_no_qbittorrent_effect(self) -> None:
@@ -30,7 +55,7 @@ class FenceUnixDaemonTests(unittest.IsolatedAsyncioTestCase):
         class Qbittorrent:
             def ready(self) -> bool: return True
         state = FenceState(FencePolicy(1_000, 1))
-        daemon = FenceDaemon(FenceService(state, Store(), Qbittorrent(), None), FenceObservability(state), readiness=lambda: (True, True, True))
+        daemon = FenceDaemon(FenceService(state, Store(), Qbittorrent(), None, sources={"radarr": FenceSource("media-interlock-radarr", Path("/downloads/radarr"))}), FenceObservability(state), readiness=lambda: (True, True, True))
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "fence.sock"
             server = await asyncio.start_unix_server(daemon.handle, path=path)

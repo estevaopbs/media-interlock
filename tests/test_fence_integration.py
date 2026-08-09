@@ -14,7 +14,7 @@ from media_interlock.adapters.qbittorrent import QbittorrentAdapter
 from media_interlock.config import SecretReference
 from media_interlock.contracts import custody_receipt
 from media_interlock.fence.model import FencePolicy, PreAdmissionIntent, ReservationState
-from media_interlock.fence.service import FenceService
+from media_interlock.fence.service import FenceService, FenceSource
 from media_interlock.fence.store import FenceStore
 
 
@@ -70,12 +70,12 @@ class FenceVerticalIntegrationTests(unittest.TestCase):
         self.addCleanup(thread.join)
         self.addCleanup(server.shutdown)
         host, port = server.server_address
-        adapter = QbittorrentAdapter(f"http://{host}:{port}", SecretReference("env", "USER"), SecretReference("env", "PASS"), staging_root=Path("/staging"), secret_resolver=lambda _: "fixture")
+        adapter = QbittorrentAdapter(f"http://{host}:{port}", SecretReference("env", "USER"), SecretReference("env", "PASS"), secret_resolver=lambda _: "fixture")
         with tempfile.TemporaryDirectory() as directory:
             store = FenceStore.open(Path(directory) / "state")
             self.addCleanup(store.close)
             state = store.load(FencePolicy(capacity_bytes=1_000, max_inflight=1))
-            service = FenceService(state, store, adapter, prowlarr=None, categories={"radarr": "media-interlock-radarr"})
+            service = FenceService(state, store, adapter, prowlarr=None, sources={"radarr": FenceSource("media-interlock-radarr", Path("/staging"))})
             intent = PreAdmissionIntent("12345678-1234-4678-9234-567812345678", "radarr", "movie-42", "b" * 64, 400, "7")
 
             self.assertTrue(service.pre_admit(intent, publisher_ready=True).admitted)

@@ -14,10 +14,10 @@ from media_interlock.adapters.arr import ArrGrabObservation, ArrRelease
 from media_interlock.fence.daemon import FenceDaemon
 from media_interlock.fence.model import FencePolicy, FenceState, QbittorrentActivityObservation, QbittorrentObservation
 from media_interlock.fence.observability import FenceObservability
-from media_interlock.fence.service import FenceService
+from media_interlock.fence.service import FenceService, FenceSource
 from media_interlock.reconciler.fence_client import UnixFenceClient
 from media_interlock.reconciler.model import ReconciliationState, SearchIntent
-from media_interlock.reconciler.service import ReconcilerService
+from media_interlock.reconciler.service import ReconcilerService, ReconcilerSource
 
 
 class ReconcilerFenceVerticalTests(unittest.IsolatedAsyncioTestCase):
@@ -31,11 +31,13 @@ class ReconcilerFenceVerticalTests(unittest.IsolatedAsyncioTestCase):
             def save(self, _: object) -> None:
                 events.append("fence-save")
 
+        resumed = [False]
+
         class Qbittorrent:
             def ready(self) -> bool:
                 return True
 
-            def observe_existing_stopped(self, torrent_hash: str, category: str) -> QbittorrentObservation:
+            def observe_existing_stopped(self, torrent_hash: str, category: str, *, save_path: Path) -> QbittorrentObservation:
                 events.append(f"stopped:{torrent_hash}:{category}")
                 return QbittorrentObservation("observed", 400)
 
@@ -43,21 +45,22 @@ class ReconcilerFenceVerticalTests(unittest.IsolatedAsyncioTestCase):
                 events.append(f"tag:{torrent_hash}:{reservation_id}")
                 return True
 
-            def observe_tagged_stopped(self, torrent_hash: str, category: str, reservation_id: str) -> QbittorrentObservation:
+            def observe_tagged_stopped(self, torrent_hash: str, category: str, reservation_id: str, *, save_path: Path) -> QbittorrentObservation:
                 events.append(f"tagged:{torrent_hash}:{category}:{reservation_id}")
                 return QbittorrentObservation("observed", 400)
 
             def resume(self, torrent_hash: str) -> bool:
                 events.append(f"resume:{torrent_hash}")
+                resumed[0] = True
                 return True
 
-            def observe_active(self, torrent_hash: str, reservation_id: str, category: str) -> QbittorrentActivityObservation:
+            def observe_active(self, torrent_hash: str, reservation_id: str, category: str, *, save_path: Path) -> QbittorrentActivityObservation:
                 events.append(f"active:{torrent_hash}:{reservation_id}:{category}")
-                return QbittorrentActivityObservation("observed", True)
+                return QbittorrentActivityObservation("observed", resumed[0])
 
         class Arr:
-            def stopped_qbittorrent_client(self, category: str) -> bool:
-                return category == "media-interlock-radarr"
+            def stopped_qbittorrent_client(self, category: str, client_id: int) -> bool:
+                return (category, client_id) == ("media-interlock-radarr", 7)
 
             def history_watermark(self) -> int | None:
                 return 7
@@ -74,7 +77,7 @@ class ReconcilerFenceVerticalTests(unittest.IsolatedAsyncioTestCase):
                 return ArrGrabObservation("observed", "A" * 40, "a" * 40) if observed == release else ArrGrabObservation("unknown")
 
         fence_state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
-        daemon = FenceDaemon(FenceService(fence_state, Store(), Qbittorrent(), None, categories={"radarr": "media-interlock-radarr"}), FenceObservability(fence_state), readiness=lambda: (True, True, True))
+        daemon = FenceDaemon(FenceService(fence_state, Store(), Qbittorrent(), None, sources={"radarr": FenceSource("media-interlock-radarr", Path("/downloads/radarr"))}), FenceObservability(fence_state), readiness=lambda: (True, True, True))
         reconciliation = ReconciliationState()
 
         class ReconciliationStore:
@@ -85,7 +88,7 @@ class ReconcilerFenceVerticalTests(unittest.IsolatedAsyncioTestCase):
             socket_path = Path(directory) / "fence.sock"
             server = await asyncio.start_unix_server(daemon.handle, path=socket_path)
             try:
-                service = ReconcilerService(reconciliation, ReconciliationStore(), {"radarr": Arr()}, UnixFenceClient(socket_path), {"radarr": "media-interlock-radarr"})
+                service = ReconcilerService(reconciliation, ReconciliationStore(), {"radarr": Arr()}, UnixFenceClient(socket_path), {"radarr": ReconcilerSource("media-interlock-radarr", 7)})
                 result = await asyncio.to_thread(service.execute, SearchIntent(operation_id, "radarr", "42", False, "fixture"), now=9)
             finally:
                 server.close()

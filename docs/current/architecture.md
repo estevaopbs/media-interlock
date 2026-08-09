@@ -41,14 +41,15 @@ new admission according to available capacity.
 Reconciler persists an Arr release selector, causal watermark and expected size
 before Fence pre-admission, which deliberately has no locator or download ID.
 Arr then owns the authenticated release grab and download tracking with its
-configured qBittorrent client stopped. Fence polls public Arr Queue and History
-to bind one exact later grab to the reservation. It preserves Arr's real
-download ID for the terminal contract and derives one matching canonical
-lowercase torrent hash solely for qBittorrent observation, tagging, and resume.
-It observes that stopped hash, source-specific category, staging root and
-positive size before it tags or resumes it. Terminal observation contains the
-real Arr download ID and stable operation correlation identities, not an
-authoritative external path.
+configured qBittorrent client stopped. Fence polls bounded public Arr Queue and
+History both to bind that exact later grab and to adopt post-watermark external
+Arr grabs through a separate durable observation fingerprint. It preserves
+Arr's real download ID for the terminal contract and derives one matching
+canonical lowercase torrent hash solely for qBittorrent observation, tagging,
+pause, and resume. It observes that stopped hash, source-specific category,
+qBittorrent save path and positive size before it tags or resumes it. Terminal
+observation contains the real Arr download ID and stable operation correlation
+identities, not an authoritative external path.
 
 ## Repository boundary
 
@@ -59,10 +60,10 @@ src/media_interlock/
   config.py
   contracts.py
   observability.py
-  _infra/{state,safe_fs,unix_rpc}.py
+  _infra/{state,safe_fs,unix_rpc,advisory_lease}.py
   reconciler/{model,service,store,cli}.py
   publisher/{model,service,store,filesystem,generation,observability,daemon,cli}.py
-  fence/{model,service,store,observer,cli}.py
+  fence/{model,service,store,daemon,headroom,observability,cli}.py
   adapters/{radarr,sonarr,jellyfin,qbittorrent,bazarr,seerr,prowlarr}.py
 ```
 
@@ -123,6 +124,14 @@ unbounded values. Reconciliation policy is configurable, including eligibility
 windows, cooldowns, language preferences, quality constraints, and resource
 budgets.
 
+The supported source set is one typed Radarr movie profile and one typed Sonarr
+episode profile. A profile binds its Arr download-client identity and category,
+qBittorrent save path, Arr import prefix, Publisher roots and catalog binding,
+and named physical-capacity pools. Fence receives only the acquisition and
+pool projection; Publisher and Reconciler receive their own minimal fields.
+Materialized roots and pool probes must agree on filesystem identity, while
+distinct named pools cannot silently share a free-space supply.
+
 Safety invariants are not configuration: single-writer ownership, intent before
 effect, path containment, durable state transitions, idempotency, fail-closed
 ambiguity, and last-known-good retention cannot be disabled. Secrets are
@@ -137,9 +146,9 @@ Product readiness requires an enforceable ownership topology:
   playback services; Arr, qBittorrent, and Bazarr cannot write or mount them;
 - acquisition and subtitle services write only configured staging roots, which
   are disjoint from canonical and private publication roots;
-- every client that can add qBittorrent work adds it stopped under a fenced
-  identity/category, automatic resume is disabled, and Fence is the only actor
-  allowed to start or resume it;
+- every governed Arr client adds qBittorrent work stopped under its exact
+  profile category; Fence is the only writer for its owner-tagged hashes and
+  serializes every mutation through the configured shared inode lease;
 - no competing process may acknowledge custody, release a fence reservation,
   or mutate component state.
 

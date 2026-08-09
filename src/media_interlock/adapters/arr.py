@@ -40,16 +40,35 @@ class ArrGrabObservation:
     torrent_hash: str | None = None
 
 
+@dataclass(frozen=True)
+class ArrExternalGrab:
+    """A public Arr grab that can be reconciled without a release request."""
+
+    entity_id: str
+    download_id: str
+    torrent_hash: str
+    expected_bytes: int
+    history_id: int
+
+
+@dataclass(frozen=True)
+class ArrExternalObservation:
+    """One bounded observer pass, including its safe causal watermark."""
+
+    watermark: int
+    grabs: tuple[ArrExternalGrab, ...]
+
+
 class ArrHistoryAdapter:
     media_keys: tuple[str, ...] = ()
     source_name = ""
     item_type = ""
     release_entity_key = ""
     category_field_name = ""
-    def __init__(self, base_url: str, api_key: SecretReference, *, staging_root: Path, secret_resolver: Callable[[SecretReference], str] | None = None, timeout_seconds: float = 5.0) -> None:
+    def __init__(self, base_url: str, api_key: SecretReference, *, staging_root: Path | None, secret_resolver: Callable[[SecretReference], str] | None = None, timeout_seconds: float = 5.0) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
-        self._staging_root = staging_root.resolve(strict=False)
+        self._staging_root = None if staging_root is None else staging_root.resolve(strict=False)
         self._resolve = secret_resolver or (lambda reference: reference.resolve())
         self._timeout = timeout_seconds
 
@@ -190,9 +209,112 @@ class ArrHistoryAdapter:
             return ArrGrabObservation("absent")
         return ArrGrabObservation("ambiguous")
 
-    def stopped_qbittorrent_client(self, category: str) -> bool:
-        """Require one enabled Arr qBittorrent client that adds this source stopped."""
-        if not self.category_field_name or not isinstance(category, str) or not category:
+    def _stopped_qbittorrent_client_name(self, category: str, download_client_id: int) -> str | None:
+        if not self.category_field_name or not isinstance(category, str) or not category or isinstance(download_client_id, bool) or not isinstance(download_client_id, int) or download_client_id <= 0:
+            return None
+        request = Request(f"{self._base_url}/api/v3/downloadclient", headers={"X-Api-Key": self._resolve(self._api_key)})
+        try:
+            status, body = request_bytes(request, timeout=self._timeout)
+            clients = json.loads(body.decode("utf-8"))
+        except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if status != 200 or not isinstance(clients, list):
+            return None
+        selected_name: str | None = None
+        seen_ids: set[int] = set()
+        for client in clients:
+            if not isinstance(client, dict):
+                return None
+            client_id = client.get("id")
+            if isinstance(client_id, bool) or not isinstance(client_id, int) or client_id <= 0 or client_id in seen_ids:
+                return None
+            seen_ids.add(client_id)
+            if client.get("enable") is not True or client.get("protocol") != "torrent" or client.get("implementation") != "QBittorrent":
+                continue
+            fields = client.get("fields")
+            if not isinstance(fields, list):
+                return None
+            values: dict[str, object] = {}
+            for field in fields:
+                if not isinstance(field, dict) or not isinstance(field.get("name"), str) or field["name"] in values:
+                    return None
+                values[field["name"]] = field.get("value")
+            if values.get(self.category_field_name) != category:
+                continue
+            if client_id != download_client_id or values.get("initialState") != 2 or selected_name is not None:
+                return None
+            name = client.get("name")
+            if not isinstance(name, str) or not name:
+                return None
+            selected_name = name
+        if selected_name is None:
+            return None
+        if sum(client.get("enable") is True and client.get("name") == selected_name for client in clients if isinstance(client, dict)) != 1:
+            return None
+        return selected_name
+
+    def external_grabs_after(self, watermark: int, *, category: str, download_client_id: int) -> ArrExternalObservation | None:
+        """Observe all exact external torrent grabs after a persisted watermark.
+
+        Queue exposes a download-client *name*, not its configuration identity.
+        The name is therefore accepted only after a unique public
+        ``downloadclient`` lookup of the configured positive client id.
+        """
+        if isinstance(watermark, bool) or not isinstance(watermark, int) or watermark < 0:
+            return None
+        client_name = self._stopped_qbittorrent_client_name(category, download_client_id)
+        if client_name is None:
+            return None
+        history = self._paged("history")
+        queue = self._paged("queue")
+        if history is None or queue is None:
+            return None
+        history_ids = [record.get("id") for record in history]
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in history_ids):
+            return None
+        later = sorted((record for record in history if record["id"] > watermark), key=lambda record: record["id"])
+        if not later:
+            return ArrExternalObservation(watermark, ())
+        grabs: list[ArrExternalGrab] = []
+        seen_history: set[int] = set()
+        seen_downloads: set[str] = set()
+        for record in later:
+            history_id = record["id"]
+            if history_id in seen_history:
+                return None
+            seen_history.add(history_id)
+            if record.get("eventType") != "grabbed":
+                continue
+            entity_id = _public_id(record.get(self.release_entity_key))
+            download_id = record.get("downloadId")
+            if entity_id is None or not isinstance(download_id, str) or len(download_id) != 40 or any(character not in "0123456789abcdefABCDEF" for character in download_id):
+                return None
+            torrent_hash = download_id.lower()
+            if torrent_hash in seen_downloads:
+                return None
+            queue_matches = [
+                item for item in queue
+                if _public_id(item.get(self.release_entity_key)) == entity_id
+                and item.get("downloadId") == download_id
+                and item.get("downloadClient") == client_name
+                and item.get("protocol") == "torrent"
+                and isinstance(item.get("size"), int)
+                and not isinstance(item.get("size"), bool)
+                and item["size"] > 0
+            ]
+            if len(queue_matches) != 1:
+                return None
+            seen_downloads.add(torrent_hash)
+            grabs.append(ArrExternalGrab(entity_id, download_id, torrent_hash, queue_matches[0]["size"], history_id))
+        return ArrExternalObservation(max(record["id"] for record in later), tuple(grabs))
+
+    def stopped_qbittorrent_client(self, category: str, download_client_id: int) -> bool:
+        """Require the configured enabled Arr qBittorrent client to add stopped.
+
+        A distinct enabled qBittorrent client with the same source category is
+        ambiguous; unrelated clients remain outside this source's authority.
+        """
+        if not self.category_field_name or not isinstance(category, str) or not category or isinstance(download_client_id, bool) or not isinstance(download_client_id, int) or download_client_id <= 0:
             return False
         request = Request(f"{self._base_url}/api/v3/downloadclient", headers={"X-Api-Key": self._resolve(self._api_key)})
         try:
@@ -202,14 +324,14 @@ class ArrHistoryAdapter:
             return False
         if status != 200 or not isinstance(clients, list):
             return False
-        matches = 0
+        matched_configured_client = False
         for client in clients:
             if not isinstance(client, dict):
                 return False
             if client.get("enable") is not True:
                 continue
             if client.get("protocol") != "torrent" or client.get("implementation") != "QBittorrent":
-                return False
+                continue
             fields = client.get("fields")
             if not isinstance(fields, list):
                 return False
@@ -218,13 +340,20 @@ class ArrHistoryAdapter:
                 if not isinstance(field, dict) or not isinstance(field.get("name"), str) or field["name"] in values:
                     return False
                 values[field["name"]] = field.get("value")
-            if values.get("initialState") != 2 or values.get(self.category_field_name) != category:
+            if values.get(self.category_field_name) != category:
+                continue
+            client_id = client.get("id")
+            if isinstance(client_id, bool) or not isinstance(client_id, int) or client_id <= 0:
                 return False
-            matches += 1
-        return matches == 1
+            if client_id != download_client_id:
+                return False
+            if values.get("initialState") != 2 or matched_configured_client:
+                return False
+            matched_configured_client = True
+        return matched_configured_client
 
     def _matched_import(self, download_id: str, media_id: str) -> tuple[str, str] | None:
-        if not download_id or not media_id:
+        if not download_id or not media_id or self._staging_root is None:
             return None
         try:
             response = self._history(download_id)

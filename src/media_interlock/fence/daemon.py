@@ -45,6 +45,9 @@ class FenceDaemon:
         if envelope.kind == "custody_receipt":
             accepted = self._service.accept_custody(envelope)
             return status_response(envelope.operation_id, StatusCode.OK if accepted else StatusCode.CONFLICT, "custody receipt accepted" if accepted else "custody receipt rejected")
+        if envelope.kind == "quiesce":
+            changed = self._service.quiesce(enabled=bool(envelope.body["enabled"]))
+            return status_response(envelope.operation_id, StatusCode.OK if changed else StatusCode.INHIBITED, "quiescence updated" if changed else "quiescence unresolved")
         if envelope.kind == "status":
             qbittorrent_ready, prowlarr_ready, publisher_ready = self._readiness()
             status = self._observability.status(qbittorrent_ready=qbittorrent_ready, prowlarr_ready=prowlarr_ready, publisher_ready=publisher_ready)
@@ -59,3 +62,11 @@ class FenceDaemon:
 
     def recover(self) -> None:
         self._service.recover()
+
+    def tick(self) -> bool:
+        """Run one bounded observer pass without extending the socket contract."""
+        try:
+            _, _, publisher_ready = self._readiness()
+            return self._service.poll_external(publisher_ready=publisher_ready)
+        except Exception:
+            return False

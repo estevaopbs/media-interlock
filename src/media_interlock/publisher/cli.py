@@ -26,7 +26,7 @@ from .filesystem import CandidateVerifier
 from .store import PublisherStore
 
 
-def _runtime(config: ProductConfig) -> tuple[PublisherStore, PublisherDaemon, CanonicalWriterLock | None]:
+def _runtime(config: ProductConfig) -> tuple[PublisherStore, PublisherDaemon, tuple[CanonicalWriterLock, ...]]:
     if config.publisher is None:
         raise ConfigError("configuration has no publisher component")
     try:
@@ -37,13 +37,13 @@ def _runtime(config: ProductConfig) -> tuple[PublisherStore, PublisherDaemon, Ca
         raise ConfigError("Publisher requires Radarr, Sonarr, and Jellyfin adapters") from exc
     store = PublisherStore.open(config.publisher.state_dir)
     state = store.load()
-    roots_ready = all(path.exists() and path.is_dir() and not path.is_symlink() for path in (config.publisher.staging_root, config.publisher.canonical_root))
-    writer_lock = CanonicalWriterLock.acquire(config.publisher.canonical_root) if roots_ready else None
+    profiles = tuple(config.publisher.sources.values())
+    roots_ready = all(path.exists() and path.is_dir() and not path.is_symlink() for profile in profiles for path in (profile.staging_root, profile.canonical_root))
+    writer_locks = tuple(CanonicalWriterLock.acquire(profile.canonical_root) for profile in profiles) if roots_ready else ()
     service = PublisherService(state, store)
-    generations = AssetGenerationPublisher(config.publisher.staging_root, config.publisher.canonical_root, namespace=config.publisher.namespace)
     correlations = {
-        "radarr": RadarrAdapter(radarr_config.base_url, radarr_config.secrets["api_key"], staging_root=config.publisher.staging_root),
-        "sonarr": SonarrAdapter(sonarr_config.base_url, sonarr_config.secrets["api_key"], staging_root=config.publisher.staging_root),
+        "radarr": RadarrAdapter(radarr_config.base_url, radarr_config.secrets["api_key"], staging_root=config.publisher.sources["radarr"].staging_root),
+        "sonarr": SonarrAdapter(sonarr_config.base_url, sonarr_config.secrets["api_key"], staging_root=config.publisher.sources["sonarr"].staging_root),
     }
     catalog = JellyfinAdapter(jellyfin_config.base_url, jellyfin_config.secrets["api_key"])
     optional = [
@@ -55,32 +55,37 @@ def _runtime(config: ProductConfig) -> tuple[PublisherStore, PublisherDaemon, Ca
         for adapter in (config.adapters.get("seerr"),)
         if adapter is not None
     ]
-    translation = PathTranslation(config.publisher.canonical_root, config.publisher.namespace, config.publisher.jellyfin_path_prefix)
     readiness = lambda: roots_ready and catalog.ready() and all(adapter.ready() for adapter in optional)
-    if readiness():
-        service.recover_assets(generations, catalog, translation, library_id=config.publisher.jellyfin_library_id, correlations=correlations, inspection=CandidateVerifier(config.publisher.staging_root))
-        service.garbage_collect_assets(generations)
-    processor = AssetPublisherWorkProcessor(
-        service,
-        correlations,
-        CandidateVerifier(config.publisher.staging_root),
-        generations,
-        catalog,
-        translation,
-        library_id=config.publisher.jellyfin_library_id,
-    )
+    processors = {
+        profile.name: AssetPublisherWorkProcessor(
+            service,
+            {profile.name: correlations[profile.name]},
+            CandidateVerifier(profile.staging_root),
+            AssetGenerationPublisher(profile.staging_root, profile.canonical_root, namespace=profile.namespace),
+            catalog,
+            PathTranslation(profile.canonical_root, profile.namespace, profile.jellyfin_path_prefix),
+            library_id=profile.jellyfin_library_id,
+        )
+        for profile in profiles
+    }
+    def process(operation_id: str) -> None:
+        publication = state.publication(operation_id)
+        processor = processors.get(publication.source)
+        if processor is not None:
+            processor(operation_id)
+
     def retry_pending() -> None:
-        service.recover_assets(generations, catalog, translation, library_id=config.publisher.jellyfin_library_id, correlations=correlations, inspection=CandidateVerifier(config.publisher.staging_root))
-        service.garbage_collect_assets(generations)
+        for record in tuple(state.records()):
+            process(str(record["operation_id"]))
 
     daemon = PublisherDaemon(
         service,
         PublisherObservability(state),
         readiness=readiness,
-        process=processor,
+        process=process,
         retry=retry_pending,
     )
-    return store, daemon, writer_lock
+    return store, daemon, writer_locks
 
 
 def _component_ready(socket_path: Path) -> bool:
@@ -140,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             ready = _component_ready(config.publisher.socket_path) if config.publisher is not None else False
             print(render_result("ok" if ready else "inhibited", "ready" if ready else "unavailable", as_json=arguments.json))
             return 0 if ready else 1
-        store, daemon, writer_lock = _runtime(config)
+        store, daemon, writer_locks = _runtime(config)
     except (ConfigError, OSError) as exc:
         print(render_result("invalid_contract", str(exc), as_json=arguments.json))
         return 2
@@ -151,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         print(render_result("unavailable", str(exc), as_json=arguments.json))
         return 1
     finally:
-        if writer_lock is not None:
+        for writer_lock in writer_locks:
             writer_lock.close()
         store.close()
     return 0

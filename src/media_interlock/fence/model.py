@@ -20,6 +20,8 @@ class ReservationState(StrEnum):
     QBITTORRENT_STOPPED = "qbittorrent_stopped"
     RESUME_INTENT_RECORDED = "resume_intent_recorded"
     QBITTORRENT_ACTIVE = "qbittorrent_active"
+    PAUSE_INTENT_RECORDED = "pause_intent_recorded"
+    QBITTORRENT_PAUSED = "qbittorrent_paused"
     TERMINAL = "terminal"
     RELEASED = "released"
 
@@ -44,6 +46,20 @@ class PreAdmissionIntent:
     watermark: str
 
 
+@dataclass(frozen=True)
+class ExternalAdoptionIntent:
+    """A stopped Arr grab observed without a Reconciler release request."""
+
+    operation_id: str
+    source: str
+    entity_id: str
+    download_id: str
+    torrent_hash: str
+    expected_bytes: int
+    history_id: int
+    observation_fingerprint: str
+
+
 @dataclass
 class Reservation:
     operation_id: str
@@ -59,6 +75,9 @@ class Reservation:
     selector_fingerprint: str | None = None
     watermark: str | None = None
     download_id: str | None = None
+    observation_fingerprint: str | None = None
+    external_history_id: int | None = None
+    remaining_download_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -73,12 +92,14 @@ class QbittorrentObservation:
 
     kind: str
     observed_bytes: int | None = None
+    remaining_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in {"absent", "unknown", "ambiguous", "observed"}:
             raise ValueError("qBittorrent observation kind is invalid")
         valid_size = isinstance(self.observed_bytes, int) and not isinstance(self.observed_bytes, bool) and self.observed_bytes > 0
-        if (self.kind == "observed") != valid_size or (self.kind != "observed" and self.observed_bytes is not None):
+        valid_remaining = self.remaining_bytes is None or (isinstance(self.remaining_bytes, int) and not isinstance(self.remaining_bytes, bool) and self.observed_bytes is not None and 0 <= self.remaining_bytes <= self.observed_bytes)
+        if (self.kind == "observed") != valid_size or (self.kind != "observed" and (self.observed_bytes is not None or self.remaining_bytes is not None)) or not valid_remaining:
             raise ValueError("qBittorrent observation size is invalid")
 
 
@@ -102,6 +123,8 @@ class FenceState:
     def __init__(self, policy: FencePolicy) -> None:
         self._policy = policy
         self._reservations: dict[str, Reservation] = {}
+        self._watermarks: dict[str, int] = {}
+        self._quiescing = False
 
     @property
     def reserved_bytes(self) -> int:
@@ -114,7 +137,38 @@ class FenceState:
     def reservation(self, operation_id: str) -> Reservation:
         return self._reservations[operation_id]
 
+    @property
+    def quiescing(self) -> bool:
+        return self._quiescing
+
+    def begin_quiescence(self) -> None:
+        self._quiescing = True
+
+    def end_quiescence(self) -> None:
+        self._quiescing = False
+
+    def watermark(self, source: str) -> int | None:
+        return self._watermarks.get(source)
+
+    def operation_for_observation(self, fingerprint: str) -> str | None:
+        if not isinstance(fingerprint, str):
+            return None
+        for operation_id, reservation in self._reservations.items():
+            if reservation.observation_fingerprint == fingerprint:
+                return operation_id
+        return None
+
+    def record_watermark(self, source: str, watermark: int) -> None:
+        if not isinstance(source, str) or not source or isinstance(watermark, bool) or not isinstance(watermark, int) or watermark < 0:
+            raise ContractError("external Arr watermark is invalid")
+        current = self._watermarks.get(source)
+        if current is not None and watermark < current:
+            raise ContractError("external Arr watermark regressed")
+        self._watermarks[source] = watermark
+
     def pre_admit(self, intent: PreAdmissionIntent, *, qbittorrent_ready: bool, prowlarr_ready: bool, publisher_ready: bool) -> AdmissionDecision:
+        if self._quiescing:
+            return AdmissionDecision(False, "quiescing")
         existing = self._reservations.get(intent.operation_id)
         if existing is not None:
             immutable = (existing.source, existing.media_id, existing.requested_bytes, existing.selector_fingerprint, existing.watermark)
@@ -140,6 +194,37 @@ class FenceState:
         self._reservations[intent.operation_id] = Reservation(intent.operation_id, f"fence:{intent.operation_id}", intent.source, intent.media_id, intent.media_id, intent.expected_bytes, intent.expected_bytes, ReservationState.PRE_ADMITTED, selector_fingerprint=intent.selector_fingerprint, watermark=intent.watermark)
         return AdmissionDecision(True, "admitted")
 
+    def adopt_external(self, intent: ExternalAdoptionIntent, *, qbittorrent_ready: bool, publisher_ready: bool) -> AdmissionDecision:
+        """Persist a unique external observation before its qBittorrent effect."""
+        if self._quiescing:
+            return AdmissionDecision(False, "quiescing")
+        valid_fingerprint = isinstance(intent.observation_fingerprint, str) and len(intent.observation_fingerprint) == 64 and all(character in "0123456789abcdef" for character in intent.observation_fingerprint)
+        valid_history = isinstance(intent.history_id, int) and not isinstance(intent.history_id, bool) and intent.history_id > 0
+        valid_bytes = isinstance(intent.expected_bytes, int) and not isinstance(intent.expected_bytes, bool) and intent.expected_bytes > 0
+        if not valid_fingerprint or not valid_history or not valid_bytes or not isinstance(intent.source, str) or not intent.source or not isinstance(intent.entity_id, str) or not intent.entity_id or not isinstance(intent.operation_id, str) or not intent.operation_id or not _torrent_hash(intent.torrent_hash) or not isinstance(intent.download_id, str) or intent.download_id.lower() != intent.torrent_hash:
+            return AdmissionDecision(False, "invalid_external_observation")
+        existing = self._reservations.get(intent.operation_id)
+        by_fingerprint = next((item for item in self._reservations.values() if item.observation_fingerprint == intent.observation_fingerprint), None)
+        if existing is not None or by_fingerprint is not None:
+            item = existing if existing is not None else by_fingerprint
+            assert item is not None
+            immutable = (item.source, item.media_id, item.download_id, item.torrent_hash, item.requested_bytes, item.external_history_id, item.observation_fingerprint)
+            observed = (intent.source, intent.entity_id, intent.download_id, intent.torrent_hash, intent.expected_bytes, intent.history_id, intent.observation_fingerprint)
+            if immutable != observed:
+                return AdmissionDecision(False, "conflict")
+            return AdmissionDecision(True, "idempotent")
+        if not qbittorrent_ready:
+            return AdmissionDecision(False, "qbittorrent_unready")
+        if not publisher_ready:
+            return AdmissionDecision(False, "publisher_backpressure")
+        active = [item for item in self._reservations.values() if item.state is not ReservationState.RELEASED]
+        if len(active) >= self._policy.max_inflight:
+            return AdmissionDecision(False, "concurrency_exhausted")
+        if self.reserved_bytes + intent.expected_bytes > self._policy.capacity_bytes:
+            return AdmissionDecision(False, "capacity_exhausted")
+        self._reservations[intent.operation_id] = Reservation(intent.operation_id, f"fence:{intent.operation_id}", intent.source, intent.entity_id, intent.entity_id, intent.expected_bytes, intent.expected_bytes, ReservationState.PRE_ADMITTED, torrent_hash=intent.torrent_hash, download_id=intent.download_id, observation_fingerprint=intent.observation_fingerprint, external_history_id=intent.history_id)
+        return AdmissionDecision(True, "admitted")
+
     def bind_observed_grab(self, operation_id: str, *, download_id: str, torrent_hash: str) -> None:
         reservation = self.reservation(operation_id)
         if not isinstance(download_id, str) or len(download_id) != 40 or any(character not in "0123456789abcdefABCDEF" for character in download_id) or not _torrent_hash(torrent_hash) or download_id.lower() != torrent_hash:
@@ -160,7 +245,7 @@ class FenceState:
             raise ContractError("qBittorrent tag intent transition is invalid")
         reservation.state = ReservationState.TAG_INTENT_RECORDED
 
-    def mark_qbittorrent_tagged(self, operation_id: str, *, observed_bytes: int) -> bool:
+    def mark_qbittorrent_tagged(self, operation_id: str, *, observed_bytes: int, remaining_download_bytes: int | None = None) -> bool:
         reservation = self.reservation(operation_id)
         if reservation.state is not ReservationState.TAG_INTENT_RECORDED or not reservation.torrent_hash:
             raise ContractError("qBittorrent tag observation transition is invalid")
@@ -168,14 +253,30 @@ class FenceState:
             raise ContractError("qBittorrent size observation is invalid")
         if observed_bytes > reservation.bytes_reserved:
             reservation.bytes_reserved = observed_bytes
+        if remaining_download_bytes is not None:
+            if isinstance(remaining_download_bytes, bool) or not isinstance(remaining_download_bytes, int) or not 0 <= remaining_download_bytes <= observed_bytes:
+                raise ContractError("qBittorrent remaining size observation is invalid")
+            reservation.remaining_download_bytes = remaining_download_bytes
         reservation.state = ReservationState.QBITTORRENT_STOPPED
         return self.within_capacity
 
     def request_resume(self, operation_id: str) -> None:
         reservation = self.reservation(operation_id)
-        if reservation.state is not ReservationState.QBITTORRENT_STOPPED or not reservation.torrent_hash:
+        if reservation.state not in {ReservationState.QBITTORRENT_STOPPED, ReservationState.QBITTORRENT_PAUSED} or not reservation.torrent_hash or self._quiescing:
             raise ContractError("qBittorrent resume transition is invalid")
         reservation.state = ReservationState.RESUME_INTENT_RECORDED
+
+    def request_pause(self, operation_id: str) -> None:
+        reservation = self.reservation(operation_id)
+        if not self._quiescing or reservation.state is not ReservationState.QBITTORRENT_ACTIVE or not reservation.torrent_hash:
+            raise ContractError("qBittorrent pause intent transition is invalid")
+        reservation.state = ReservationState.PAUSE_INTENT_RECORDED
+
+    def mark_qbittorrent_paused(self, operation_id: str) -> None:
+        reservation = self.reservation(operation_id)
+        if not self._quiescing or reservation.state is not ReservationState.PAUSE_INTENT_RECORDED:
+            raise ContractError("qBittorrent pause observation transition is invalid")
+        reservation.state = ReservationState.QBITTORRENT_PAUSED
 
     def mark_qbittorrent_active(self, operation_id: str) -> None:
         reservation = self.reservation(operation_id)
@@ -226,6 +327,9 @@ class FenceState:
                 "selector_fingerprint": item.selector_fingerprint,
                 "watermark": item.watermark,
                 "download_id": item.download_id,
+                "observation_fingerprint": item.observation_fingerprint,
+                "external_history_id": item.external_history_id,
+                "remaining_download_bytes": item.remaining_download_bytes,
                 "state": item.state.value,
                 "publisher_reservation_id": item.publisher_reservation_id,
             }
@@ -235,7 +339,7 @@ class FenceState:
     @classmethod
     def from_records(cls, policy: FencePolicy, records: Iterable[Mapping[str, object]]) -> "FenceState":
         result = cls(policy)
-        expected = {"operation_id", "reservation_id", "source", "upstream_id", "media_id", "bytes_reserved", "requested_bytes", "torrent_hash", "selector_fingerprint", "watermark", "download_id", "state", "publisher_reservation_id"}
+        expected = {"operation_id", "reservation_id", "source", "upstream_id", "media_id", "bytes_reserved", "requested_bytes", "torrent_hash", "selector_fingerprint", "watermark", "download_id", "observation_fingerprint", "external_history_id", "remaining_download_bytes", "state", "publisher_reservation_id"}
         for record in records:
             if set(record) != expected:
                 raise ContractError("durable Fence reservation has unknown fields")
@@ -255,13 +359,17 @@ class FenceState:
                     selector_fingerprint=record["selector_fingerprint"],
                     watermark=record["watermark"],
                     download_id=record["download_id"],
+                    observation_fingerprint=record["observation_fingerprint"],
+                    external_history_id=record["external_history_id"],
+                    remaining_download_bytes=record["remaining_download_bytes"],
                     state=ReservationState(record["state"]),
                     publisher_reservation_id=record["publisher_reservation_id"],
                 )
             except (TypeError, ValueError) as exc:
                 raise ContractError("durable Fence reservation is invalid") from exc
             bound_state = item.state is not ReservationState.PRE_ADMITTED
-            if not isinstance(item.bytes_reserved, int) or isinstance(item.bytes_reserved, bool) or item.bytes_reserved <= 0 or not isinstance(item.requested_bytes, int) or isinstance(item.requested_bytes, bool) or item.requested_bytes <= 0 or item.bytes_reserved < item.requested_bytes or (item.publisher_reservation_id is not None and not isinstance(item.publisher_reservation_id, str)) or (item.torrent_hash is not None and not _torrent_hash(item.torrent_hash)) or (item.selector_fingerprint is not None and (not isinstance(item.selector_fingerprint, str) or len(item.selector_fingerprint) != 64 or any(character not in "0123456789abcdef" for character in item.selector_fingerprint))) or (item.watermark is not None and (not isinstance(item.watermark, str) or not item.watermark)) or (item.download_id is not None and (not isinstance(item.download_id, str) or len(item.download_id) != 40 or any(character not in "0123456789abcdefABCDEF" for character in item.download_id))) or (item.download_id is not None and item.torrent_hash is not None and item.download_id.lower() != item.torrent_hash) or (not item.selector_fingerprint or not item.watermark) or (item.state is ReservationState.PRE_ADMITTED and (item.torrent_hash is not None or item.download_id is not None)) or (bound_state and (not item.torrent_hash or not item.download_id)) or (item.state is ReservationState.RELEASED and not item.publisher_reservation_id):
+            external = item.observation_fingerprint is not None
+            if not isinstance(item.bytes_reserved, int) or isinstance(item.bytes_reserved, bool) or item.bytes_reserved <= 0 or not isinstance(item.requested_bytes, int) or isinstance(item.requested_bytes, bool) or item.requested_bytes <= 0 or item.bytes_reserved < item.requested_bytes or (item.remaining_download_bytes is not None and (not isinstance(item.remaining_download_bytes, int) or isinstance(item.remaining_download_bytes, bool) or not 0 <= item.remaining_download_bytes <= item.bytes_reserved)) or (item.publisher_reservation_id is not None and not isinstance(item.publisher_reservation_id, str)) or (item.torrent_hash is not None and not _torrent_hash(item.torrent_hash)) or (item.selector_fingerprint is not None and (not isinstance(item.selector_fingerprint, str) or len(item.selector_fingerprint) != 64 or any(character not in "0123456789abcdef" for character in item.selector_fingerprint))) or (item.observation_fingerprint is not None and (not isinstance(item.observation_fingerprint, str) or len(item.observation_fingerprint) != 64 or any(character not in "0123456789abcdef" for character in item.observation_fingerprint))) or (item.external_history_id is not None and (not isinstance(item.external_history_id, int) or isinstance(item.external_history_id, bool) or item.external_history_id <= 0)) or (item.watermark is not None and (not isinstance(item.watermark, str) or not item.watermark)) or (item.download_id is not None and (not isinstance(item.download_id, str) or len(item.download_id) != 40 or any(character not in "0123456789abcdefABCDEF" for character in item.download_id))) or (item.download_id is not None and item.torrent_hash is not None and item.download_id.lower() != item.torrent_hash) or (external and (item.selector_fingerprint is not None or item.watermark is not None or item.external_history_id is None or not item.torrent_hash or not item.download_id)) or (not external and (not item.selector_fingerprint or not item.watermark or item.external_history_id is not None)) or (item.state is ReservationState.PRE_ADMITTED and not external and (item.torrent_hash is not None or item.download_id is not None)) or (bound_state and (not item.torrent_hash or not item.download_id)) or (item.state is ReservationState.RELEASED and not item.publisher_reservation_id):
                 raise ContractError("durable Fence reservation is invalid")
             if item.operation_id in result._reservations:
                 raise ContractError("durable Fence reservation operation is duplicated")
@@ -269,7 +377,25 @@ class FenceState:
         return result
 
     def clone(self) -> "FenceState":
-        return FenceState.from_records(self._policy, self.records())
+        result = FenceState.from_records(self._policy, self.records())
+        result._watermarks = dict(self._watermarks)
+        result._quiescing = self._quiescing
+        return result
 
     def replace_with(self, other: "FenceState") -> None:
         self._reservations = other._reservations
+        self._watermarks = other._watermarks
+        self._quiescing = other._quiescing
+
+    def watermarks(self) -> dict[str, int]:
+        return dict(self._watermarks)
+
+    @classmethod
+    def from_snapshot(cls, policy: FencePolicy, records: Iterable[Mapping[str, object]], watermarks: Mapping[str, object], *, quiescing: bool = False) -> "FenceState":
+        result = cls.from_records(policy, records)
+        for source, watermark in watermarks.items():
+            result.record_watermark(source, watermark)  # type: ignore[arg-type]
+        if not isinstance(quiescing, bool):
+            raise ContractError("durable Fence quiescence is invalid")
+        result._quiescing = quiescing
+        return result

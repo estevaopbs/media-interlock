@@ -69,7 +69,7 @@ class Envelope:
     def __post_init__(self) -> None:
         if not isinstance(self.version, str) or self.version != CONTRACT_VERSION:
             raise ContractError("unsupported contract version")
-        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_pre_admission", "acquisition_grab_binding", "terminal_acquisition", "custody_receipt", "metrics", "observe"}:
+        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_pre_admission", "acquisition_grab_binding", "terminal_acquisition", "custody_receipt", "metrics", "observe", "quiesce"}:
             raise ContractError("unknown contract kind")
         _operation_id(self.operation_id)
         normalized = _json_body(self.body)
@@ -98,6 +98,9 @@ class Envelope:
         elif self.kind == "metrics":
             if normalized and (set(normalized) != {"text"} or not isinstance(normalized["text"], str)):
                 raise ContractError("invalid metrics fields")
+        elif self.kind == "quiesce":
+            if set(normalized) != {"enabled"} or not isinstance(normalized["enabled"], bool):
+                raise ContractError("invalid quiescence fields")
         elif normalized:
             raise ContractError("observe request has fields")
         object.__setattr__(self, "body", normalized)
@@ -158,6 +161,10 @@ def metrics_response(operation_id: str, text: str) -> Envelope:
 
 def custody_receipt(operation_id: str, fence_reservation_id: str, publisher_reservation_id: str) -> Envelope:
     return Envelope(CONTRACT_VERSION, "custody_receipt", _operation_id(operation_id), {"fence_reservation_id": fence_reservation_id, "publisher_reservation_id": publisher_reservation_id})
+
+
+def quiesce_request(operation_id: str, *, enabled: bool) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "quiesce", _operation_id(operation_id), {"enabled": enabled})
 
 
 def status_response(operation_id: str, code: StatusCode, message: str) -> Envelope:

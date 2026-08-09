@@ -1,10 +1,12 @@
 # Current state
 
 MediaInterlock is a local release candidate with its shared safety slice and
-the Fence, Publisher, and Reconciler verticals converged.
-Fence has a private durable reservation store,
-version-1 local Unix endpoint, bounded health/metrics, exact qBittorrent
-control, optional configured-indexer Prowlarr readiness, terminal observation,
+the Fence, Publisher, and Reconciler verticals converged. Fence has strict
+Radarr movie and Sonarr episode source profiles, observer-first external Arr
+grab adoption, per-source qBittorrent paths, a neutral bounded mutation lease,
+physical headroom, and exact local quiescence. It has a private durable
+reservation store, version-1 local Unix endpoint, bounded health/metrics,
+optional configured-indexer Prowlarr readiness, terminal observation,
 conservative custody receipts, and restart reconciliation. Publisher has a
 private durable publication store, per-asset sealed bundles and stable slots,
 asset-local predecessor retention, Arr identity correlation, bounded Jellyfin
@@ -51,7 +53,7 @@ in `0.x` while interfaces and adapters stabilize. Version `1.0.0` requires all
 three components, all adapters declared for that release, integrated safety
 gates, packaging, and operator documentation.
 
-The current development cycle is pinned to Python 3.14.6, Jellyfin 10.11.11,
+The current development cycle is pinned to Python 3.14.7, Jellyfin 10.11.11,
 Radarr 6.3.0.10514, Sonarr 4.0.19.2979, qBittorrent 5.2.3, Bazarr 1.6.0, Seerr
 3.4.1, and Prowlarr 2.5.2.5491. These pins remain fixed for the cycle and
 define what future adapter tests prove. MediaInterlock does not promise

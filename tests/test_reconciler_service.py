@@ -10,7 +10,10 @@ import _source_tree  # noqa: F401
 from media_interlock.adapters.arr import ArrGrabObservation, ArrRelease
 from media_interlock.fence.model import AdmissionDecision, PreAdmissionIntent
 from media_interlock.reconciler.model import AttemptPolicy, ReconciliationState, SearchIntent
-from media_interlock.reconciler.service import ReconcilerService
+from media_interlock.reconciler.service import ReconcilerService, ReconcilerSource
+
+
+RADARR_SOURCE = ReconcilerSource("media-interlock-radarr", 7)
 
 
 class ReconcilerServiceTests(unittest.TestCase):
@@ -27,7 +30,7 @@ class ReconcilerServiceTests(unittest.TestCase):
         class Store:
             def save(self, _: ReconciliationState) -> None: events.append("save")
         class Arr:
-            def stopped_qbittorrent_client(self, _: str) -> bool: events.append("client"); return True
+            def stopped_qbittorrent_client(self, _: str, __: int) -> bool: events.append("client"); return True
             def grab_release(self, _: ArrRelease) -> bool: events.append("post"); return False
             def observe_grab(self, _: str, __: ArrRelease, *, watermark: int) -> ArrGrabObservation:
                 self_outer.assertEqual(7, watermark); events.append("observe"); return ArrGrabObservation("absent")
@@ -36,7 +39,7 @@ class ReconcilerServiceTests(unittest.TestCase):
             def bind_grab(self, _: str, __: str, ___: str) -> bool: self_outer.fail("absence cannot bind")
 
         self_outer = self
-        result = ReconcilerService(state, Store(), {"radarr": Arr()}, Fence(), {"radarr": "media-interlock-radarr"}).recover(now=100)
+        result = ReconcilerService(state, Store(), {"radarr": Arr()}, Fence(), {"radarr": RADARR_SOURCE}).recover(now=100)
 
         self.assertEqual(["pending"], result)
         self.assertTrue(state.grab_attempted(operation_id))
@@ -53,7 +56,7 @@ class ReconcilerServiceTests(unittest.TestCase):
         class Store:
             def save(self, _: ReconciliationState) -> None: events.append("save")
         class Arr:
-            def stopped_qbittorrent_client(self, _: str) -> bool: events.append("client"); return True
+            def stopped_qbittorrent_client(self, _: str, __: int) -> bool: events.append("client"); return True
             def history_watermark(self) -> int | None: events.append("watermark"); return 7
             def first_approved_release(self, _: str) -> ArrRelease | None: events.append("release"); return release
             def grab_release(self, _: ArrRelease) -> bool: events.append("post"); return False
@@ -63,7 +66,7 @@ class ReconcilerServiceTests(unittest.TestCase):
             def bind_grab(self, _: str, __: str, ___: str) -> bool: self_outer.fail("absence cannot bind")
 
         self_outer = self
-        self.assertEqual(["pending"], ReconcilerService(state, Store(), {"radarr": Arr()}, Fence(), {"radarr": "media-interlock-radarr"}).recover(now=100))
+        self.assertEqual(["pending"], ReconcilerService(state, Store(), {"radarr": Arr()}, Fence(), {"radarr": RADARR_SOURCE}).recover(now=100))
         self.assertEqual(["client", "watermark", "release", "save", "client", "preadmit", "save", "post", "observe"], events)
 
     def test_recovery_observes_durable_possible_grab_without_repeating_post(self) -> None:
@@ -94,7 +97,7 @@ class ReconcilerServiceTests(unittest.TestCase):
                 return True
 
         self_outer = self
-        service = ReconcilerService(state, Store(), {"radarr": Arr()}, Fence(), {"radarr": "media-interlock-radarr"})
+        service = ReconcilerService(state, Store(), {"radarr": Arr()}, Fence(), {"radarr": RADARR_SOURCE})
 
         self.assertEqual(["bound"], service.recover(now=100))
         self.assertEqual(["observe", "bind", "save"], calls)
@@ -110,7 +113,7 @@ class ReconcilerServiceTests(unittest.TestCase):
                 events.append("save")
 
         class Arr:
-            def stopped_qbittorrent_client(self, category: str) -> bool:
+            def stopped_qbittorrent_client(self, category: str, client_id: int) -> bool:
                 events.append(f"client:{category}")
                 return True
 
@@ -143,7 +146,7 @@ class ReconcilerServiceTests(unittest.TestCase):
 
         self_outer = self
         state = ReconciliationState()
-        service = ReconcilerService(state, Store(), {"radarr": Arr()}, Fence(), {"radarr": "media-interlock-radarr"})
+        service = ReconcilerService(state, Store(), {"radarr": Arr()}, Fence(), {"radarr": RADARR_SOURCE})
         intent = SearchIntent(str(uuid.uuid4()), "radarr", "42", False, "checkpoint")
 
         self.assertEqual("pending", service.execute(intent, now=100))

@@ -11,7 +11,8 @@ from .model import FencePolicy, FenceState
 
 
 class FenceStore:
-    _KEY = "fence.reservations.v1"
+    _KEY = "fence.reservations.v2"
+    _LEGACY_KEY = "fence.reservations.v1"
 
     def __init__(self, store: SqliteStore) -> None:
         self._store = store
@@ -23,17 +24,20 @@ class FenceStore:
     def load(self, policy: FencePolicy) -> FenceState:
         raw = self._store.get(self._KEY)
         if raw is None:
+            if self._store.get(self._LEGACY_KEY) is not None:
+                raise ContractError("durable Fence v1 state requires an explicit migration")
             return FenceState(policy)
         try:
-            records = json.loads(raw)
+            snapshot = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise ContractError("durable Fence state is not valid JSON") from exc
-        if not isinstance(records, list):
-            raise ContractError("durable Fence state is not a reservation list")
-        return FenceState.from_records(policy, records)
+        if not isinstance(snapshot, dict) or set(snapshot) != {"reservations", "watermarks", "quiescing"} or not isinstance(snapshot["reservations"], list) or not isinstance(snapshot["watermarks"], dict) or not isinstance(snapshot["quiescing"], bool):
+            raise ContractError("durable Fence state is not a v2 snapshot")
+        return FenceState.from_snapshot(policy, snapshot["reservations"], snapshot["watermarks"], quiescing=snapshot["quiescing"])
 
     def save(self, state: FenceState) -> None:
-        self._store.put(self._KEY, json.dumps(state.records(), sort_keys=True, separators=(",", ":"), allow_nan=False))
+        snapshot = {"reservations": state.records(), "watermarks": state.watermarks(), "quiescing": state.quiescing}
+        self._store.put(self._KEY, json.dumps(snapshot, sort_keys=True, separators=(",", ":"), allow_nan=False))
 
     def close(self) -> None:
         self._store.close()

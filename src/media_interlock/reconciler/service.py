@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Protocol
 
 from ..adapters.arr import ArrGrabObservation, ArrRelease
@@ -15,7 +16,7 @@ class ReconciliationStore(Protocol):
 
 
 class ArrReleaseControl(Protocol):
-    def stopped_qbittorrent_client(self, category: str) -> bool: ...
+    def stopped_qbittorrent_client(self, category: str, download_client_id: int) -> bool: ...
     def history_watermark(self) -> int | None: ...
     def first_approved_release(self, entity_id: str) -> ArrRelease | None: ...
     def grab_release(self, release: ArrRelease) -> bool: ...
@@ -27,13 +28,19 @@ class FencePreAdmission(Protocol):
     def bind_grab(self, operation_id: str, download_id: str, torrent_hash: str) -> bool: ...
 
 
+@dataclass(frozen=True)
+class ReconcilerSource:
+    category: str
+    download_client_id: int
+
+
 class ReconcilerService:
-    def __init__(self, state: ReconciliationState, store: ReconciliationStore, adapters: Mapping[str, ArrReleaseControl], fence: FencePreAdmission, categories: Mapping[str, str]) -> None:
+    def __init__(self, state: ReconciliationState, store: ReconciliationStore, adapters: Mapping[str, ArrReleaseControl], fence: FencePreAdmission, sources: Mapping[str, ReconcilerSource]) -> None:
         self._state = state
         self._store = store
         self._adapters = adapters
         self._fence = fence
-        self._categories = categories
+        self._sources = sources
 
     def _persist(self) -> None:
         self._store.save(self._state)
@@ -45,15 +52,15 @@ class ReconcilerService:
             if self._state.observed(intent.operation_id):
                 continue
             adapter = self._adapters.get(intent.source)
-            category = self._categories.get(intent.source)
-            if adapter is None or category is None:
+            source = self._sources.get(intent.source)
+            if adapter is None or source is None:
                 results.append("unavailable")
                 continue
             try:
                 grab = self._state.grab_intent(intent.operation_id)
             except KeyError:
                 try:
-                    if not adapter.stopped_qbittorrent_client(category):
+                    if not adapter.stopped_qbittorrent_client(source.category, source.download_client_id):
                         results.append("inhibited")
                         continue
                     watermark = adapter.history_watermark()
@@ -73,7 +80,7 @@ class ReconcilerService:
                 self._persist()
             if not self._state.grab_attempted(intent.operation_id):
                 try:
-                    if not adapter.stopped_qbittorrent_client(category):
+                    if not adapter.stopped_qbittorrent_client(source.category, source.download_client_id):
                         results.append("inhibited")
                         continue
                     admission = self._fence.pre_admit(PreAdmissionIntent(intent.operation_id, intent.source, intent.entity_id, grab.selector_fingerprint, grab.expected_bytes, str(grab.watermark)))
@@ -122,11 +129,11 @@ class ReconcilerService:
             if existing != intent:
                 return "inhibited"
         adapter = self._adapters.get(intent.source)
-        category = self._categories.get(intent.source)
-        if adapter is None or category is None:
+        source = self._sources.get(intent.source)
+        if adapter is None or source is None:
             return "inhibited"
         try:
-            if not adapter.stopped_qbittorrent_client(category):
+            if not adapter.stopped_qbittorrent_client(source.category, source.download_client_id):
                 return "inhibited"
         except Exception:
             return "unavailable"

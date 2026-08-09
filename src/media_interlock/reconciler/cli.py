@@ -12,7 +12,7 @@ from ..cli import render_result
 from ..config import ConfigError, load_config
 from .fence_client import UnixFenceClient
 from .model import AttemptPolicy, SearchIntent
-from .service import ReconcilerService
+from .service import ReconcilerService, ReconcilerSource
 from .store import ReconcilerStore
 
 
@@ -32,8 +32,9 @@ def main(argv: list[str] | None = None) -> int:
         adapters = {}
         for source, adapter_class in (("radarr", RadarrAdapter), ("sonarr", SonarrAdapter)):
             arr_config = config.adapters.get(source)
-            if arr_config is not None:
-                adapters[source] = adapter_class(arr_config.base_url, arr_config.secrets["api_key"], staging_root=config.fence.staging_root)
+            profile = config.reconciler.sources.get(source)
+            if arr_config is not None and profile is not None:
+                adapters[source] = adapter_class(arr_config.base_url, arr_config.secrets["api_key"], staging_root=None)
         if arguments.source not in adapters:
             raise ConfigError(f"Reconciler requires a configured {arguments.source} adapter")
         store = ReconcilerStore.open(config.reconciler.state_dir)
@@ -42,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         state = store.load()
-        service = ReconcilerService(state, store, adapters, UnixFenceClient(config.fence.socket_path), config.fence.categories)
+        service = ReconcilerService(state, store, adapters, UnixFenceClient(config.fence.socket_path), {name: ReconcilerSource(profile.category, profile.download_client_id) for name, profile in config.reconciler.sources.items()})
         service.recover(now=0)
         policy_config = config.reconciler.movie if arguments.source == "radarr" else config.reconciler.episode
         policy = AttemptPolicy(policy_config.cooldown_seconds, policy_config.max_attempts)

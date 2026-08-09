@@ -45,12 +45,14 @@ unready rather than silently degrading to unsafe behavior.
 
 Operational readiness also requires disjoint staging/canonical roots,
 publisher-only canonical write access, read-only playback mounts, paused-on-add
-qBittorrent behavior, distinct configured qBittorrent categories per Arr
-source, and
-fence-only resume authority. Fence accepts a stopped add only after it observes
-the exact Arr download identity and corresponding canonical hash, category,
-reservation tag, and staging root; it persists resume
-intent before the resume call. MediaInterlock validates
+behavior from each configured Arr qBittorrent client, distinct source
+categories, and a regular singly linked shared mutation-lock file. Fence
+accepts a stopped add only after it observes the exact Arr download identity
+and corresponding canonical hash, category, reservation tag, and qBittorrent
+save path; it persists resume intent before the resume call. Bounded polling
+can adopt an external Arr grab only after its post-watermark Queue/History
+observation is durably fingerprinted. Read-only capacity probes supply
+conservative `statvfs` headroom; they are not filesystem quotas. MediaInterlock validates
 the paths and observable upstream settings; deployment manifests, identities,
 mounts, ACLs, and credentials enforce the parts outside the process. Both are
 required, and negative probes belong to downstream acceptance.
@@ -62,9 +64,10 @@ metadata or secrets. JSON output has a versioned schema and stable machine
 status codes. Health distinguishes process liveness, configuration readiness,
 adapter readiness, and inhibited work. Metrics are bounded-cardinality and do
 not use media paths, titles, torrent hashes, usernames, or operation IDs as
-labels.
+labels. Fence's shared-lease metrics report bounded availability and an opened
+device/inode identity only; they do not reveal a lock path or a peer writer.
 
-The current development compatibility profile is Python 3.14.6, Jellyfin
+The current development compatibility profile is Python 3.14.7, Jellyfin
 10.11.11, Radarr 6.3.0.10514, Sonarr 4.0.19.2979, qBittorrent 5.2.3, Bazarr
 1.6.0, Seerr 3.4.1, and Prowlarr 2.5.2.5491. Only a later adapter contract test
 qualifies a capability against its corresponding pin.

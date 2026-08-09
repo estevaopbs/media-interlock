@@ -68,7 +68,7 @@ class QbittorrentAdapterTests(unittest.TestCase):
 
     def adapter(self) -> QbittorrentAdapter:
         host, port = self.server.server_address
-        return QbittorrentAdapter(f"http://{host}:{port}", SecretReference("env", "QBIT_USER"), SecretReference("env", "QBIT_PASS"), staging_root=Path("/staging"), secret_resolver=lambda reference: {"QBIT_USER": "fixture-user", "QBIT_PASS": "fixture-pass"}[reference.reference])
+        return QbittorrentAdapter(f"http://{host}:{port}", SecretReference("env", "QBIT_USER"), SecretReference("env", "QBIT_PASS"), secret_resolver=lambda reference: {"QBIT_USER": "fixture-user", "QBIT_PASS": "fixture-pass"}[reference.reference])
 
     def test_readiness_and_resume_use_documented_cookie_api(self) -> None:
         adapter = self.adapter()
@@ -79,24 +79,24 @@ class QbittorrentAdapterTests(unittest.TestCase):
         self.assertEqual(("POST", "/api/v2/auth/login", {"username": ["fixture-user"], "password": ["fixture-pass"]}), self.requests[0])
         self.assertIn(("POST", "/api/v2/torrents/start", {"hashes": ["a" * 40]}), self.requests)
 
-    def test_missing_paused_setting_or_ambiguous_observation_fails_closed(self) -> None:
+    def test_global_start_paused_preference_does_not_replace_per_arr_stop_contracts(self) -> None:
         adapter = self.adapter()
-        adapter._get_json = lambda _: {}  # type: ignore[method-assign]
-        self.assertFalse(adapter.ready())
+        adapter._get_json = lambda _: {"start_paused_enabled": False}  # type: ignore[method-assign]
+        self.assertTrue(adapter.ready())
         adapter._login = lambda: True  # type: ignore[method-assign]
         adapter._get_json = lambda _: []  # type: ignore[method-assign]
-        self.assertEqual("absent", adapter.observe_existing_stopped("a" * 40, "media-interlock").kind)
+        self.assertEqual("absent", adapter.observe_existing_stopped("a" * 40, "media-interlock", save_path=Path("/staging")).kind)
         adapter._get_json = lambda _: [{"tags": "fence-r-1", "category": "media-interlock", "save_path": "/staging", "hash": "a" * 40, "size": 400, "state": "pausedDL"}, {"tags": "fence-r-1", "category": "media-interlock", "save_path": "/staging", "hash": "a" * 40, "size": 400, "state": "pausedDL"}]  # type: ignore[method-assign]
-        self.assertEqual("ambiguous", adapter.observe_existing_stopped("a" * 40, "media-interlock").kind)
+        self.assertEqual("ambiguous", adapter.observe_existing_stopped("a" * 40, "media-interlock", save_path=Path("/staging")).kind)
         adapter._get_json = lambda _: {"unexpected": "schema"}  # type: ignore[method-assign]
-        self.assertEqual("unknown", adapter.observe_existing_stopped("a" * 40, "media-interlock").kind)
+        self.assertEqual("unknown", adapter.observe_existing_stopped("a" * 40, "media-interlock", save_path=Path("/staging")).kind)
 
     def test_error_or_unknown_transfer_state_is_not_active(self) -> None:
         adapter = self.adapter()
         for state in ("error", "missingFiles", "checkingResumeData", "unknown"):
             with self.subTest(state=state):
                 adapter._get_json = lambda _: [{"tags": "fence-r-1", "category": "media-interlock", "save_path": "/staging", "hash": "a" * 40, "size": 400, "state": state}]  # type: ignore[method-assign]
-                self.assertEqual("unknown", adapter.observe_active("a" * 40, "fence-r-1", "media-interlock").kind)
+                self.assertEqual("unknown", adapter.observe_active("a" * 40, "fence-r-1", "media-interlock", save_path=Path("/staging")).kind)
 
     def test_pre_v5_application_or_web_api_profile_is_unready(self) -> None:
         adapter = self.adapter()
@@ -115,9 +115,24 @@ class QbittorrentAdapterTests(unittest.TestCase):
         posts: list[tuple[str, dict[str, str]]] = []
         adapter._post = lambda path, fields: posts.append((path, fields)) or b"Ok."  # type: ignore[method-assign]
 
-        observation = adapter.observe_existing_stopped("a" * 40, "media-interlock")
+        observation = adapter.observe_existing_stopped("a" * 40, "media-interlock", save_path=Path("/staging"))
         self.assertEqual("observed", observation.kind)
         self.assertEqual(400, observation.observed_bytes)
         self.assertTrue(adapter.apply_reservation_tag("a" * 40, "fence-r-1"))
 
         self.assertEqual([("/api/v2/torrents/addTags", {"hashes": "a" * 40, "tags": "fence-r-1"})], posts)
+
+    def test_observation_compares_the_profile_save_path_not_a_staging_root(self) -> None:
+        adapter = self.adapter()
+        adapter._login = lambda: True  # type: ignore[method-assign]
+        adapter._get_json = lambda _: [{"tags": "", "category": "media-interlock", "save_path": "/downloads/radarr", "hash": "a" * 40, "size": 400, "state": "pausedDL"}]  # type: ignore[method-assign]
+
+        self.assertEqual("observed", adapter.observe_existing_stopped("a" * 40, "media-interlock", save_path=Path("/downloads/radarr")).kind)
+        self.assertEqual("unknown", adapter.observe_existing_stopped("a" * 40, "media-interlock", save_path=Path("/staging/radarr")).kind)
+
+    def test_existing_fence_owner_tag_inhibits_a_second_reservation(self) -> None:
+        adapter = self.adapter()
+        adapter._login = lambda: True  # type: ignore[method-assign]
+        adapter._get_json = lambda _: [{"tags": "manual,fence:12345678-1234-4678-9234-567812345678", "category": "media-interlock", "save_path": "/downloads/radarr", "hash": "a" * 40, "size": 400, "state": "pausedDL"}]  # type: ignore[method-assign]
+
+        self.assertEqual("unknown", adapter.observe_existing_stopped("a" * 40, "media-interlock", save_path=Path("/downloads/radarr")).kind)

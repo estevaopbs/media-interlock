@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import _source_tree  # noqa: F401
 
@@ -56,6 +57,96 @@ api_key = "env:PROWLARR_API_KEY"
 """
 
 
+SOURCE_PROFILE_CONFIG = """
+[shared]
+runtime_dir = "/run/media-interlock"
+
+[fence]
+state_dir = "/var/lib/media-interlock/fence"
+socket_path = "/run/media-interlock/fence.sock"
+capacity_bytes = 1000000
+max_inflight = 2
+mutation_lock_path = "/run/media-interlock/qbittorrent-mutation.lock"
+mutation_lock_version = "shared-qbittorrent-mutation/v1"
+mutation_lock_timeout_ms = 500
+
+[publisher]
+state_dir = "/var/lib/media-interlock/publisher"
+socket_path = "/run/media-interlock/publisher.sock"
+
+[reconciler]
+state_dir = "/var/lib/media-interlock/reconciler"
+socket_path = "/run/media-interlock/reconciler.sock"
+
+[reconciler.movie]
+minimum_age_days = 30
+terminal_horizon_days = 365
+cooldown_seconds = 86400
+max_attempts = 3
+max_searches_per_run = 5
+
+[reconciler.episode]
+minimum_age_days = 7
+terminal_horizon_days = 180
+cooldown_seconds = 3600
+max_attempts = 2
+max_searches_per_run = 10
+
+[capacity_pools.download]
+probe_path = "/srv/downloads"
+minimum_free_bytes = 100
+safety_margin_bytes = 100
+
+[capacity_pools.staging]
+probe_path = "/srv/staging"
+minimum_free_bytes = 100
+safety_margin_bytes = 100
+
+[capacity_pools.canonical]
+probe_path = "/srv/library"
+minimum_free_bytes = 100
+safety_margin_bytes = 100
+
+[sources.radarr]
+kind = "movie"
+download_client_id = 7
+category = "media-interlock-radarr"
+qbittorrent_save_path = "/srv/downloads/movies"
+arr_import_path_prefix = "/downloads/movies"
+staging_root = "/srv/staging/movies"
+canonical_root = "/srv/library/movies"
+download_pool = "download"
+staging_pool = "staging"
+canonical_pool = "canonical"
+namespace = "movies"
+jellyfin_library_id = "2f9e0f39-70de-4502-85ce-7ed03cd2f01f"
+jellyfin_path_prefix = "/jellyfin/movies"
+
+[sources.sonarr]
+kind = "episode"
+download_client_id = 8
+category = "media-interlock-sonarr"
+qbittorrent_save_path = "/srv/downloads/episodes"
+arr_import_path_prefix = "/downloads/episodes"
+staging_root = "/srv/staging/episodes"
+canonical_root = "/srv/library/episodes"
+download_pool = "download"
+staging_pool = "staging"
+canonical_pool = "canonical"
+namespace = "episodes"
+jellyfin_library_id = "6d3e0f39-70de-4502-85ce-7ed03cd2f01f"
+jellyfin_path_prefix = "/jellyfin/episodes"
+
+[adapters.prowlarr]
+base_url = "https://prowlarr.example.invalid"
+api_key = "env:PROWLARR_API_KEY"
+"""
+
+# Every configuration test uses the replacement schema; the old singular
+# Fence/Publisher roots are intentionally not a compatibility surface.
+VALID_CONFIG = SOURCE_PROFILE_CONFIG
+
+
 class ConfigurationTests(unittest.TestCase):
     def write(self, content: str) -> Path:
         directory = tempfile.TemporaryDirectory()
@@ -67,22 +158,31 @@ class ConfigurationTests(unittest.TestCase):
     def test_loads_typed_component_projections_without_resolving_secrets(self) -> None:
         config = load_config(self.write(VALID_CONFIG))
 
-        self.assertEqual("/srv/library", str(config.publisher.canonical_root))
-        self.assertEqual("library", config.publisher.namespace)
-        self.assertEqual("/jellyfin/library", config.publisher.jellyfin_path_prefix)
+        self.assertEqual("/srv/library/movies", str(config.sources["radarr"].canonical_root))
+        self.assertEqual("movies", config.sources["radarr"].namespace)
+        self.assertEqual("/jellyfin/movies", config.sources["radarr"].jellyfin_path_prefix)
         self.assertEqual(30, config.reconciler.movie.minimum_age_days)
         self.assertEqual(10, config.reconciler.episode.max_searches_per_run)
         self.assertEqual("env", config.adapters["prowlarr"].secrets["api_key"].source)
         self.assertNotIn("PROWLARR_API_KEY", repr(config.redacted()))
         self.assertEqual("env:<redacted>", config.redacted()["adapters"]["prowlarr"]["api_key"])
 
+    def test_projects_exact_radarr_and_sonarr_source_profiles(self) -> None:
+        config = load_config(self.write(SOURCE_PROFILE_CONFIG))
+
+        self.assertEqual({"radarr", "sonarr"}, set(config.sources))
+        self.assertEqual("movie", config.sources["radarr"].kind)
+        self.assertEqual(7, config.sources["radarr"].download_client_id)
+        self.assertEqual("/srv/downloads/episodes", str(config.sources["sonarr"].qbittorrent_save_path))
+        self.assertEqual("shared-qbittorrent-mutation/v1", config.fence.mutation_lock.version)
+
     def test_rejects_unknown_and_ambiguous_configuration_before_effects(self) -> None:
         with self.assertRaisesRegex(ConfigError, "unknown key"):
             load_config(self.write(VALID_CONFIG.replace("max_inflight = 2", "max_inflight = 2\nunsafe = true")))
         with self.assertRaisesRegex(ConfigError, "must be disjoint"):
-            load_config(self.write(VALID_CONFIG.replace('canonical_root = "/srv/library"', 'canonical_root = "/srv/staging/library"')))
+            load_config(self.write(VALID_CONFIG.replace('canonical_root = "/srv/library/movies"', 'canonical_root = "/srv/staging/movies"')))
         with self.assertRaisesRegex(ConfigError, "must be disjoint"):
-            load_config(self.write(VALID_CONFIG.replace('staging_root = "/srv/staging"', 'staging_root = "/srv/library/downloads"', 1)))
+            load_config(self.write(VALID_CONFIG.replace('staging_root = "/srv/staging/movies"', 'staging_root = "/srv/library/movies/staging"')))
         with self.assertRaisesRegex(ConfigError, "must use env: or file:"):
             load_config(self.write(VALID_CONFIG.replace("env:PROWLARR_API_KEY", "plaintext-secret")))
         with self.assertRaisesRegex(ConfigError, "must not contain credentials"):
@@ -96,7 +196,7 @@ class ConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "jellyfin_library_id"):
             load_config(self.write(VALID_CONFIG.replace("2f9e0f39-70de-4502-85ce-7ed03cd2f01f", "not-a-uuid")))
         with self.assertRaisesRegex(ConfigError, "namespace"):
-            load_config(self.write(VALID_CONFIG.replace('namespace = "library"', 'namespace = "library/nested"')))
+            load_config(self.write(VALID_CONFIG.replace('namespace = "movies"', 'namespace = "movies/nested"')))
         with self.assertRaisesRegex(ConfigError, "unknown key"):
             load_config(self.write(VALID_CONFIG + 'jellyfin_item_id = "manual-mapping"\n'))
 
@@ -110,10 +210,10 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_fence_source_categories_are_typed_and_must_be_distinct(self) -> None:
         config = load_config(self.write(VALID_CONFIG))
-        self.assertEqual("media-interlock-radarr", config.fence.categories["radarr"])
-        self.assertEqual("media-interlock-sonarr", config.fence.categories["sonarr"])
+        self.assertEqual("media-interlock-radarr", config.sources["radarr"].category)
+        self.assertEqual("media-interlock-sonarr", config.sources["sonarr"].category)
         with self.assertRaisesRegex(ConfigError, "must be distinct"):
-            load_config(self.write(VALID_CONFIG.replace('sonarr_category = "media-interlock-sonarr"', 'sonarr_category = "media-interlock-radarr"')))
+            load_config(self.write(VALID_CONFIG.replace('category = "media-interlock-sonarr"', 'category = "media-interlock-radarr"')))
 
     def test_rejects_existing_symlink_aliases_between_canonical_and_staging(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -122,14 +222,44 @@ class ConfigurationTests(unittest.TestCase):
             staging.mkdir()
             alias = root / "alias"
             alias.symlink_to(staging, target_is_directory=True)
-            content = VALID_CONFIG.replace('staging_root = "/srv/staging"', f'staging_root = "{staging}"', 1)
-            content = content.replace('staging_root = "/srv/staging"', f'staging_root = "{staging}"', 1)
-            content = content.replace('canonical_root = "/srv/library"', f'canonical_root = "{alias}"')
+            content = VALID_CONFIG.replace('staging_root = "/srv/staging/movies"', f'staging_root = "{staging}"')
+            content = content.replace('canonical_root = "/srv/library/movies"', f'canonical_root = "{alias}"')
             with self.assertRaisesRegex(ConfigError, "must be disjoint"):
                 load_config(self.write(content))
 
+    def test_materialized_pool_alias_and_root_identity_drift_fail_before_startup(self) -> None:
+        roots = {
+            "/srv/downloads": "/materialized/downloads",
+            "/srv/staging": "/materialized/staging",
+            "/srv/library": "/materialized/library",
+        }
+        content = VALID_CONFIG
+        for original, replacement in roots.items():
+            content = content.replace(original, replacement)
+
+        def devices(*, download_pool: int, staging_pool: int, canonical_pool: int, canonical_root: int) -> dict[str, int]:
+            return {
+                "/materialized/downloads": download_pool,
+                "/materialized/staging": staging_pool,
+                "/materialized/library": canonical_pool,
+                "/materialized/downloads/movies": download_pool,
+                "/materialized/downloads/episodes": download_pool,
+                "/materialized/staging/movies": staging_pool,
+                "/materialized/staging/episodes": staging_pool,
+                "/materialized/library/movies": canonical_root,
+                "/materialized/library/episodes": canonical_root,
+            }
+
+        with patch("media_interlock.config._materialized_device", side_effect=lambda path, **_: devices(download_pool=1, staging_pool=1, canonical_pool=2, canonical_root=2).get(str(path))):
+            with self.assertRaisesRegex(ConfigError, "must not alias"):
+                load_config(self.write(content))
+
+        with patch("media_interlock.config._materialized_device", side_effect=lambda path, **_: devices(download_pool=1, staging_pool=2, canonical_pool=3, canonical_root=4).get(str(path))):
+            with self.assertRaisesRegex(ConfigError, "does not match"):
+                load_config(self.write(content))
+
     def test_rejects_private_or_runtime_roots_under_an_acquisition_root(self) -> None:
-        content = VALID_CONFIG.replace('state_dir = "/var/lib/media-interlock/fence"', 'state_dir = "/srv/staging/.state"')
+        content = VALID_CONFIG.replace('state_dir = "/var/lib/media-interlock/fence"', 'state_dir = "/srv/staging/movies/.state"')
         with self.assertRaisesRegex(ConfigError, "must be disjoint"):
             load_config(self.write(content))
 

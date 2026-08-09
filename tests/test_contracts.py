@@ -13,6 +13,7 @@ from media_interlock.contracts import (
     acquisition_grab_binding,
     acquisition_pre_admission,
     custody_receipt,
+    quiesce_request,
     terminal_acquisition,
 )
 
@@ -21,6 +22,14 @@ OPERATION_ID = str(uuid.UUID("12345678-1234-4678-9234-567812345678"))
 
 
 class ContractTests(unittest.TestCase):
+    def test_quiescence_request_is_a_versioned_empty_authority_toggle(self) -> None:
+        request = quiesce_request(OPERATION_ID, enabled=True)
+
+        self.assertEqual("quiesce", request.kind)
+        self.assertEqual({"enabled": True}, dict(request.body))
+        with self.assertRaises(ContractError):
+            Envelope("v1", "quiesce", OPERATION_ID, {"enabled": True, "hash": "a" * 40})
+
     def test_arr_observed_grab_binds_real_download_identity_without_locator(self) -> None:
         binding = acquisition_grab_binding(
             operation_id=OPERATION_ID,

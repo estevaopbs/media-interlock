@@ -8,14 +8,17 @@ from pathlib import Path
 import _source_tree  # noqa: F401
 
 from media_interlock.contracts import ContractError, custody_receipt
-from media_interlock.fence.model import FencePolicy, FenceState, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentObservation, ReservationState
-from media_interlock.fence.service import FenceService
+from media_interlock.adapters.arr import ArrExternalGrab, ArrExternalObservation
+from media_interlock.fence.model import ExternalAdoptionIntent, FencePolicy, FenceState, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentObservation, ReservationState
+from media_interlock.fence.headroom import HeadroomPool, PhysicalHeadroom
+from media_interlock.fence.service import FenceService, FenceSource
 from media_interlock.fence.store import FenceStore
 
 
 OPERATION_ID = str(uuid.UUID("12345678-1234-4678-9234-567812345678"))
 HASH = "a" * 40
 CATEGORY = "media-interlock-radarr"
+SOURCE = FenceSource(CATEGORY, Path("/downloads/radarr"))
 
 
 def intent(*, size: int = 400) -> PreAdmissionIntent:
@@ -88,8 +91,136 @@ class FenceStateTests(unittest.TestCase):
         self.assertTrue(state.accept_custody(custody_receipt(OPERATION_ID, terminal.body["fence_reservation_id"], "publisher-r-1")))
         self.assertEqual(0, state.reserved_bytes)
 
+    def test_released_external_observation_remains_idempotent_until_its_watermark_is_saved(self) -> None:
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        external = ExternalAdoptionIntent(OPERATION_ID, "radarr", "42", HASH, HASH, 400, 8, "c" * 64)
+        self.assertTrue(state.adopt_external(external, qbittorrent_ready=True, publisher_ready=True).admitted)
+        state.bind_observed_grab(OPERATION_ID, download_id=HASH, torrent_hash=HASH)
+        state.request_tag(OPERATION_ID)
+        state.mark_qbittorrent_tagged(OPERATION_ID, observed_bytes=400)
+        state.request_resume(OPERATION_ID)
+        state.mark_qbittorrent_active(OPERATION_ID)
+        terminal = state.complete(OPERATION_ID)
+        self.assertTrue(state.accept_custody(custody_receipt(OPERATION_ID, terminal.body["fence_reservation_id"], "publisher-r-1")))
+
+        replay = state.adopt_external(external, qbittorrent_ready=True, publisher_ready=True)
+
+        self.assertTrue(replay.admitted)
+        self.assertEqual("idempotent", replay.reason)
+
+    def test_quiescence_rejects_new_admission_and_marks_only_active_owned_work_for_pause(self) -> None:
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        bound(state)
+
+        state.begin_quiescence()
+        state.request_pause(OPERATION_ID)
+
+        self.assertTrue(state.quiescing)
+        self.assertEqual(ReservationState.PAUSE_INTENT_RECORDED, state.reservation(OPERATION_ID).state)
+        self.assertEqual("quiescing", state.pre_admit(PreAdmissionIntent("22345678-1234-4678-9234-567812345678", "radarr", "43", "d" * 64, 200, "8"), qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True).reason)
+
 
 class FenceServiceTests(unittest.TestCase):
+    def test_quiescence_pauses_only_the_exact_active_owned_hash_then_rechecks_before_resume(self) -> None:
+        events: list[str] = []
+
+        class Store:
+            def save(self, _: FenceState) -> None: events.append("save")
+
+        class Qbittorrent:
+            active = True
+            def ready(self) -> bool: return True
+            def observe_active(self, torrent_hash: str, reservation_id: str, *_: object, **__: object) -> QbittorrentActivityObservation:
+                events.append(f"observe:{torrent_hash}:{reservation_id}")
+                return QbittorrentActivityObservation("observed", self.active)
+            def pause(self, torrent_hash: str) -> bool: events.append(f"pause:{torrent_hash}"); self.active = False; return True
+            def resume(self, torrent_hash: str) -> bool: events.append(f"resume:{torrent_hash}"); self.active = True; return True
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        bound(state)
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE})
+
+        self.assertTrue(service.quiesce(enabled=True))
+        self.assertTrue(state.quiescing)
+        self.assertEqual(ReservationState.QBITTORRENT_PAUSED, state.reservation(OPERATION_ID).state)
+        self.assertEqual([f"pause:{HASH}"], [event for event in events if event.startswith("pause:")])
+
+        self.assertTrue(service.quiesce(enabled=False))
+        self.assertFalse(state.quiescing)
+        self.assertEqual(ReservationState.QBITTORRENT_ACTIVE, state.reservation(OPERATION_ID).state)
+        self.assertEqual([f"resume:{HASH}"], [event for event in events if event.startswith("resume:")])
+
+    def test_quiescence_never_recovers_a_preexisting_resume_intent(self) -> None:
+        events: list[str] = []
+
+        class Store:
+            def save(self, _: FenceState) -> None: pass
+
+        class Qbittorrent:
+            def resume(self, _: str) -> bool: events.append("resume"); return True
+            def observe_active(self, *_: object, **__: object) -> QbittorrentActivityObservation: return QbittorrentActivityObservation("observed", False)
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        assert state.pre_admit(intent(), qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True).admitted
+        state.bind_observed_grab(OPERATION_ID, download_id=HASH, torrent_hash=HASH)
+        state.request_tag(OPERATION_ID); state.mark_qbittorrent_tagged(OPERATION_ID, observed_bytes=400)
+        state.request_resume(OPERATION_ID); state.begin_quiescence()
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE})
+
+        service.recover()
+
+        self.assertEqual([], events)
+        self.assertEqual(ReservationState.RESUME_INTENT_RECORDED, state.reservation(OPERATION_ID).state)
+
+    def test_quiescence_exit_keeps_owned_work_paused_when_source_readiness_is_lost(self) -> None:
+        events: list[str] = []
+
+        class Store:
+            def save(self, _: FenceState) -> None: pass
+
+        class Qbittorrent:
+            active = True
+            def ready(self) -> bool: return True
+            def observe_active(self, *_: object, **__: object) -> QbittorrentActivityObservation:
+                return QbittorrentActivityObservation("observed", self.active)
+            def pause(self, _: str) -> bool: self.active = False; return True
+            def resume(self, _: str) -> bool: events.append("resume"); self.active = True; return True
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        bound(state)
+        service = FenceService(
+            state,
+            Store(),
+            Qbittorrent(),
+            prowlarr=None,
+            sources={"radarr": SOURCE},
+            resume_ready=lambda: False,
+        )
+
+        self.assertTrue(service.quiesce(enabled=True))
+        self.assertFalse(service.quiesce(enabled=False))
+        self.assertEqual(ReservationState.QBITTORRENT_PAUSED, state.reservation(OPERATION_ID).state)
+        self.assertEqual([], events)
+
+    def test_physical_headroom_inhibits_admission_before_any_reservation(self) -> None:
+        class Store:
+            def save(self, _: FenceState) -> None: self.fail("headroom rejection must not persist")
+
+        class Qbittorrent:
+            def ready(self) -> bool: return True
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        source = FenceSource(CATEGORY, Path("/downloads/radarr"), 7, "media", "media", "media")
+        headroom = PhysicalHeadroom({"media": HeadroomPool("media", 100, 10)}, free_bytes=lambda _: 1_309)
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": source}, headroom=headroom)
+
+        decision = service.pre_admit(intent(), publisher_ready=True)
+
+        self.assertFalse(decision.admitted)
+        self.assertEqual("physical_headroom", decision.reason)
+        with self.assertRaises(KeyError):
+            state.reservation(OPERATION_ID)
+
     def test_bind_tags_then_resumes_and_confirms_the_source_category(self) -> None:
         events: list[str] = []
 
@@ -101,7 +232,7 @@ class FenceServiceTests(unittest.TestCase):
             def ready(self) -> bool:
                 return True
 
-            def observe_existing_stopped(self, torrent_hash: str, category: str) -> QbittorrentObservation:
+            def observe_existing_stopped(self, torrent_hash: str, category: str, *, save_path: Path) -> QbittorrentObservation:
                 events.append(f"stopped:{torrent_hash}:{category}")
                 return QbittorrentObservation("observed", 400)
 
@@ -109,7 +240,7 @@ class FenceServiceTests(unittest.TestCase):
                 events.append(f"tag:{torrent_hash}:{reservation_id}")
                 return True
 
-            def observe_tagged_stopped(self, torrent_hash: str, category: str, reservation_id: str) -> QbittorrentObservation:
+            def observe_tagged_stopped(self, torrent_hash: str, category: str, reservation_id: str, *, save_path: Path) -> QbittorrentObservation:
                 events.append(f"tagged:{torrent_hash}:{category}:{reservation_id}")
                 return QbittorrentObservation("observed", 400)
 
@@ -117,12 +248,12 @@ class FenceServiceTests(unittest.TestCase):
                 events.append(f"resume:{torrent_hash}")
                 return True
 
-            def observe_active(self, torrent_hash: str, reservation_id: str, category: str) -> QbittorrentActivityObservation:
+            def observe_active(self, torrent_hash: str, reservation_id: str, category: str, *, save_path: Path) -> QbittorrentActivityObservation:
                 events.append(f"active:{torrent_hash}:{reservation_id}:{category}")
                 return QbittorrentActivityObservation("observed", True)
 
         state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
-        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, categories={"radarr": CATEGORY})
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE})
         self.assertTrue(service.pre_admit(intent(), publisher_ready=True).admitted)
 
         self.assertTrue(service.bind_grab(OPERATION_ID, HASH.upper(), HASH))
@@ -145,13 +276,13 @@ class FenceServiceTests(unittest.TestCase):
             def ready(self) -> bool:
                 return True
 
-            def observe_existing_stopped(self, _: str, __: str) -> QbittorrentObservation:
+            def observe_existing_stopped(self, _: str, __: str, *, save_path: Path) -> QbittorrentObservation:
                 return QbittorrentObservation("observed", 400)
 
             def apply_reservation_tag(self, _: str, __: str) -> bool:
                 return True
 
-            def observe_tagged_stopped(self, _: str, __: str, ___: str) -> QbittorrentObservation:
+            def observe_tagged_stopped(self, _: str, __: str, ___: str, *, save_path: Path) -> QbittorrentObservation:
                 return QbittorrentObservation("observed", 401)
 
             def resume(self, _: str) -> bool:
@@ -159,13 +290,155 @@ class FenceServiceTests(unittest.TestCase):
                 return True
 
         state = FenceState(FencePolicy(capacity_bytes=400, max_inflight=1))
-        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, categories={"radarr": CATEGORY})
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE})
         self.assertTrue(service.pre_admit(intent(), publisher_ready=True).admitted)
 
         self.assertFalse(service.bind_grab(OPERATION_ID, HASH, HASH))
 
         self.assertEqual(ReservationState.QBITTORRENT_STOPPED, state.reservation(OPERATION_ID).state)
         self.assertEqual([], events)
+
+    def test_busy_shared_mutation_lease_prevents_any_qbittorrent_effect(self) -> None:
+        events: list[str] = []
+
+        class Store:
+            def save(self, _: FenceState) -> None: pass
+
+        class Qbittorrent:
+            active = False
+            def ready(self) -> bool: return True
+            def observe_existing_stopped(self, *_: object, **__: object) -> QbittorrentObservation: return QbittorrentObservation("observed", 400)
+            def apply_reservation_tag(self, *_: object) -> bool: events.append("tag"); return True
+            def observe_tagged_stopped(self, *_: object, **__: object) -> QbittorrentObservation: return QbittorrentObservation("observed", 400)
+            def resume(self, *_: object) -> bool: events.append("resume"); return True
+            def observe_active(self, *_: object, **__: object) -> QbittorrentActivityObservation: return QbittorrentActivityObservation("observed", True)
+
+        class BusyLease:
+            def acquire(self) -> object:
+                raise RuntimeError("busy")
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE}, lease=BusyLease())
+        self.assertTrue(service.pre_admit(intent(), publisher_ready=True).admitted)
+
+        self.assertFalse(service.bind_grab(OPERATION_ID, HASH, HASH))
+        self.assertEqual([], events)
+
+    def test_tag_observation_is_persisted_before_releasing_the_shared_lease(self) -> None:
+        events: list[str] = []
+
+        class Store:
+            def save(self, state: FenceState) -> None:
+                events.append(f"save:{state.reservation(OPERATION_ID).state.value}")
+
+        class Lease:
+            def acquire(self):
+                class Held:
+                    def __enter__(self):
+                        events.append("lease-enter")
+
+                    def __exit__(self, *_: object) -> None:
+                        events.append("lease-exit")
+
+                return Held()
+
+        class Qbittorrent:
+            active = False
+            def ready(self) -> bool: return True
+            def observe_existing_stopped(self, *_: object, **__: object) -> QbittorrentObservation: return QbittorrentObservation("observed", 400)
+            def apply_reservation_tag(self, *_: object) -> bool: events.append("tag"); return True
+            def observe_tagged_stopped(self, *_: object, **__: object) -> QbittorrentObservation: return QbittorrentObservation("observed", 400)
+            def resume(self, *_: object) -> bool: return True
+            def observe_active(self, *_: object, **__: object) -> QbittorrentActivityObservation: return QbittorrentActivityObservation("observed", True)
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE}, lease=Lease())
+        self.assertTrue(service.pre_admit(intent(), publisher_ready=True).admitted)
+
+        self.assertTrue(service.bind_grab(OPERATION_ID, HASH, HASH))
+
+        self.assertLess(events.index("save:qbittorrent_stopped"), events.index("lease-exit"))
+
+    def test_external_observer_baselines_then_persists_and_adopts_one_stopped_grab(self) -> None:
+        events: list[str] = []
+
+        class Store:
+            def save(self, _: FenceState) -> None: events.append("save")
+
+        class Qbittorrent:
+            active = False
+            def ready(self) -> bool: return True
+            def observe_existing_stopped(self, torrent_hash: str, *_: object, **__: object) -> QbittorrentObservation:
+                events.append(f"stopped:{torrent_hash}")
+                return QbittorrentObservation("observed", 400)
+            def apply_reservation_tag(self, torrent_hash: str, _: str) -> bool: events.append(f"tag:{torrent_hash}"); return True
+            def observe_tagged_stopped(self, *_: object, **__: object) -> QbittorrentObservation: return QbittorrentObservation("observed", 400)
+            def resume(self, torrent_hash: str) -> bool: events.append(f"resume:{torrent_hash}"); self.active = True; return True
+            def observe_active(self, *_: object, **__: object) -> QbittorrentActivityObservation: return QbittorrentActivityObservation("observed", self.active)
+
+        grab = ArrExternalGrab("42", HASH.upper(), HASH, 400, 8)
+
+        class Observer:
+            calls: list[int] = []
+            def external_grabs_after(self, watermark: int, **_: object) -> ArrExternalObservation:
+                self.calls.append(watermark)
+                return ArrExternalObservation(7, ()) if watermark == 0 else ArrExternalObservation(8, (grab,))
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        observer = Observer()
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": FenceSource(CATEGORY, Path("/downloads/radarr"), 7)}, observers={"radarr": observer})
+
+        self.assertTrue(service.poll_external(publisher_ready=True))
+        self.assertEqual((0,), tuple(observer.calls))
+        self.assertEqual([], [event for event in events if event.startswith(("tag:", "resume:"))])
+        self.assertEqual(7, state.watermark("radarr"))
+
+        self.assertTrue(service.poll_external(publisher_ready=True))
+        self.assertEqual((0, 7), tuple(observer.calls))
+        reservation = next(iter(state.records()))
+        self.assertEqual(HASH, reservation["torrent_hash"])
+        self.assertIsNotNone(reservation["observation_fingerprint"])
+        self.assertEqual(4, uuid.UUID(str(reservation["operation_id"])).version)
+        self.assertEqual(8, state.watermark("radarr"))
+        self.assertEqual([f"tag:{HASH}", f"resume:{HASH}"], [event for event in events if event.startswith(("tag:", "resume:"))])
+
+    def test_external_adoption_failure_keeps_watermark_and_reobserves_the_durable_intent(self) -> None:
+        events: list[str] = []
+
+        class Store:
+            def save(self, _: FenceState) -> None: events.append("save")
+
+        class Qbittorrent:
+            active = False
+            fail = True
+            def ready(self) -> bool: return True
+            def observe_existing_stopped(self, torrent_hash: str, *_: object, **__: object) -> QbittorrentObservation:
+                events.append(f"stopped:{torrent_hash}")
+                return QbittorrentObservation("unknown") if self.fail else QbittorrentObservation("observed", 400)
+            def apply_reservation_tag(self, torrent_hash: str, _: str) -> bool: events.append(f"tag:{torrent_hash}"); return True
+            def observe_tagged_stopped(self, *_: object, **__: object) -> QbittorrentObservation: return QbittorrentObservation("observed", 400)
+            def resume(self, torrent_hash: str) -> bool: events.append(f"resume:{torrent_hash}"); self.active = True; return True
+            def observe_active(self, *_: object, **__: object) -> QbittorrentActivityObservation: return QbittorrentActivityObservation("observed", self.active)
+
+        grab = ArrExternalGrab("42", HASH, HASH, 400, 8)
+        class Observer:
+            def external_grabs_after(self, watermark: int, **_: object) -> ArrExternalObservation:
+                return ArrExternalObservation(7, ()) if watermark == 0 else ArrExternalObservation(8, (grab,))
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        qbittorrent = Qbittorrent()
+        service = FenceService(state, Store(), qbittorrent, prowlarr=None, sources={"radarr": FenceSource(CATEGORY, Path("/downloads/radarr"), 7)}, observers={"radarr": Observer()})
+
+        self.assertTrue(service.poll_external(publisher_ready=True))
+        self.assertFalse(service.poll_external(publisher_ready=True))
+        self.assertEqual(7, state.watermark("radarr"))
+        self.assertEqual(ReservationState.PRE_ADMITTED.value, state.records()[0]["state"])
+        self.assertEqual([], [event for event in events if event.startswith(("tag:", "resume:"))])
+
+        qbittorrent.fail = False
+        self.assertTrue(service.poll_external(publisher_ready=True))
+        self.assertEqual(8, state.watermark("radarr"))
+        self.assertEqual([f"tag:{HASH}", f"resume:{HASH}"], [event for event in events if event.startswith(("tag:", "resume:"))])
 
     def test_restart_from_tag_intent_observes_before_any_resume(self) -> None:
         events: list[str] = []
@@ -175,11 +448,11 @@ class FenceServiceTests(unittest.TestCase):
                 events.append("save")
 
         class Qbittorrent:
-            def observe_tagged_stopped(self, _: str, category: str, __: str) -> QbittorrentObservation:
+            def observe_tagged_stopped(self, _: str, category: str, __: str, *, save_path: Path) -> QbittorrentObservation:
                 events.append(f"observe-tag:{category}")
                 return QbittorrentObservation("observed", 400)
 
-            def observe_active(self, _: str, __: str, category: str) -> QbittorrentActivityObservation:
+            def observe_active(self, _: str, __: str, category: str, *, save_path: Path) -> QbittorrentActivityObservation:
                 events.append(f"observe-active:{category}")
                 return QbittorrentActivityObservation("observed", True)
 
@@ -191,12 +464,44 @@ class FenceServiceTests(unittest.TestCase):
         assert state.pre_admit(intent(), qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True).admitted
         state.bind_observed_grab(OPERATION_ID, download_id=HASH, torrent_hash=HASH)
         state.request_tag(OPERATION_ID)
-        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, categories={"radarr": CATEGORY})
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE})
 
         service.recover()
 
         self.assertEqual(ReservationState.QBITTORRENT_ACTIVE, state.reservation(OPERATION_ID).state)
         self.assertEqual([f"observe-tag:{CATEGORY}", "save", "save", f"observe-active:{CATEGORY}", "save"], events)
+
+    def test_restart_from_tag_intent_holds_the_lease_through_observation_and_persistence(self) -> None:
+        events: list[str] = []
+
+        class Store:
+            def save(self, state: FenceState) -> None:
+                events.append(f"save:{state.reservation(OPERATION_ID).state.value}")
+
+        class Lease:
+            def acquire(self):
+                class Held:
+                    def __enter__(self): events.append("lease-enter")
+                    def __exit__(self, *_: object) -> None: events.append("lease-exit")
+                return Held()
+
+        class Qbittorrent:
+            def observe_tagged_stopped(self, *_: object, **__: object) -> QbittorrentObservation:
+                events.append("observe-tag")
+                return QbittorrentObservation("observed", 400)
+            def observe_active(self, *_: object, **__: object) -> QbittorrentActivityObservation:
+                return QbittorrentActivityObservation("observed", True)
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        assert state.pre_admit(intent(), qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True).admitted
+        state.bind_observed_grab(OPERATION_ID, download_id=HASH, torrent_hash=HASH)
+        state.request_tag(OPERATION_ID)
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE}, lease=Lease())
+
+        service.recover()
+
+        self.assertLess(events.index("lease-enter"), events.index("observe-tag"))
+        self.assertLess(events.index("save:qbittorrent_stopped"), events.index("lease-exit"))
 
 
 class FenceStoreTests(unittest.TestCase):

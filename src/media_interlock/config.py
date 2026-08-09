@@ -72,19 +72,78 @@ class ComponentConfig:
 
 @dataclass(frozen=True)
 class FenceConfig(ComponentConfig):
-    staging_root: Path
-    categories: Mapping[str, str]
     capacity_bytes: int
     max_inflight: int
+    mutation_lock: "MutationLockConfig"
+    sources: Mapping[str, "FenceSourceProfile"]
+
+
+@dataclass(frozen=True)
+class MutationLockConfig:
+    path: Path
+    version: str
+    timeout_ms: int
+
+
+@dataclass(frozen=True)
+class CapacityPool:
+    name: str
+    probe_path: Path
+    minimum_free_bytes: int
+    safety_margin_bytes: int
+
+
+@dataclass(frozen=True)
+class FenceSourceProfile:
+    name: str
+    category: str
+    download_client_id: int
+    qbittorrent_save_path: Path
+    download_pool: str
+    staging_pool: str
+    canonical_pool: str
+
+
+@dataclass(frozen=True)
+class PublisherSourceProfile:
+    name: str
+    arr_import_path_prefix: str
+    staging_root: Path
+    canonical_root: Path
+    namespace: str
+    jellyfin_library_id: str
+    jellyfin_path_prefix: str
+
+
+@dataclass(frozen=True)
+class ReconcilerSourceProfile:
+    name: str
+    kind: str
+    category: str
+    download_client_id: int
+
+
+@dataclass(frozen=True)
+class SourceProfile:
+    name: str
+    kind: str
+    download_client_id: int
+    category: str
+    qbittorrent_save_path: Path
+    arr_import_path_prefix: str
+    staging_root: Path
+    canonical_root: Path
+    download_pool: str
+    staging_pool: str
+    canonical_pool: str
+    namespace: str
+    jellyfin_library_id: str
+    jellyfin_path_prefix: str
 
 
 @dataclass(frozen=True)
 class PublisherConfig(ComponentConfig):
-    staging_root: Path
-    canonical_root: Path
-    jellyfin_library_id: str
-    namespace: str
-    jellyfin_path_prefix: str
+    sources: Mapping[str, PublisherSourceProfile]
 
 
 @dataclass(frozen=True)
@@ -100,6 +159,7 @@ class ReconciliationPolicy:
 class ReconcilerConfig(ComponentConfig):
     movie: ReconciliationPolicy
     episode: ReconciliationPolicy
+    sources: Mapping[str, ReconcilerSourceProfile]
 
 
 @dataclass(frozen=True)
@@ -116,6 +176,8 @@ class ProductConfig:
     publisher: PublisherConfig | None
     reconciler: ReconcilerConfig | None
     adapters: Mapping[str, AdapterConfig]
+    sources: Mapping[str, SourceProfile]
+    capacity_pools: Mapping[str, CapacityPool]
 
     def redacted(self) -> dict[str, object]:
         adapters: dict[str, object] = {}
@@ -127,8 +189,10 @@ class ProductConfig:
         return {"shared": {"runtime_dir": str(self.shared.runtime_dir)}, "adapters": adapters}
 
 
-_TOP_LEVEL = {"shared", "fence", "publisher", "reconciler", "adapters"}
+_TOP_LEVEL = {"shared", "fence", "publisher", "reconciler", "adapters", "sources", "capacity_pools"}
 _ADAPTERS = {"jellyfin", "radarr", "sonarr", "qbittorrent", "bazarr", "seerr", "prowlarr"}
+_SOURCE_KINDS = {"radarr": "movie", "sonarr": "episode"}
+_MUTATION_LOCK_VERSION = "shared-qbittorrent-mutation/v1"
 
 
 def _table(value: object, location: str) -> dict[str, object]:
@@ -215,6 +279,13 @@ def _required_namespace(table: Mapping[str, object], name: str, location: str) -
     return value
 
 
+def _required_pool_name(table: Mapping[str, object], name: str, location: str) -> str:
+    value = _required_namespace(table, name, location)
+    if not value.replace("-", "").replace("_", "").isalnum():
+        raise ConfigError(f"{location}.{name} must be a safe capacity pool name")
+    return value
+
+
 def _required_posix_prefix(table: Mapping[str, object], name: str, location: str) -> str:
     try:
         value = table[name]
@@ -292,6 +363,101 @@ def _adapter(name: str, table: Mapping[str, object]) -> AdapterConfig:
     return AdapterConfig(name, base_url.rstrip("/"), secrets)
 
 
+def _capacity_pools(value: object) -> dict[str, CapacityPool]:
+    table = _table(value, "capacity_pools")
+    if not table:
+        raise ConfigError("capacity_pools must not be empty")
+    pools: dict[str, CapacityPool] = {}
+    for name, raw_pool in table.items():
+        if not isinstance(name, str) or not name or not name.replace("-", "").replace("_", "").isalnum():
+            raise ConfigError("capacity_pools has an unsafe pool name")
+        pool = _table(raw_pool, f"capacity_pools.{name}")
+        _require_keys(pool, {"probe_path", "minimum_free_bytes", "safety_margin_bytes"}, f"capacity_pools.{name}")
+        pools[name] = CapacityPool(
+            name,
+            _required_path(pool, "probe_path", f"capacity_pools.{name}"),
+            _required_nonnegative(pool, "minimum_free_bytes", f"capacity_pools.{name}", 2**63 - 1),
+            _required_nonnegative(pool, "safety_margin_bytes", f"capacity_pools.{name}", 2**63 - 1),
+        )
+    return pools
+
+
+def _sources(value: object, pools: Mapping[str, CapacityPool]) -> dict[str, SourceProfile]:
+    table = _table(value, "sources")
+    if set(table) != set(_SOURCE_KINDS):
+        raise ConfigError("sources must contain exactly radarr and sonarr")
+    profiles: dict[str, SourceProfile] = {}
+    allowed = {
+        "kind", "download_client_id", "category", "qbittorrent_save_path", "arr_import_path_prefix",
+        "staging_root", "canonical_root", "download_pool", "staging_pool", "canonical_pool",
+        "namespace", "jellyfin_library_id", "jellyfin_path_prefix",
+    }
+    for name, expected_kind in _SOURCE_KINDS.items():
+        profile = _table(table[name], f"sources.{name}")
+        _require_keys(profile, allowed, f"sources.{name}")
+        kind = profile.get("kind")
+        if kind != expected_kind:
+            raise ConfigError(f"sources.{name}.kind must be {expected_kind}")
+        download_pool = _required_pool_name(profile, "download_pool", f"sources.{name}")
+        staging_pool = _required_pool_name(profile, "staging_pool", f"sources.{name}")
+        canonical_pool = _required_pool_name(profile, "canonical_pool", f"sources.{name}")
+        if any(pool not in pools for pool in (download_pool, staging_pool, canonical_pool)):
+            raise ConfigError(f"sources.{name} references a missing capacity pool")
+        profiles[name] = SourceProfile(
+            name,
+            kind,
+            _required_positive(profile, "download_client_id", f"sources.{name}", 2**31 - 1),
+            _required_category(profile, "category", f"sources.{name}"),
+            _required_path(profile, "qbittorrent_save_path", f"sources.{name}"),
+            _required_posix_prefix(profile, "arr_import_path_prefix", f"sources.{name}"),
+            _required_path(profile, "staging_root", f"sources.{name}"),
+            _required_path(profile, "canonical_root", f"sources.{name}"),
+            download_pool,
+            staging_pool,
+            canonical_pool,
+            _required_namespace(profile, "namespace", f"sources.{name}"),
+            _required_uuid(profile, "jellyfin_library_id", f"sources.{name}"),
+            _required_posix_prefix(profile, "jellyfin_path_prefix", f"sources.{name}"),
+        )
+    if len({profile.download_client_id for profile in profiles.values()}) != len(profiles):
+        raise ConfigError("source download_client_id values must be distinct")
+    if len({profile.category for profile in profiles.values()}) != len(profiles):
+        raise ConfigError("source categories must be distinct")
+    if len({profile.namespace for profile in profiles.values()}) != len(profiles):
+        raise ConfigError("source namespaces must be distinct")
+    if len({profile.jellyfin_library_id for profile in profiles.values()}) != len(profiles):
+        raise ConfigError("source Jellyfin library identities must be distinct")
+    return profiles
+
+
+def _materialized_device(path: Path, *, reject_symlink: bool = False) -> int | None:
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ConfigError("configured capacity path is unreadable") from exc
+    if reject_symlink and os.path.islink(path):
+        raise ConfigError("configured capacity path must not be a symlink")
+    if os.path.islink(path):
+        return None
+    return metadata.st_dev
+
+
+def _validate_materialized_pool_bindings(sources: Mapping[str, SourceProfile], pools: Mapping[str, CapacityPool]) -> None:
+    """Bind existing roots to their declared probe without creating any path."""
+    pool_devices = {name: _materialized_device(pool.probe_path, reject_symlink=True) for name, pool in pools.items()}
+    present = [(name, device) for name, device in pool_devices.items() if device is not None]
+    if len({device for _, device in present}) != len(present):
+        raise ConfigError("materialized capacity pools must not alias one filesystem")
+    for source in sources.values():
+        for root, pool_name in ((source.qbittorrent_save_path, source.download_pool), (source.staging_root, source.staging_pool), (source.canonical_root, source.canonical_pool)):
+            root_device = _materialized_device(root)
+            probe_device = pool_devices[pool_name]
+            if root_device is not None and probe_device is not None and root_device != probe_device:
+                raise ConfigError("source root filesystem does not match its capacity pool")
+
+
 def load_config(path: Path) -> ProductConfig:
     """Load a strict shared configuration without resolving secret values."""
     try:
@@ -303,6 +469,13 @@ def load_config(path: Path) -> ProductConfig:
     _require_keys(shared_table, {"runtime_dir"}, "shared")
     shared = SharedConfig(_required_path(shared_table, "runtime_dir", "shared"))
 
+    has_component = any(name in document for name in ("fence", "publisher", "reconciler"))
+    if has_component and ("sources" not in document or "capacity_pools" not in document):
+        raise ConfigError("configured components require sources and capacity_pools")
+    capacity_pools = _capacity_pools(document["capacity_pools"]) if "capacity_pools" in document else {}
+    sources = _sources(document["sources"], capacity_pools) if "sources" in document else {}
+    _validate_materialized_pool_bindings(sources, capacity_pools)
+
     components: dict[str, ComponentConfig | None] = {name: None for name in ("fence", "publisher", "reconciler")}
     for name in components:
         if name in document:
@@ -310,33 +483,43 @@ def load_config(path: Path) -> ProductConfig:
     fence: FenceConfig | None = None
     if components["fence"] is not None:
         table = _table(document["fence"], "fence")
-        _require_keys(table, {"state_dir", "socket_path", "staging_root", "radarr_category", "sonarr_category", "capacity_bytes", "max_inflight"}, "fence")
+        _require_keys(table, {"state_dir", "socket_path", "capacity_bytes", "max_inflight", "mutation_lock_path", "mutation_lock_version", "mutation_lock_timeout_ms"}, "fence")
         base = components["fence"]
         assert base is not None
-        categories = {
-            "radarr": _required_category(table, "radarr_category", "fence"),
-            "sonarr": _required_category(table, "sonarr_category", "fence"),
-        }
-        if len(set(categories.values())) != len(categories):
-            raise ConfigError("fence source categories must be distinct")
-        fence = FenceConfig(base.name, base.state_dir, base.socket_path, _required_path(table, "staging_root", "fence"), categories, _required_positive(table, "capacity_bytes", "fence", 2**63 - 1), _required_positive(table, "max_inflight", "fence", 100_000))
+        version = table.get("mutation_lock_version")
+        if version != _MUTATION_LOCK_VERSION:
+            raise ConfigError(f"fence.mutation_lock_version must be {_MUTATION_LOCK_VERSION}")
+        fence = FenceConfig(
+            base.name,
+            base.state_dir,
+            base.socket_path,
+            _required_positive(table, "capacity_bytes", "fence", 2**63 - 1),
+            _required_positive(table, "max_inflight", "fence", 100_000),
+            MutationLockConfig(
+                _required_path(table, "mutation_lock_path", "fence"),
+                version,
+                _required_positive(table, "mutation_lock_timeout_ms", "fence", 60_000),
+            ),
+            {
+                name: FenceSourceProfile(name, source.category, source.download_client_id, source.qbittorrent_save_path, source.download_pool, source.staging_pool, source.canonical_pool)
+                for name, source in sources.items()
+            },
+        )
     publisher: PublisherConfig | None = None
     if components["publisher"] is not None:
         table = _table(document["publisher"], "publisher")
-        _require_keys(table, {"state_dir", "socket_path", "staging_root", "canonical_root", "jellyfin_library_id", "namespace", "jellyfin_path_prefix"}, "publisher")
+        _require_keys(table, {"state_dir", "socket_path"}, "publisher")
         base = components["publisher"]
         assert base is not None
         publisher = PublisherConfig(
             base.name,
             base.state_dir,
             base.socket_path,
-            _required_path(table, "staging_root", "publisher"),
-            _required_path(table, "canonical_root", "publisher"),
-            _required_uuid(table, "jellyfin_library_id", "publisher"),
-            _required_namespace(table, "namespace", "publisher"),
-            _required_posix_prefix(table, "jellyfin_path_prefix", "publisher"),
+            {
+                name: PublisherSourceProfile(name, source.arr_import_path_prefix, source.staging_root, source.canonical_root, source.namespace, source.jellyfin_library_id, source.jellyfin_path_prefix)
+                for name, source in sources.items()
+            },
         )
-        _validate_disjoint(publisher.staging_root, publisher.canonical_root, "publisher.staging_root", "publisher.canonical_root")
     reconciler = components["reconciler"]
     if reconciler is not None:
         table = _table(document["reconciler"], "reconciler")
@@ -347,6 +530,7 @@ def load_config(path: Path) -> ProductConfig:
             reconciler.socket_path,
             _reconciliation_policy(_table(table.get("movie"), "reconciler.movie"), "reconciler.movie"),
             _reconciliation_policy(_table(table.get("episode"), "reconciler.episode"), "reconciler.episode"),
+            {name: ReconcilerSourceProfile(name, source.kind, source.category, source.download_client_id) for name, source in sources.items()},
         )
 
     configured = [component for component in (fence, publisher, reconciler) if component is not None]
@@ -355,12 +539,14 @@ def load_config(path: Path) -> ProductConfig:
     if len({component.socket_path for component in configured}) != len(configured):
         raise ConfigError("component socket_path values must be unique")
     writable_roots: list[tuple[str, Path]] = []
-    if fence is not None:
-        writable_roots.append(("fence.staging_root", fence.staging_root))
-    if publisher is not None:
-        writable_roots.extend((("publisher.staging_root", publisher.staging_root), ("publisher.canonical_root", publisher.canonical_root)))
-        if fence is not None:
-            _validate_disjoint(fence.staging_root, publisher.canonical_root, "fence.staging_root", "publisher.canonical_root")
+    for source in sources.values():
+        writable_roots.extend(((f"sources.{source.name}.qbittorrent_save_path", source.qbittorrent_save_path), (f"sources.{source.name}.staging_root", source.staging_root), (f"sources.{source.name}.canonical_root", source.canonical_root)))
+        _validate_disjoint(source.qbittorrent_save_path, source.staging_root, f"sources.{source.name}.qbittorrent_save_path", f"sources.{source.name}.staging_root")
+        _validate_disjoint(source.qbittorrent_save_path, source.canonical_root, f"sources.{source.name}.qbittorrent_save_path", f"sources.{source.name}.canonical_root")
+        _validate_disjoint(source.staging_root, source.canonical_root, f"sources.{source.name}.staging_root", f"sources.{source.name}.canonical_root")
+    for index, (left_name, left_root) in enumerate(writable_roots):
+        for right_name, right_root in writable_roots[index + 1:]:
+            _validate_disjoint(left_root, right_root, left_name, right_name)
     for component in configured:
         for root_name, root in writable_roots:
             _validate_disjoint(component.state_dir, root, f"{component.name}.state_dir", root_name)
@@ -369,4 +555,4 @@ def load_config(path: Path) -> ProductConfig:
     adapters_table = _table(document.get("adapters", {}), "adapters")
     _require_keys(adapters_table, _ADAPTERS, "adapters")
     adapters = {name: _adapter(name, _table(table, f"adapters.{name}")) for name, table in adapters_table.items()}
-    return ProductConfig(shared, fence, publisher, reconciler, adapters)
+    return ProductConfig(shared, fence, publisher, reconciler, adapters, sources, capacity_pools)
