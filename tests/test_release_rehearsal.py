@@ -78,6 +78,7 @@ class ReleaseRehearsalTests(unittest.TestCase):
         release = {"approved": True, "protocol": "torrent", "guid": "release-42", "title": "fixture.movie", "size": len(media), "downloadUrl": "https://indexer.invalid/release"}
         events: list[str] = []
         grabbed = [False]
+        catalog_visible = [False]
         torrent = {"hash": torrent_hash, "category": "media-interlock-radarr", "save_path": "", "size": len(media), "state": "pausedDL", "tags": "", "progress": 0}
 
         class Handler(BaseHTTPRequestHandler):
@@ -105,7 +106,8 @@ class ReleaseRehearsalTests(unittest.TestCase):
                 elif parsed.path == "/api/v1/settings/main": self._json({"applicationTitle": "fixture"})
                 elif parsed.path == "/Items":
                     internal = "/jellyfin/library/radarr-tmdb-42/payload.mkv"
-                    self._json({"Items": [{"Id": "item-42", "Path": internal, "Type": "Movie", "ProviderIds": {"Tmdb": "42"}, "MediaSources": [{"Id": "source-42", "Path": internal, "Size": len(media)}]}], "TotalRecordCount": 1})
+                    items = [] if not catalog_visible[0] else [{"Id": "item-42", "Path": internal, "Type": "Movie", "ProviderIds": {"Tmdb": "42"}, "MediaSources": [{"Id": "source-42", "Path": internal, "Size": len(media)}]}]
+                    self._json({"Items": items, "TotalRecordCount": len(items)})
                 elif parsed.path == "/Videos/item-42/stream": self.send_response(200); self.end_headers(); self.wfile.write(media)
                 else: self.send_error(404)
             def do_POST(self) -> None:
@@ -131,6 +133,13 @@ class ReleaseRehearsalTests(unittest.TestCase):
             async def serve() -> None:
                 store, daemon, lock = runtime_factory()
                 try:
+                    # Mirror the production entrypoints: durable Fence state
+                    # is reconciled before serving and Publisher retries only
+                    # after its runtime has recovered pending publication.
+                    recover = getattr(daemon, "recover", None)
+                    if recover is not None: recover()
+                    retry_once = getattr(daemon, "retry_once", None)
+                    if retry_once is not None: retry_once()
                     if path.exists(): path.unlink()
                     server = await asyncio.start_unix_server(daemon.handle, path=path); ready.set()
                     while not stop.is_set(): await asyncio.sleep(0.001)
@@ -171,7 +180,11 @@ class ReleaseRehearsalTests(unittest.TestCase):
                 publisher_stop, publisher_thread = start_daemon(runtime / "publisher.sock", lambda: publisher_cli._runtime(load_config(config_path)))
                 receipt = exchange(runtime / "publisher.sock", terminal); self.assertEqual("custody_receipt", receipt.kind)
                 self.assertEqual("ok", exchange(runtime / "fence.sock", receipt).body["code"])
+                # A 204 left this generation CATALOG_PENDING.  Restart before
+                # it becomes observable: recovery must observe/adopt the
+                # durable candidate instead of publishing or notifying again.
                 publisher_stop.set(); publisher_thread.join(5)
+                catalog_visible[0] = True
                 publisher_stop, publisher_thread = start_daemon(runtime / "publisher.sock", lambda: publisher_cli._runtime(load_config(config_path)))
                 self.assertEqual(receipt, exchange(runtime / "publisher.sock", terminal))
             finally:
