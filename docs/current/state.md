@@ -1,19 +1,14 @@
 # Current state
 
-MediaInterlock 0.1.4 is the immutable public downstream-consumption release.
-Its annotated tag
-[`v0.1.4`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.4)
-resolves to source commit `a36d7a59dd15fea63f73f342895f6a51423128a8`.
-The release publishes wheel SHA-256
-`fc05804cb08194f4b24223a048a79b3f469fa9a4b0a9e4b710741f35ff32185c`
-and these public OCI manifest digests, each executing Python 3.14.7:
+MediaInterlock 0.1.5 is the immutable public downstream-consumption release.
+Its annotated tag and immutable artifact manifest are published at
+[`v0.1.5`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.5).
+That manifest binds one source commit, the wheel SHA-256, and all three OCI
+manifest digests. The public GitHub API reports the release immutable, and
+credential-free downloads, manifest inspection, and runtime probes reproduce
+those identities. Version 0.1.5 preserves the 0.1.4 functional contract and
+corrects the release status incorporated into README and wheel metadata.
 
-- Reconciler: `sha256:140c11c95c87cc63752dd0d69cf44762b7fcec67d7ff2172faa2a103d641c1e9`;
-- Fence: `sha256:a9a61fe4aa6ed51d1355080df0d0a8bfaf547d6a5a099262981de6461d4a4d45`;
-- Publisher: `sha256:5c35927adec424d515d69df32dd7fe64839c1cc5a6b20f7a3af04d80ba75bba4`.
-
-The public GitHub API reports the release immutable, and credential-free
-downloads, manifest inspection, and runtime probes reproduce those identities.
 Version 0.1.3 added a version-1 Publisher Unix
 operation query with durable accepted, pending, catalog-confirmed, conflict,
 unavailable, and terminal visible-confirmed results. Its exact terminal receipt
@@ -21,14 +16,16 @@ is emitted only after the existing Jellyfin binding and static direct-play gate
 and binds the public operation, asset, generation digest, library, item, media
 source, and expected catalog path.
 
-Version 0.1.4 treats
+Version 0.1.4 introduced
 `arr_import_path_prefix` as the Arr-visible namespace and translates only its
 canonical relative suffix below each source-specific Publisher staging root.
 The release rehearsal uses one shared `/data/library` Arr prefix with distinct
 movie and show staging roots, including assisted socket intake, sidecars, lost
 response recovery, idempotent retry, and exact terminal receipt. Sonarr
 correlation requires the requested episode ID and never substitutes a
-numerically matching series ID.
+numerically matching series ID. Version 0.1.4 remains preserved at tag
+[`v0.1.4`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.4)
+as the preceding immutable release.
 
 Version 0.1.3 remains preserved at tag
 [`v0.1.3`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.3)
