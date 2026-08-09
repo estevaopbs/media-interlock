@@ -200,6 +200,16 @@ class ArrCorrelationTests(unittest.TestCase):
         self.assertEqual("Episode", identity.item_type)
         self.assertEqual({"Tvdb": "99"}, identity.provider_ids)
 
+    def test_sonarr_never_substitutes_a_matching_series_for_the_requested_episode(self) -> None:
+        self.payload = {"records": [{
+            "eventType": "downloadFolderImported", "downloadId": "grab-42",
+            "episodeId": 99, "seriesId": 42,
+            "data": {"importedPath": "/data/library/wrong-episode.mkv"},
+        }]}
+        adapter = self.adapter(SonarrAdapter)
+
+        self.assertIsNone(adapter.candidate_relative_path("grab-42", "42"))
+
     def test_interactive_first_approved_torrent_is_selected_and_posted_intact(self) -> None:
         expected = {"approved": True, "protocol": "torrent", "guid": "release-42", "title": "fixture.movie.2026", "size": 400, "downloadUrl": "https://indexer.invalid/release"}
         adapter = self.adapter(RadarrAdapter)

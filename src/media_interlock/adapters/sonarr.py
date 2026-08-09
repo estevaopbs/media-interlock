@@ -4,7 +4,7 @@ from .arr import ArrCandidate, ArrHistoryAdapter, _public_id
 
 
 class SonarrAdapter(ArrHistoryAdapter):
-    media_keys = ("episodeId", "seriesId")
+    media_keys = ("episodeId",)
     source_name = "sonarr"
     item_type = "Episode"
     release_entity_key = "episodeId"
