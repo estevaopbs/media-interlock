@@ -25,12 +25,19 @@ from media_interlock.adapters.sonarr import SonarrAdapter
 from media_interlock._infra.advisory_lease import AdvisoryLease, LeaseUnavailable
 from media_interlock.config import SecretReference
 from media_interlock.config import load_config
-from media_interlock.contracts import CONTRACT_VERSION, Envelope, publisher_operation_query
+from media_interlock.contracts import (
+    CONTRACT_VERSION,
+    Envelope,
+    publisher_assisted_complete,
+    publisher_assisted_intent,
+    publisher_operation_query,
+)
 from media_interlock.fence import cli as fence_cli
 from media_interlock.fence.store import FenceStore
 from media_interlock.publisher.generation import AssetGenerationPublisher
 from media_interlock.publisher.model import PublicationState
 from media_interlock.publisher import cli as publisher_cli
+from media_interlock.publisher.filesystem import BundleVerifier
 from media_interlock.publisher.store import PublisherStore
 from media_interlock.reconciler import cli as reconciler_cli
 from media_interlock.reconciler.store import ReconcilerStore
@@ -88,6 +95,7 @@ class ReleaseRehearsalTests(unittest.TestCase):
         peer_mutation_hashes: list[str] = []
         grabbed = {"radarr": False, "sonarr": False}
         catalog_visible = [False]
+        assisted_visible = [False]
         torrent = {"hash": torrent_hash, "category": "media-interlock-radarr", "save_path": "", "size": len(media), "state": "pausedDL", "tags": "", "progress": 0}
         episode_torrent = {"hash": episode_hash, "category": "media-interlock-sonarr", "save_path": "", "size": len(episode_media), "state": "pausedDL", "tags": "", "progress": 0}
         peer_torrent = {"hash": "d" * 40, "category": "synthetic-peer", "save_path": "/synthetic/peer", "size": 456, "state": "pausedDL", "tags": "peer", "progress": 0}
@@ -108,7 +116,15 @@ class ReleaseRehearsalTests(unittest.TestCase):
                 elif parsed.path == "/api/v3/release": self._json([episode_release] if "episodeId" in query else [release])
                 elif parsed.path == "/api/v3/history":
                     if "downloadId" in query:
-                        records = ([{"eventType": "downloadFolderImported", "downloadId": download_id, "movieId": 42, "data": {"importedPath": str(staging / "movie.mkv")}}] if query["downloadId"] == [download_id] else [{"eventType": "downloadFolderImported", "downloadId": episode_download_id, "episodeId": 84, "data": {"importedPath": str(sonarr_staging / "episode.mkv")}}])
+                        requested = query["downloadId"]
+                        if requested == [download_id]:
+                            records = [{"eventType": "downloadFolderImported", "downloadId": download_id, "movieId": 42, "data": {"importedPath": "/data/library/movie.mkv"}}]
+                        elif requested == [episode_download_id]:
+                            records = [{"eventType": "downloadFolderImported", "downloadId": episode_download_id, "episodeId": 84, "data": {"importedPath": "/data/library/episode.mkv"}}]
+                        elif requested == ["assisted-import-43"]:
+                            records = [{"eventType": "downloadFolderImported", "downloadId": "assisted-import-43", "movieId": 43, "data": {"importedPath": "/data/library/assisted/feature.mkv"}}]
+                        else:
+                            records = []
                     else:
                         records = ([] if not grabbed["radarr"] else [{"id": 8, "eventType": "grabbed", "movieId": 42, "sourceTitle": "fixture.movie", "downloadId": download_id}]) + ([] if not grabbed["sonarr"] else [{"id": 9, "eventType": "grabbed", "episodeId": 84, "sourceTitle": "fixture.episode", "downloadId": episode_download_id}])
                     self._json({"records": records, "totalRecords": len(records)})
@@ -117,6 +133,7 @@ class ReleaseRehearsalTests(unittest.TestCase):
                     {"id": 11, "episodeId": 84, "title": "fixture.episode", "downloadId": episode_download_id, "protocol": "torrent", "size": len(episode_media)},
                 ], "totalRecords": 2})
                 elif parsed.path == "/api/v3/movie/42": self._json({"id": 42, "tmdbId": 42})
+                elif parsed.path == "/api/v3/movie/43": self._json({"id": 43, "tmdbId": 43})
                 elif parsed.path == "/api/v3/episode/84": self._json({"id": 84, "tvdbId": 84})
                 elif parsed.path == "/api/v2/app/webapiVersion": self.send_response(200); self.end_headers(); self.wfile.write(b"2.11.3")
                 elif parsed.path == "/api/v2/app/version": self.send_response(200); self.end_headers(); self.wfile.write(b"v5.2.3")
@@ -136,9 +153,13 @@ class ReleaseRehearsalTests(unittest.TestCase):
                         {"Id": "item-42", "Path": movie_path, "Type": "Movie", "ProviderIds": {"Tmdb": "42"}, "MediaSources": [{"Id": "source-42", "Path": movie_path, "Size": len(media)}]},
                         {"Id": "item-84", "Path": episode_path, "Type": "Episode", "ProviderIds": {"Tvdb": "84"}, "MediaSources": [{"Id": "source-84", "Path": episode_path, "Size": len(episode_media)}]},
                     ]
+                    if assisted_visible[0]:
+                        assisted_path = "/jellyfin/library/radarr-tmdb-43/payload.mkv"
+                        items.append({"Id": "item-43", "Path": assisted_path, "Type": "Movie", "ProviderIds": {"Tmdb": "43"}, "MediaSources": [{"Id": "source-43", "Path": assisted_path, "Size": len(b"assisted-media")}]})
                     self._json({"Items": items, "TotalRecordCount": len(items)})
                 elif parsed.path == "/Videos/item-42/stream": self.send_response(200); self.end_headers(); self.wfile.write(media)
                 elif parsed.path == "/Videos/item-84/stream": self.send_response(200); self.end_headers(); self.wfile.write(episode_media)
+                elif parsed.path == "/Videos/item-43/stream": self.send_response(200); self.end_headers(); self.wfile.write(b"assisted-media")
                 else: self.send_error(404)
             def do_POST(self) -> None:
                 if self.path == "/api/v2/auth/login": self.send_response(200); self.end_headers(); self.wfile.write(b"Ok.")
@@ -164,7 +185,10 @@ class ReleaseRehearsalTests(unittest.TestCase):
                     if selected is peer_torrent: peer_mutation_hashes.append(peer_torrent["hash"])
                     else: mutation_hashes.append(fields["hashes"][0]); events.append("resume:radarr" if selected is torrent else "resume:sonarr")
                     self.send_response(200); self.end_headers()
-                elif self.path == "/Library/Media/Updated": events.append("catalog-submit:radarr" if len([item for item in events if item == "catalog-submit:radarr"]) == 0 else "catalog-submit:sonarr"); self.send_response(204); self.end_headers()
+                elif self.path == "/Library/Media/Updated":
+                    submitted = sum(item.startswith("catalog-submit:") for item in events)
+                    events.append(("catalog-submit:radarr", "catalog-submit:sonarr", "catalog-submit:assisted", "catalog-submit:assisted")[submitted])
+                    self.send_response(204); self.end_headers()
                 else: self.send_error(404)
 
         def exchange(path: Path, envelope: Envelope) -> Envelope:
@@ -202,9 +226,9 @@ class ReleaseRehearsalTests(unittest.TestCase):
             thread = threading.Thread(target=lambda: asyncio.run(serve())); thread.start(); self.assertTrue(ready.wait(5)); return stop, thread
 
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); staging = root / "staging"; canonical = root / "canonical"; runtime = root / "runtime"
-            sonarr_staging = root / "sonarr-staging"; sonarr_canonical = root / "sonarr-canonical"
-            staging.mkdir(); canonical.mkdir(); runtime.mkdir(); sonarr_staging.mkdir(); sonarr_canonical.mkdir(); lock_path = root / "qbittorrent-mutation.lock"; lock_path.touch(mode=0o600); (staging / "movie.mkv").write_bytes(media); (sonarr_staging / "episode.mkv").write_bytes(episode_media); torrent["save_path"] = str(root / "downloads-movies"); episode_torrent["save_path"] = str(root / "downloads-episodes")
+            root = Path(directory); staging = root / "staging" / "movies"; canonical = root / "canonical"; runtime = root / "runtime"
+            sonarr_staging = root / "staging" / "shows"; sonarr_canonical = root / "sonarr-canonical"
+            staging.mkdir(parents=True); canonical.mkdir(); runtime.mkdir(); sonarr_staging.mkdir(parents=True); sonarr_canonical.mkdir(); lock_path = root / "qbittorrent-mutation.lock"; lock_path.touch(mode=0o600); (staging / "movie.mkv").write_bytes(media); (sonarr_staging / "episode.mkv").write_bytes(episode_media); (staging / "assisted").mkdir(); (staging / "assisted" / "feature.mkv").write_bytes(b"assisted-media"); (staging / "assisted" / "feature.en.srt").write_bytes(b"subtitle"); torrent["save_path"] = str(root / "downloads-movies"); episode_torrent["save_path"] = str(root / "downloads-episodes")
             http = ThreadingHTTPServer(("127.0.0.1", 0), Handler); http_thread = threading.Thread(target=http.serve_forever); http_thread.start()
             self.addCleanup(http.server_close); self.addCleanup(http_thread.join); self.addCleanup(http.shutdown)
             host, port = http.server_address; base = f"http://{host}:{port}"; config_path = root / "media-interlock.toml"
@@ -225,7 +249,7 @@ class ReleaseRehearsalTests(unittest.TestCase):
             with peer_lease.acquire():
                 pass
             peer_lease.close()
-            source_rows = lambda name, kind, client_id, category, save, stage, canon, namespace, library: [f"[sources.{name}]", f'kind = "{kind}"', f"download_client_id = {client_id}", f'category = "{category}"', f'qbittorrent_save_path = "{save}"', f'arr_import_path_prefix = "/imports/{name}"', f'staging_root = "{stage}"', f'canonical_root = "{canon}"', 'download_pool = "video"', 'staging_pool = "video"', 'canonical_pool = "video"', f'namespace = "{namespace}"', f'jellyfin_library_id = "{library}"', f'jellyfin_path_prefix = "/jellyfin/{namespace}"', ""]
+            source_rows = lambda name, kind, client_id, category, save, stage, canon, namespace, library: [f"[sources.{name}]", f'kind = "{kind}"', f"download_client_id = {client_id}", f'category = "{category}"', f'qbittorrent_save_path = "{save}"', 'arr_import_path_prefix = "/data/library"', f'staging_root = "{stage}"', f'canonical_root = "{canon}"', 'download_pool = "video"', 'staging_pool = "video"', 'canonical_pool = "video"', f'namespace = "{namespace}"', f'jellyfin_library_id = "{library}"', f'jellyfin_path_prefix = "/jellyfin/{namespace}"', "bundle_settle_seconds = 0", ""]
             rows = ["[shared]", f'runtime_dir = "{runtime}"', "", "[fence]", f'state_dir = "{root / "fence-state"}"', f'socket_path = "{runtime / "fence.sock"}"', "capacity_bytes = 10000", "max_inflight = 1", f'mutation_lock_path = "{root / "qbittorrent-mutation.lock"}"', 'mutation_lock_version = "shared-qbittorrent-mutation/v1"', "mutation_lock_timeout_ms = 10", "", "[publisher]", f'state_dir = "{root / "publisher-state"}"', f'socket_path = "{runtime / "publisher.sock"}"', "", "[reconciler]", f'state_dir = "{root / "reconciler-state"}"', f'socket_path = "{runtime / "reconciler.sock"}"', "", "[reconciler.movie]", "minimum_age_days = 0", "terminal_horizon_days = 1", "cooldown_seconds = 0", "max_attempts = 3", "max_searches_per_run = 1", "", "[reconciler.episode]", "minimum_age_days = 0", "terminal_horizon_days = 1", "cooldown_seconds = 0", "max_attempts = 3", "max_searches_per_run = 1", "", "[capacity_pools.video]", f'probe_path = "{root}"', "minimum_free_bytes = 0", "safety_margin_bytes = 0", ""]
             rows.extend(source_rows("radarr", "movie", 7, "media-interlock-radarr", root / "downloads-movies", staging, canonical, "library", "2f9e0f39-70de-4502-85ce-7ed03cd2f01f"))
             rows.extend(source_rows("sonarr", "episode", 8, "media-interlock-sonarr", root / "downloads-episodes", sonarr_staging, sonarr_canonical, "series", "6d3e0f39-70de-4502-85ce-7ed03cd2f01f"))
@@ -287,6 +311,52 @@ class ReleaseRehearsalTests(unittest.TestCase):
                 sonarr_public_receipt = exchange(runtime / "publisher.sock", publisher_operation_query(sonarr_operation_id))
                 self.assertEqual("publisher_operation_receipt", sonarr_public_receipt.kind)
                 self.assertEqual("sonarr:tvdb-84", sonarr_public_receipt.body["asset_slot"])
+
+                assisted_operation_id = str(uuid.uuid4())
+                assisted_bundle = BundleVerifier(staging, settle_seconds=0).verify("assisted/feature.mkv")
+                assisted_manifest = {
+                    "source": "radarr", "upstream_id": "assisted-import-43", "media_id": "43",
+                    "asset_slot": "radarr:tmdb-43", "item_type": "Movie", "provider_ids": {"Tmdb": "43"},
+                    "candidate_relative_path": "assisted/feature.mkv",
+                    "bundle_members": [{
+                        "path": member.relative_path, "bytes": member.bytes_verified,
+                        "allocated": member.allocated_bytes, "device": member.device,
+                        "inode": member.inode, "modified_ns": member.modified_ns,
+                        "sha256": member.sha256,
+                    } for member in assisted_bundle.members],
+                    "inspection": {
+                        "audio_languages": list(assisted_bundle.inspection.audio_languages),
+                        "subtitle_languages": list(assisted_bundle.inspection.subtitle_languages),
+                        "container_evidence": list(assisted_bundle.inspection.container_evidence),
+                    },
+                    "expected_catalog_path": "/jellyfin/library/radarr-tmdb-43/payload.mkv",
+                }
+                assisted_complete = publisher_assisted_complete(operation_id=assisted_operation_id, manifest=assisted_manifest)
+                assisted_intent = publisher_assisted_intent(
+                    operation_id=assisted_operation_id, source="radarr", upstream_id="assisted-import-43",
+                    media_id="43", expected_bytes=assisted_bundle.bytes_verified,
+                    manifest_sha256=str(assisted_complete.body["manifest_sha256"]),
+                )
+                accepted = exchange(runtime / "publisher.sock", assisted_intent)
+                self.assertEqual("accepted", accepted.body["state"])
+
+                # The completion response is deliberately lost after the
+                # durable socket request. Repeating the same envelope must be
+                # idempotent and remain pending while item 43 is not visible.
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as lost:
+                    lost.connect(str(runtime / "publisher.sock")); lost.sendall(assisted_complete.encode())
+                pending = exchange(runtime / "publisher.sock", assisted_complete)
+                self.assertEqual("pending", pending.body["state"])
+                self.assertEqual("pending", exchange(runtime / "publisher.sock", publisher_operation_query(assisted_operation_id)).body["state"])
+
+                publisher_stop.set(); publisher_thread.join(5)
+                assisted_visible[0] = True
+                publisher_stop, publisher_thread = start_daemon(runtime / "publisher.sock", lambda: publisher_cli._runtime(load_config(config_path)))
+                assisted_receipt = exchange(runtime / "publisher.sock", publisher_operation_query(assisted_operation_id))
+                self.assertEqual("publisher_operation_receipt", assisted_receipt.kind)
+                self.assertEqual("visible-confirmed", assisted_receipt.body["state"])
+                self.assertEqual("radarr:tmdb-43", assisted_receipt.body["asset_slot"])
+                self.assertEqual(assisted_receipt, exchange(runtime / "publisher.sock", publisher_operation_query(assisted_operation_id)))
             finally:
                 if fence_stop is not None: fence_stop.set(); fence_thread.join(5)
                 if publisher_stop is not None: publisher_stop.set(); publisher_thread.join(5)
@@ -305,10 +375,14 @@ class ReleaseRehearsalTests(unittest.TestCase):
             self.assertEqual(PublicationState.DELIVERED, publisher_state.publication(sonarr_operation_id).state)
             self.assertEqual("released", fence_state.reservation(sonarr_operation_id).state)
             self.assertEqual(episode_media, (sonarr_canonical / "series" / "sonarr-tvdb-84" / "payload.mkv").read_bytes())
+            self.assertEqual(PublicationState.DELIVERED, publisher_state.publication(assisted_operation_id).state)
+            self.assertEqual(b"assisted-media", (canonical / "library" / "radarr-tmdb-43" / "payload.mkv").read_bytes())
+            self.assertEqual(b"subtitle", (canonical / "library" / "radarr-tmdb-43" / "payload.en.srt").read_bytes())
             self.assertEqual(foreign_before, foreign_torrent)
         self.assertEqual(
             ["arr-post:radarr", "tag:radarr", "resume:radarr", "catalog-submit:radarr",
-             "arr-post:sonarr", "tag:sonarr", "resume:sonarr", "catalog-submit:sonarr"],
+             "arr-post:sonarr", "tag:sonarr", "resume:sonarr", "catalog-submit:sonarr",
+             "catalog-submit:assisted", "catalog-submit:assisted"],
             events,
         )
         self.assertEqual([torrent_hash, torrent_hash, "c" * 40, "c" * 40], mutation_hashes)

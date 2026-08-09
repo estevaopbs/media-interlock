@@ -6,7 +6,7 @@ import json
 import hashlib
 from dataclasses import dataclass
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -65,10 +65,11 @@ class ArrHistoryAdapter:
     item_type = ""
     release_entity_key = ""
     category_field_name = ""
-    def __init__(self, base_url: str, api_key: SecretReference, *, staging_root: Path | None, secret_resolver: Callable[[SecretReference], str] | None = None, timeout_seconds: float = 5.0) -> None:
+    def __init__(self, base_url: str, api_key: SecretReference, *, staging_root: Path | None, arr_import_path_prefix: str | None = None, secret_resolver: Callable[[SecretReference], str] | None = None, timeout_seconds: float = 5.0) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
-        self._staging_root = None if staging_root is None else staging_root.resolve(strict=False)
+        self._staging_root = staging_root
+        self._arr_import_path_prefix = _canonical_arr_path(arr_import_path_prefix)
         self._resolve = secret_resolver or (lambda reference: reference.resolve())
         self._timeout = timeout_seconds
 
@@ -353,7 +354,7 @@ class ArrHistoryAdapter:
         return matched_configured_client
 
     def _matched_import(self, download_id: str, media_id: str) -> tuple[str, str] | None:
-        if not download_id or not media_id or self._staging_root is None:
+        if not download_id or not media_id or self._staging_root is None or self._arr_import_path_prefix is None:
             return None
         try:
             response = self._history(download_id)
@@ -373,11 +374,19 @@ class ArrHistoryAdapter:
             imported = data.get("importedPath") if isinstance(data, dict) else None
             if not isinstance(imported, str) or not imported:
                 return None
+            imported_path = _canonical_arr_path(imported)
+            if imported_path is None:
+                return None
             try:
-                relative = Path(imported).resolve(strict=False).relative_to(self._staging_root)
+                relative = imported_path.relative_to(self._arr_import_path_prefix)
             except ValueError:
                 return None
-            if not relative.parts:
+            if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+                return None
+            candidate = self._staging_root.joinpath(*relative.parts)
+            try:
+                candidate.relative_to(self._staging_root)
+            except ValueError:
                 return None
             entity_id = self._entity_id(record)
             if entity_id is None:
@@ -414,3 +423,14 @@ def _public_id(value: object) -> str | None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return None
     return str(value)
+
+
+def _canonical_arr_path(value: object) -> PurePosixPath | None:
+    """Validate one canonical absolute Arr-visible path without filesystem IO."""
+    if not isinstance(value, str) or not value.startswith("/") or "\x00" in value:
+        return None
+    parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in parts[1:]):
+        return None
+    path = PurePosixPath(value)
+    return path if path.is_absolute() else None

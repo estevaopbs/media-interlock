@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,11 +13,12 @@ import _source_tree  # noqa: F401
 from media_interlock.adapters.radarr import RadarrAdapter
 from media_interlock.adapters.sonarr import SonarrAdapter
 from media_interlock.config import SecretReference
+from media_interlock.publisher.filesystem import CandidateSafetyError, CandidateVerifier
 
 
 class ArrCorrelationTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.payload: object = {"records": [{"eventType": "downloadFolderImported", "downloadId": "grab-42", "movieId": 42, "episodeId": 42, "data": {"importedPath": "/staging/movie.mkv"}}]}
+        self.payload: object = {"records": [{"eventType": "downloadFolderImported", "downloadId": "grab-42", "movieId": 42, "episodeId": 42, "data": {"importedPath": "/data/library/movie.mkv"}}]}
         self.entity_payload: object = {"id": 42, "tmdbId": 42}
         self.request: tuple[str, str | None] | None = None
         self.command_request: tuple[str, str | None, object] | None = None
@@ -92,9 +94,13 @@ class ArrCorrelationTests(unittest.TestCase):
         self.addCleanup(self.thread.join)
         self.addCleanup(self.server.shutdown)
 
-    def adapter(self, type_: type[RadarrAdapter] | type[SonarrAdapter]):
+    def adapter(self, type_: type[RadarrAdapter] | type[SonarrAdapter], *, staging_root: Path = Path("/staging/movies")):
         host, port = self.server.server_address
-        return type_(f"http://{host}:{port}", SecretReference("env", "ARR_KEY"), staging_root=Path("/staging"), secret_resolver=lambda _: "fixture-key")
+        return type_(
+            f"http://{host}:{port}", SecretReference("env", "ARR_KEY"),
+            arr_import_path_prefix="/data/library", staging_root=staging_root,
+            secret_resolver=lambda _: "fixture-key",
+        )
 
     def test_exact_single_import_is_correlated_for_radarr_and_sonarr(self) -> None:
         for adapter_type in (RadarrAdapter, SonarrAdapter):
@@ -104,12 +110,75 @@ class ArrCorrelationTests(unittest.TestCase):
                 self.assertIn("downloadId=grab-42", self.request[0])
                 self.assertEqual("fixture-key", self.request[1])
 
+    def test_shared_arr_prefix_maps_nested_files_to_distinct_publisher_stagings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            movie_staging = root / "staging" / "movies"
+            show_staging = root / "staging" / "shows"
+            for staging, payload in ((movie_staging, b"movie"), (show_staging, b"episode")):
+                (staging / "title").mkdir(parents=True)
+                (staging / "title" / "media.mkv").write_bytes(payload)
+                (staging / "title" / "media.en.srt").write_bytes(b"subtitle")
+            self.payload = {"records": [{
+                "eventType": "downloadFolderImported", "downloadId": "grab-42",
+                "movieId": 42, "episodeId": 42,
+                "data": {"importedPath": "/data/library/title/media.mkv"},
+            }]}
+
+            movie_relative = self.adapter(RadarrAdapter, staging_root=movie_staging).candidate_relative_path("grab-42", "42")
+            show_relative = self.adapter(SonarrAdapter, staging_root=show_staging).candidate_relative_path("grab-42", "42")
+
+            self.assertEqual("title/media.mkv", movie_relative)
+            self.assertEqual("title/media.mkv", show_relative)
+            assert movie_relative is not None and show_relative is not None
+            self.assertEqual(b"movie", (movie_staging / movie_relative).read_bytes())
+            self.assertEqual(b"episode", (show_staging / show_relative).read_bytes())
+            self.assertEqual(b"subtitle", (movie_staging / "title" / "media.en.srt").read_bytes())
+            self.assertEqual(b"subtitle", (show_staging / "title" / "media.en.srt").read_bytes())
+
+    def test_directory_and_symlink_never_become_filesystem_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging = root / "staging"
+            outside = root / "outside.mkv"
+            staging.mkdir()
+            (staging / "title").mkdir()
+            outside.write_bytes(b"outside")
+            (staging / "title" / "media.mkv").symlink_to(outside)
+            adapter = self.adapter(RadarrAdapter, staging_root=staging)
+
+            self.payload = {"records": [{
+                "eventType": "downloadFolderImported", "downloadId": "grab-42", "movieId": 42,
+                "data": {"importedPath": "/data/library/title"},
+            }]}
+            self.assertEqual("title", adapter.candidate_relative_path("grab-42", "42"))
+            with self.assertRaises(CandidateSafetyError):
+                CandidateVerifier(staging).verify("title")
+
+            self.payload = {"records": [{
+                "eventType": "downloadFolderImported", "downloadId": "grab-42", "movieId": 42,
+                "data": {"importedPath": "/data/library/title/media.mkv"},
+            }]}
+            self.assertEqual("title/media.mkv", adapter.candidate_relative_path("grab-42", "42"))
+            with self.assertRaises(CandidateSafetyError):
+                CandidateVerifier(staging).verify("title/media.mkv")
+
     def test_ambiguous_or_outside_import_fails_closed(self) -> None:
         adapter = self.adapter(RadarrAdapter)
-        self.payload = {"records": [{"eventType": "downloadFolderImported", "downloadId": "grab-42", "movieId": 42, "data": {"importedPath": "/staging/a.mkv"}}, {"eventType": "downloadFolderImported", "downloadId": "grab-42", "movieId": 42, "data": {"importedPath": "/staging/b.mkv"}}]}
+        self.payload = {"records": [{"eventType": "downloadFolderImported", "downloadId": "grab-42", "movieId": 42, "data": {"importedPath": "/data/library/a.mkv"}}, {"eventType": "downloadFolderImported", "downloadId": "grab-42", "movieId": 42, "data": {"importedPath": "/data/library/b.mkv"}}]}
         self.assertIsNone(adapter.candidate_relative_path("grab-42", "42"))
-        self.payload = {"records": [{"eventType": "downloadFolderImported", "downloadId": "grab-42", "movieId": 42, "data": {"importedPath": "/outside/movie.mkv"}}]}
-        self.assertIsNone(adapter.candidate_relative_path("grab-42", "42"))
+        for imported_path in (
+            "/outside/movie.mkv",
+            "/data/library-other/movie.mkv",
+            "/data/library",
+            "data/library/movie.mkv",
+            "/data/library/../outside/movie.mkv",
+            "/data/library/title/../../outside/movie.mkv",
+            "/data//library/movie.mkv",
+        ):
+            with self.subTest(imported_path=imported_path):
+                self.payload = {"records": [{"eventType": "downloadFolderImported", "downloadId": "grab-42", "movieId": 42, "data": {"importedPath": imported_path}}]}
+                self.assertIsNone(adapter.candidate_relative_path("grab-42", "42"))
         self.assertIsNone(adapter.candidate_relative_path("grab-42", "different-media"))
 
     def test_radarr_derives_asset_slot_and_provider_identity_from_public_api(self) -> None:

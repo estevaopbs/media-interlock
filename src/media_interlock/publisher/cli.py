@@ -44,8 +44,16 @@ def _runtime(config: ProductConfig) -> tuple[PublisherStore, PublisherDaemon, tu
     writer_locks = tuple(CanonicalWriterLock.acquire(profile.canonical_root) for profile in profiles) if roots_ready else ()
     service = PublisherService(state, store)
     correlations = {
-        "radarr": RadarrAdapter(radarr_config.base_url, radarr_config.secrets["api_key"], staging_root=config.publisher.sources["radarr"].staging_root),
-        "sonarr": SonarrAdapter(sonarr_config.base_url, sonarr_config.secrets["api_key"], staging_root=config.publisher.sources["sonarr"].staging_root),
+        "radarr": RadarrAdapter(
+            radarr_config.base_url, radarr_config.secrets["api_key"],
+            staging_root=config.publisher.sources["radarr"].staging_root,
+            arr_import_path_prefix=config.publisher.sources["radarr"].arr_import_path_prefix,
+        ),
+        "sonarr": SonarrAdapter(
+            sonarr_config.base_url, sonarr_config.secrets["api_key"],
+            staging_root=config.publisher.sources["sonarr"].staging_root,
+            arr_import_path_prefix=config.publisher.sources["sonarr"].arr_import_path_prefix,
+        ),
     }
     catalog = JellyfinAdapter(jellyfin_config.base_url, jellyfin_config.secrets["api_key"])
     optional = [

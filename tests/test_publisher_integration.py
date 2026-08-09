@@ -37,7 +37,7 @@ class PublisherVerticalIntegrationTests(unittest.TestCase):
             def do_GET(self) -> None:
                 outer.requests.append(("GET", self.path, self.headers.get("X-Api-Key") or self.headers.get("X-Emby-Token")))
                 if self.path.startswith("/api/v3/history?"):
-                    payload = {"records": [{"eventType": "downloadFolderImported", "downloadId": "grab-42", "movieId": 42, "data": {"importedPath": str(outer.staging / "movie.mkv")}}]}
+                    payload = {"records": [{"eventType": "downloadFolderImported", "downloadId": "grab-42", "movieId": 42, "data": {"importedPath": "/data/library/movie.mkv"}}]}
                 elif self.path == "/api/v3/movie/42":
                     payload = {"id": 42, "tmdbId": 42}
                 elif self.path.startswith("/Items?"):
@@ -93,7 +93,7 @@ class PublisherVerticalIntegrationTests(unittest.TestCase):
     def test_unix_terminal_to_exact_catalog_observation_is_durable(self) -> None:
         host, port = self.server.server_address
         key = SecretReference("env", "FIXTURE_KEY")
-        correlation = RadarrAdapter(f"http://{host}:{port}", key, staging_root=self.staging, secret_resolver=lambda _: "fixture-key")
+        correlation = RadarrAdapter(f"http://{host}:{port}", key, staging_root=self.staging, arr_import_path_prefix="/data/library", secret_resolver=lambda _: "fixture-key")
         catalog = JellyfinAdapter(f"http://{host}:{port}", key, secret_resolver=lambda _: "fixture-key")
         operation_id = str(uuid.uuid4())
         terminal = terminal_acquisition(
@@ -163,7 +163,7 @@ class PublisherVerticalIntegrationTests(unittest.TestCase):
     def test_wrong_catalog_binding_stays_pending_over_unix_until_exact_retry(self) -> None:
         host, port = self.server.server_address
         key = SecretReference("env", "FIXTURE_KEY")
-        correlation = RadarrAdapter(f"http://{host}:{port}", key, staging_root=self.staging, secret_resolver=lambda _: "fixture-key")
+        correlation = RadarrAdapter(f"http://{host}:{port}", key, staging_root=self.staging, arr_import_path_prefix="/data/library", secret_resolver=lambda _: "fixture-key")
         catalog = JellyfinAdapter(f"http://{host}:{port}", key, secret_resolver=lambda _: "fixture-key")
         operation_id = str(uuid.uuid4())
         terminal = terminal_acquisition(

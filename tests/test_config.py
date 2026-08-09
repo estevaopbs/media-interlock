@@ -177,6 +177,23 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual("shared-qbittorrent-mutation/v1", config.fence.mutation_lock.version)
         self.assertEqual(2, config.publisher.sources["radarr"].bundle_settle_seconds)
 
+    def test_arr_visible_prefix_may_be_shared_while_publisher_stagings_are_distinct(self) -> None:
+        content = SOURCE_PROFILE_CONFIG.replace(
+            'arr_import_path_prefix = "/downloads/movies"',
+            'arr_import_path_prefix = "/data/library"',
+        ).replace(
+            'arr_import_path_prefix = "/downloads/episodes"',
+            'arr_import_path_prefix = "/data/library"',
+        )
+
+        config = load_config(self.write(content))
+
+        assert config.publisher is not None
+        self.assertEqual("/data/library", config.publisher.sources["radarr"].arr_import_path_prefix)
+        self.assertEqual("/data/library", config.publisher.sources["sonarr"].arr_import_path_prefix)
+        self.assertEqual(Path("/srv/staging/movies"), config.publisher.sources["radarr"].staging_root)
+        self.assertEqual(Path("/srv/staging/episodes"), config.publisher.sources["sonarr"].staging_root)
+
     def test_bundle_settle_policy_is_bounded_per_source(self) -> None:
         content = VALID_CONFIG.replace('namespace = "movies"', 'namespace = "movies"\nbundle_settle_seconds = 7', 1)
 
