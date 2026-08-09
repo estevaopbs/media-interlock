@@ -9,6 +9,7 @@ import tarfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _source_tree  # noqa: F401
 
@@ -44,13 +45,30 @@ class ArtifactDefinitionTests(unittest.TestCase):
     def test_corrective_release_version_is_consistent(self) -> None:
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-        self.assertEqual("0.1.1", __version__)
+        self.assertEqual("0.1.2", __version__)
         self.assertEqual(__version__, project["project"]["version"])
+
+    def test_artifact_builder_rejects_a_runtime_outside_the_python_profile(self) -> None:
+        builder = _artifact_builder()
+        with mock.patch.object(builder, "_output", return_value="Python 3.14.6"):
+            with self.assertRaisesRegex(RuntimeError, "expected Python 3.14.7"):
+                builder._validated_runtime_python_version("podman", "fixture:local", ROOT)
+        with mock.patch.object(builder, "_output", return_value="Python 3.14.7"):
+            self.assertEqual(
+                "3.14.7",
+                builder._validated_runtime_python_version("podman", "fixture:local", ROOT),
+            )
 
     def test_oci_targets_are_arbitrary_uid_safe_and_execute_only_declared_components(self) -> None:
         containerfile = (ROOT / "Containerfile").read_text(encoding="utf-8")
 
-        self.assertIn("FROM docker.io/library/python@sha256:", containerfile)
+        self.assertEqual(
+            2,
+            containerfile.count(
+                "FROM docker.io/library/python@sha256:"
+                "b5998102f95c4b44edf1e7cb5cecbe1f49e0bf054f345c1db5b854e166e6e17a"
+            ),
+        )
         self.assertIn("--require-hashes --no-deps --requirement build-requirements.txt", containerfile)
         self.assertIn("FROM runtime AS reconciler", containerfile)
         self.assertIn("FROM runtime AS fence", containerfile)
@@ -92,4 +110,5 @@ class ArtifactDefinitionTests(unittest.TestCase):
         self.assertNotIn('"--sdist"', builder)
         self.assertIn('("reconciler", "fence", "publisher")', builder)
         self.assertIn('"media-interlock.artifacts/v1"', builder)
+        self.assertIn('"runtime_python_version"', builder)
         self.assertIn('"artifacts.json"', builder)

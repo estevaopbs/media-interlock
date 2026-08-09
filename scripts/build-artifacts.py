@@ -17,6 +17,9 @@ import venv
 from pathlib import Path
 
 
+EXPECTED_RUNTIME_PYTHON_VERSION = "3.14.7"
+
+
 def _run(command: list[str], *, cwd: Path) -> None:
     subprocess.run(command, cwd=cwd, check=True)
 
@@ -61,6 +64,17 @@ def _oci_archive_manifest_digest(archive: Path) -> str:
     if not isinstance(digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
         raise ValueError("OCI archive manifest digest is invalid")
     return digest
+
+
+def _validated_runtime_python_version(oci_engine: str, tag: str, root: Path) -> str:
+    rendered = _output(
+        [oci_engine, "run", "--rm", "--entrypoint", "python", tag, "--version"],
+        cwd=root,
+    )
+    expected = f"Python {EXPECTED_RUNTIME_PYTHON_VERSION}"
+    if rendered != expected:
+        raise RuntimeError(f"image {tag} uses {rendered!r}; expected {expected}")
+    return EXPECTED_RUNTIME_PYTHON_VERSION
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -108,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             "--build-arg", f"PACKAGE_VERSION={version}",
             "--target", component, "--tag", tag, "--file", "Containerfile", ".",
         ], cwd=root)
+        _validated_runtime_python_version(arguments.oci_engine, tag, root)
         archive = output / f"media-interlock-{component}.oci.tar"
         _run([arguments.oci_engine, "image", "save", "--format", "oci-archive", "--output", str(archive), tag], cwd=root)
         digest = _oci_archive_manifest_digest(archive)
@@ -122,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
                 "schema": "media-interlock.artifacts/v1",
                 "source_revision": revision,
                 "version": version,
+                "runtime_python_version": EXPECTED_RUNTIME_PYTHON_VERSION,
                 "wheel": {"filename": wheels[0].name, "sha256": _sha256(wheels[0])},
                 "images": images,
             },

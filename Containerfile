@@ -1,4 +1,4 @@
-FROM docker.io/library/python@sha256:ff83a535339812dd72e69c93b3c48ddf7c85a324d6330af5797c82a255dbeef4 AS build
+FROM docker.io/library/python@sha256:b5998102f95c4b44edf1e7cb5cecbe1f49e0bf054f345c1db5b854e166e6e17a AS build
 
 WORKDIR /build
 ARG SOURCE_DATE_EPOCH=0
@@ -7,7 +7,7 @@ COPY . .
 RUN python -m pip install --no-cache-dir --require-hashes --no-deps --requirement build-requirements.txt \
  && python -m build --wheel --no-isolation --outdir /wheel
 
-FROM docker.io/library/python@sha256:ff83a535339812dd72e69c93b3c48ddf7c85a324d6330af5797c82a255dbeef4 AS runtime
+FROM docker.io/library/python@sha256:b5998102f95c4b44edf1e7cb5cecbe1f49e0bf054f345c1db5b854e166e6e17a AS runtime
 
 ARG SOURCE_REVISION=unknown
 ARG PACKAGE_VERSION=0.0.0
