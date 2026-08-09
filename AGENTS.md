@@ -25,6 +25,11 @@ source back into an overlay; consume a pinned release.
 - Git is authoritative for source, commits, and integration state. `main` is
   the protected integration branch; use an ephemeral branch and worktree for
   non-trivial implementation.
+- Create every ephemeral worktree at `<repository>/.worktrees/<slice>`, under
+  the ignored `.worktrees/` directory. Never create it as a sibling in
+  `~/projects` (for example, `<repository>-<slice>`) or inside `.git`.
+  Remove it with `git worktree remove` once its branch is integrated or
+  abandoned, unless the user explicitly asks to retain it.
 - Do not fetch, push, publish packages, create releases, or mutate a live stack
   unless the user explicitly requests that external action.
 - Use the indexed specification for pending program design and one bounded plan
