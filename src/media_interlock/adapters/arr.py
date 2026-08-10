@@ -396,8 +396,13 @@ class ArrHistoryAdapter:
         ):
             return None
         # Queue is optional only for this explicit historical operation.  When
-        # it still exists, all its entries must be the same complete evidence.
-        matching_queue = [record for record in queue if matches_hash(record.get("downloadId"))]
+        # it still exists, every row linked either by the requested entities or
+        # the hash must be the same complete evidence; a stale or competing
+        # row for one requested episode is an ambiguity, not an ignorable row.
+        matching_queue = [
+            record for record in queue
+            if matches_hash(record.get("downloadId")) or _public_id(record.get(self.release_entity_key)) in entity_ids
+        ]
         if not matching_queue:
             return ArrHistoricalExternalGrab(entity_ids, download_id, torrent_hash, tuple(history_ids), None)
         queue_ids = [_public_id(record.get(self.release_entity_key)) for record in matching_queue]
@@ -405,7 +410,7 @@ class ArrHistoryAdapter:
         if (
             len(matching_queue) != len(entity_ids)
             or tuple(sorted(queue_ids, key=lambda item: -1 if item is None else int(item))) != entity_ids
-            or any(record.get("downloadClient") != client_name or record.get("protocol") != "torrent" for record in matching_queue)
+            or any(not matches_hash(record.get("downloadId")) or record.get("downloadClient") != client_name or record.get("protocol") != "torrent" for record in matching_queue)
             or any(isinstance(size, bool) or not isinstance(size, int) or size <= 0 for size in sizes)
             or len(set(sizes)) != 1
         ):

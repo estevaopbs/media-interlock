@@ -15,6 +15,7 @@ import _source_tree  # noqa: F401
 from media_interlock.adapters.qbittorrent import QbittorrentAdapter
 from media_interlock.adapters.radarr import RadarrAdapter
 from media_interlock.adapters.sonarr import SonarrAdapter
+from media_interlock._infra.advisory_lease import AdvisoryLease
 from media_interlock.config import SecretReference
 from media_interlock.contracts import StatusCode, post_pnr_historical_adoption, post_pnr_historical_adoption_query
 from media_interlock.fence.daemon import FenceDaemon
@@ -82,13 +83,19 @@ class HistoricalPostPnrIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.http.shutdown(); self.http.server_close(); self.thread.join()
 
     def _daemon(self, root: Path) -> tuple[FenceStore, FenceDaemon]:
+        root.mkdir(parents=True, exist_ok=True)
+        lock_path = root / "shared-qbittorrent-mutation.lock"
+        lock_path.write_bytes(b"")
+        lease = AdvisoryLease.open(lock_path, timeout_ms=100)
         store = FenceStore.open(root / "state")
         state = store.load(FencePolicy(1_000, 2))
         qbit = QbittorrentAdapter(self.base, SecretReference("env", "USER"), SecretReference("env", "PASS"), secret_resolver=lambda _: "fixture")
         observer_type = RadarrAdapter if self.source == "radarr" else SonarrAdapter
         observer = observer_type(self.base, SecretReference("env", "KEY"), staging_root=None, secret_resolver=lambda _: "fixture")
-        service = FenceService(state, store, qbit, None, sources={self.source: FenceSource(self.category, Path(self.save_path), 7)}, observers={self.source: observer})
-        return store, FenceDaemon(service, FenceObservability(state), readiness=lambda: (True, True, True))
+        service = FenceService(state, store, qbit, None, sources={self.source: FenceSource(self.category, Path(self.save_path), 7)}, observers={self.source: observer}, lease=lease)
+        daemon = FenceDaemon(service, FenceObservability(state), readiness=lambda: (True, True, True))
+        daemon._test_lease = lease  # type: ignore[attr-defined]
+        return store, daemon
 
     async def _exchange(self, socket_path: Path, envelope):
         reader, writer = await asyncio.open_unix_connection(socket_path)
@@ -127,7 +134,7 @@ class HistoricalPostPnrIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn(private, metrics)
                     self.assertNotIn(private, json.dumps(status))
             finally:
-                server.close(); await server.wait_closed(); store.close()
+                server.close(); await server.wait_closed(); store.close(); daemon._test_lease.close()  # type: ignore[attr-defined]
 
             restored_store, restored = self._daemon(root)
             restored.recover()
@@ -137,7 +144,7 @@ class HistoricalPostPnrIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(receipt, await self._exchange(socket_path, post_pnr_historical_adoption_query(operation_id)))
                 self.assertEqual(1, self.posts.count("/api/v2/torrents/addTags"))
             finally:
-                server.close(); await server.wait_closed(); restored_store.close()
+                server.close(); await server.wait_closed(); restored_store.close(); restored._test_lease.close()  # type: ignore[attr-defined]
 
     async def test_restart_recovers_historical_intent_and_lost_tag_readback_without_repeating_effect(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -147,7 +154,7 @@ class HistoricalPostPnrIntegrationTests(unittest.IsolatedAsyncioTestCase):
             state = daemon._service._state
             intent = PostPnrHistoricalAdoptionIntent(operation_id, self.source, 7, self.entity_ids, self.torrent_hash, self.category, self.save_path, 400, (8, 9, 10))
             self.assertTrue(state.adopt_post_pnr_historical(intent, qbittorrent_ready=True).admitted)
-            store.save(state); store.close()
+            store.save(state); store.close(); daemon._test_lease.close()  # type: ignore[attr-defined]
             restored_store, restored = self._daemon(root)
             restored.recover()
             self.assertEqual(ReservationState.QBITTORRENT_STOPPED, restored._service._state.reservation(operation_id).state)
@@ -158,7 +165,7 @@ class HistoricalPostPnrIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(("42", "43", "44"), saved.entity_ids)
             self.assertEqual((8, 9, 10), saved.history_ids)
             self.assertEqual(400, saved.expected_bytes)
-            restored_store.close()
+            restored_store.close(); restored._test_lease.close()  # type: ignore[attr-defined]
 
             # Simulate a tag effect whose read-back response is lost. Recovery
             # must observe the tag and persist it, never issue a second addTags.
@@ -173,13 +180,13 @@ class HistoricalPostPnrIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(ReservationState.TAG_INTENT_RECORDED, daemon._service._state.reservation(second_id).state)
                 self.assertEqual(1, self.posts.count("/api/v2/torrents/addTags"))
             finally:
-                server.close(); await server.wait_closed(); store.close()
+                server.close(); await server.wait_closed(); store.close(); daemon._test_lease.close()  # type: ignore[attr-defined]
             self.hide_tagged = False
             restored_store, restored = self._daemon(second_root)
             restored.recover()
             self.assertEqual(ReservationState.QBITTORRENT_STOPPED, restored._service._state.reservation(second_id).state)
             self.assertEqual(1, self.posts.count("/api/v2/torrents/addTags"))
-            restored_store.close()
+            restored_store.close(); restored._test_lease.close()  # type: ignore[attr-defined]
 
     async def test_queue_evidence_and_qbittorrent_identity_are_exact_and_second_operation_conflicts(self) -> None:
         self.queue = [
@@ -197,7 +204,25 @@ class HistoricalPostPnrIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(StatusCode.CONFLICT.value, second.body["code"])
                 self.assertEqual(1, self.posts.count("/api/v2/torrents/addTags"))
             finally:
-                server.close(); await server.wait_closed(); store.close()
+                server.close(); await server.wait_closed(); store.close(); daemon._test_lease.close()  # type: ignore[attr-defined]
+
+    async def test_two_concurrent_operations_share_one_lease_and_one_tag(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, socket_path = Path(directory), Path(directory) / "fence.sock"
+            store, daemon = self._daemon(root)
+            server = await asyncio.start_unix_server(daemon.handle, path=socket_path)
+            try:
+                first_id, second_id = str(uuid.uuid4()), str(uuid.uuid4())
+                first, second = await asyncio.gather(
+                    self._exchange(socket_path, self._request(first_id)),
+                    self._exchange(socket_path, self._request(second_id)),
+                )
+                self.assertEqual(1, sum(item.kind == "post_pnr_historical_adoption_receipt" for item in (first, second)))
+                self.assertEqual(1, sum(item.kind == "status" and item.body.get("code") == StatusCode.CONFLICT.value for item in (first, second)))
+                self.assertEqual(1, self.posts.count("/api/v2/torrents/addTags"))
+                self.assertEqual(1, sum(record["torrent_hash"] == self.torrent_hash for record in daemon._service._state.records()))
+            finally:
+                server.close(); await server.wait_closed(); store.close(); daemon._test_lease.close()  # type: ignore[attr-defined]
 
     async def test_radarr_singleton_without_queue_is_accepted(self) -> None:
         self.source, self.category, self.save_path, self.client_name, self.entity_ids = "radarr", "media-interlock-radarr", "/downloads/movies", "movies", ("42",)
@@ -209,7 +234,22 @@ class HistoricalPostPnrIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("post_pnr_historical_adoption_receipt", result.kind, result.body)
             self.assertEqual(["42"], result.body["entity_ids"])
             self.assertEqual(1, self.posts.count("/api/v2/torrents/addTags"))
-            store.close()
+            store.close(); daemon._test_lease.close()  # type: ignore[attr-defined]
+
+    async def test_explicit_musical_foreign_hash_attempt_preserves_it_byte_for_byte(self) -> None:
+        music_before = json.dumps(self.music, sort_keys=True, separators=(",", ":"))
+        with tempfile.TemporaryDirectory() as directory:
+            store, daemon = self._daemon(Path(directory))
+            request = post_pnr_historical_adoption(
+                operation_id=str(uuid.uuid4()), source=self.source, download_client_id=7,
+                entity_ids=self.entity_ids, torrent_hash=str(self.music["hash"]),
+                category=self.category, save_path=self.save_path,
+            )
+            result = daemon._dispatch(request)
+            self.assertEqual(StatusCode.CONFLICT.value, result.body["code"])
+            self.assertEqual(music_before, json.dumps(self.music, sort_keys=True, separators=(",", ":")))
+            self.assertNotIn("/api/v2/torrents/addTags", self.posts)
+            store.close(); daemon._test_lease.close()  # type: ignore[attr-defined]
 
     async def test_ambiguity_divergence_and_qbittorrent_drift_do_not_tag(self) -> None:
         music_before = json.dumps(self.music, sort_keys=True, separators=(",", ":"))
@@ -219,6 +259,7 @@ class HistoricalPostPnrIntegrationTests(unittest.IsolatedAsyncioTestCase):
             ("additional", self.history + [{"id": 99, "eventType": "grabbed", "episodeId": 99, "downloadId": self.torrent_hash.upper()}], [], {}),
             ("duplicate", self.history + [{"id": 99, "eventType": "grabbed", "episodeId": 44, "downloadId": self.torrent_hash.upper()}], [], {}),
             ("queue-drift", self.history, [{"episodeId": int(entity_id), "downloadId": self.torrent_hash.upper(), "downloadClient": self.client_name, "protocol": "torrent", "size": 401} for entity_id in self.entity_ids], {}),
+            ("queue-other-hash", self.history, [{"episodeId": int(entity_id), "downloadId": self.torrent_hash.upper(), "downloadClient": self.client_name, "protocol": "torrent", "size": 400} for entity_id in self.entity_ids] + [{"episodeId": 42, "downloadId": "d" * 40, "downloadClient": self.client_name, "protocol": "torrent", "size": 400}], {}),
             ("active", self.history, [], {"state": "downloading"}),
             ("owned", self.history, [], {"tags": "fence:another"}),
             ("path", self.history, [], {"save_path": "/wrong"}),
@@ -234,4 +275,4 @@ class HistoricalPostPnrIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(StatusCode.CONFLICT.value, result.body["code"])
                 self.assertNotIn("/api/v2/torrents/addTags", self.posts)
                 self.assertEqual(music_before, json.dumps(self.music, sort_keys=True, separators=(",", ":")))
-                store.close()
+                store.close(); daemon._test_lease.close()  # type: ignore[attr-defined]
