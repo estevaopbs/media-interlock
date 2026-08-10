@@ -18,9 +18,9 @@ active only when configured.
 
 ## Project status
 
-MediaInterlock 0.1.7 is the next local release candidate; it has not been tagged, pushed, or published. Version 0.1.6 remains the current immutable
-public [GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.6).
-Release 0.1.5 remains preserved as its immutable predecessor.
+MediaInterlock 0.1.7 is the current immutable public
+[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.7).
+Version 0.1.6 remains preserved as its immutable predecessor.
 Release 0.1.1 remains preserved but its OCI images use Python 3.14.6 rather than
 the fixed 3.14.7 compatibility profile. Version 0.1.3 added per-operation
 Publisher status and exact terminal receipts; 0.1.4 translates a shared

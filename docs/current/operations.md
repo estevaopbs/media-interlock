@@ -1,6 +1,6 @@
 # Operations
 
-The current public 0.1.6 release contains one wheel plus Reconciler, Fence, and
+The current public 0.1.7 release contains one wheel plus Reconciler, Fence, and
 Publisher OCI images.
 This page is not an installation guide and no live deployment has been tested.
 
