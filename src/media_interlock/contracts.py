@@ -89,6 +89,35 @@ def _post_pnr_adoption_body(value: Mapping[str, Any]) -> None:
         raise ContractError("post-PNR adoption fields are invalid")
 
 
+def _canonical_entity_ids(value: object, *, source: object) -> tuple[str, ...] | None:
+    if not isinstance(value, list) or not 1 <= len(value) <= 128:
+        return None
+    if not all(isinstance(item, str) and item.isdecimal() and str(int(item)) == item for item in value):
+        return None
+    canonical = tuple(value)
+    if canonical != tuple(sorted(canonical, key=int)) or len(set(canonical)) != len(canonical):
+        return None
+    if source == "radarr" and len(canonical) != 1:
+        return None
+    return canonical
+
+
+def _post_pnr_historical_adoption_body(value: Mapping[str, Any]) -> None:
+    expected = {"source", "download_client_id", "entity_ids", "torrent_hash", "category", "save_path"}
+    if set(value) != expected:
+        raise ContractError("historical post-PNR adoption fields are invalid")
+    source = value.get("source")
+    base = dict(value)
+    base["entity_id"] = "1"
+    base.pop("entity_ids")
+    try:
+        _post_pnr_adoption_body(base)
+    except ContractError as exc:
+        raise ContractError("historical post-PNR adoption fields are invalid") from exc
+    if _canonical_entity_ids(value.get("entity_ids"), source=source) is None:
+        raise ContractError("historical post-PNR adoption fields are invalid")
+
+
 def _manifest_sha256(manifest: Mapping[str, Any] | object) -> str:
     try:
         encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -142,7 +171,7 @@ class Envelope:
     def __post_init__(self) -> None:
         if not isinstance(self.version, str) or self.version != CONTRACT_VERSION:
             raise ContractError("unsupported contract version")
-        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_pre_admission", "acquisition_grab_binding", "acquisition_freeze", "post_pnr_adoption", "post_pnr_adoption_query", "post_pnr_adoption_receipt", "terminal_acquisition", "custody_receipt", "publisher_bootstrap", "publisher_assisted_intent", "publisher_assisted_complete", "publisher_operation_query", "publisher_operation_status", "publisher_operation_receipt", "metrics", "observe", "quiesce"}:
+        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_pre_admission", "acquisition_grab_binding", "acquisition_freeze", "post_pnr_adoption", "post_pnr_adoption_query", "post_pnr_adoption_receipt", "post_pnr_historical_adoption", "post_pnr_historical_adoption_query", "post_pnr_historical_adoption_receipt", "terminal_acquisition", "custody_receipt", "publisher_bootstrap", "publisher_assisted_intent", "publisher_assisted_complete", "publisher_operation_query", "publisher_operation_status", "publisher_operation_receipt", "metrics", "observe", "quiesce"}:
             raise ContractError("unknown contract kind")
         _operation_id(self.operation_id)
         normalized = _json_body(self.body)
@@ -167,6 +196,15 @@ class Envelope:
             if normalized.get("state") != "adopted" or not isinstance(normalized.get("fence_reservation_id"), str) or not normalized["fence_reservation_id"]:
                 raise ContractError("post-PNR adoption receipt fields are invalid")
             _post_pnr_adoption_body({key: value for key, value in normalized.items() if key not in {"state", "fence_reservation_id"}})
+        elif self.kind == "post_pnr_historical_adoption":
+            _post_pnr_historical_adoption_body(normalized)
+        elif self.kind == "post_pnr_historical_adoption_query":
+            if normalized:
+                raise ContractError("historical post-PNR adoption query has fields")
+        elif self.kind == "post_pnr_historical_adoption_receipt":
+            if normalized.get("state") != "adopted" or not isinstance(normalized.get("fence_reservation_id"), str) or not normalized["fence_reservation_id"]:
+                raise ContractError("historical post-PNR adoption receipt fields are invalid")
+            _post_pnr_historical_adoption_body({key: value for key, value in normalized.items() if key not in {"state", "fence_reservation_id"}})
         elif self.kind == "terminal_acquisition":
             expected = {"bytes_reserved", "download_id", "fence_reservation_id", "media_id", "source", "upstream_id"}
             if set(normalized) != expected:
@@ -308,6 +346,34 @@ def post_pnr_adoption_receipt(operation_id: str, *, source: str, download_client
         "source": source,
         "download_client_id": download_client_id,
         "entity_id": entity_id,
+        "torrent_hash": torrent_hash,
+        "category": category,
+        "save_path": save_path,
+        "fence_reservation_id": fence_reservation_id,
+        "state": "adopted",
+    })
+
+
+def post_pnr_historical_adoption(*, operation_id: str, source: str, download_client_id: int, entity_ids: tuple[str, ...] | list[str], torrent_hash: str, category: str, save_path: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "post_pnr_historical_adoption", _operation_id(operation_id), {
+        "source": source,
+        "download_client_id": download_client_id,
+        "entity_ids": list(entity_ids),
+        "torrent_hash": torrent_hash,
+        "category": category,
+        "save_path": save_path,
+    })
+
+
+def post_pnr_historical_adoption_query(operation_id: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "post_pnr_historical_adoption_query", _operation_id(operation_id), {})
+
+
+def post_pnr_historical_adoption_receipt(operation_id: str, *, source: str, download_client_id: int, entity_ids: tuple[str, ...] | list[str], torrent_hash: str, category: str, save_path: str, fence_reservation_id: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "post_pnr_historical_adoption_receipt", _operation_id(operation_id), {
+        "source": source,
+        "download_client_id": download_client_id,
+        "entity_ids": list(entity_ids),
         "torrent_hash": torrent_hash,
         "category": category,
         "save_path": save_path,

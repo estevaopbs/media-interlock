@@ -52,6 +52,17 @@ class ArrExternalGrab:
 
 
 @dataclass(frozen=True)
+class ArrHistoricalExternalGrab:
+    """Exact historical Arr evidence for one explicitly authorized hash."""
+
+    entity_ids: tuple[str, ...]
+    download_id: str
+    torrent_hash: str
+    history_ids: tuple[int, ...]
+    queue_expected_bytes: int | None
+
+
+@dataclass(frozen=True)
 class ArrExternalObservation:
     """One bounded observer pass, including its safe causal watermark."""
 
@@ -341,6 +352,65 @@ class ArrHistoryAdapter:
         if len(matching_queue) != 1:
             return None
         return ArrExternalGrab(entity_id, torrent_hash.upper(), torrent_hash, matching_queue[0]["size"], matching_history[0]["id"])
+
+    def sealed_historical_external_grab(self, entity_ids: tuple[str, ...], torrent_hash: str, *, category: str, download_client_id: int) -> ArrHistoricalExternalGrab | None:
+        """Seal historical evidence without extending v1 Queue-required semantics.
+
+        This is intentionally separate from :meth:`sealed_external_grab`: the
+        latter remains the v1 singleton, Queue-required operation.  A historical
+        pack is valid only when every public History record for the hash forms
+        the requested canonical entity set.
+        """
+        if (
+            not isinstance(entity_ids, tuple) or not 1 <= len(entity_ids) <= 128
+            or any(not isinstance(item, str) or not item.isdecimal() or str(int(item)) != item for item in entity_ids)
+            or entity_ids != tuple(sorted(entity_ids, key=int)) or len(set(entity_ids)) != len(entity_ids)
+            or (self.source_name == "radarr" and len(entity_ids) != 1)
+            or not isinstance(torrent_hash, str) or len(torrent_hash) != 40
+            or any(character not in "0123456789abcdef" for character in torrent_hash)
+        ):
+            return None
+        client_name = self._stopped_qbittorrent_client_name(category, download_client_id)
+        if client_name is None:
+            return None
+        history = self._paged("history")
+        queue = self._paged("queue")
+        if history is None or queue is None:
+            return None
+        download_id = torrent_hash.upper()
+
+        def matches_hash(value: object) -> bool:
+            return isinstance(value, str) and len(value) == 40 and all(character in "0123456789abcdefABCDEF" for character in value) and value.lower() == torrent_hash
+
+        matching_history = [
+            record for record in history
+            if record.get("eventType") == "grabbed" and matches_hash(record.get("downloadId"))
+        ]
+        observed_ids = [_public_id(record.get(self.release_entity_key)) for record in matching_history]
+        history_ids = [record.get("id") for record in matching_history]
+        if (
+            len(matching_history) != len(entity_ids)
+            or tuple(sorted(observed_ids, key=lambda item: -1 if item is None else int(item))) != entity_ids
+            or any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in history_ids)
+            or len(set(history_ids)) != len(history_ids)
+        ):
+            return None
+        # Queue is optional only for this explicit historical operation.  When
+        # it still exists, all its entries must be the same complete evidence.
+        matching_queue = [record for record in queue if matches_hash(record.get("downloadId"))]
+        if not matching_queue:
+            return ArrHistoricalExternalGrab(entity_ids, download_id, torrent_hash, tuple(history_ids), None)
+        queue_ids = [_public_id(record.get(self.release_entity_key)) for record in matching_queue]
+        sizes = [record.get("size") for record in matching_queue]
+        if (
+            len(matching_queue) != len(entity_ids)
+            or tuple(sorted(queue_ids, key=lambda item: -1 if item is None else int(item))) != entity_ids
+            or any(record.get("downloadClient") != client_name or record.get("protocol") != "torrent" for record in matching_queue)
+            or any(isinstance(size, bool) or not isinstance(size, int) or size <= 0 for size in sizes)
+            or len(set(sizes)) != 1
+        ):
+            return None
+        return ArrHistoricalExternalGrab(entity_ids, download_id, torrent_hash, tuple(history_ids), sizes[0])
 
     def stopped_qbittorrent_client(self, category: str, download_client_id: int) -> bool:
         """Require the configured enabled Arr qBittorrent client to add stopped.

@@ -1,7 +1,9 @@
 # Current state
 
-MediaInterlock 0.1.6 is the immutable public downstream-consumption release.
-Its annotated tag
+MediaInterlock 0.1.7 is the next local release candidate. It has not been
+tagged, pushed, or published; its wheel and the three local OCI archives must
+bind the same source revision and version in the canonical artifact manifest.
+Version 0.1.6 remains the immutable public downstream-consumption release. Its annotated tag
 [`v0.1.6`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.6)
 resolves to its immutable source commit. The release publishes one wheel and
 three public OCI manifests, each executing Python 3.14.7. Its post-PNR Fence

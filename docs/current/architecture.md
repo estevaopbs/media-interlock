@@ -73,6 +73,18 @@ read-back. It does not resume the torrent. Querying the same operation with
 restart; conflicting replay, ambiguous Arr identity, qBittorrent drift, and
 pre-existing owner tags fail closed.
 
+`post_pnr_historical_adoption` is an additive, separately named version-1
+operation; it does not change `post_pnr_adoption`'s singleton Queue-required
+semantics. It names a nonempty, numeric-order canonical set of Arr entity IDs:
+one Radarr or Sonarr entity, or a Sonarr episode pack. Fence re-reads every
+bounded public History page and requires the complete `grabbed` entity set for
+the exact canonical hash. Queue absence is permitted only here. If Queue
+records remain, their complete entity set, configured client, torrent protocol,
+hash, and one exact size must agree. With Queue absent, the exact stopped,
+unowned qBittorrent observation supplies the durable expected size. Under the
+shared mutation lease Fence re-observes that exact profile identity, writes one
+intent and one tag, and returns one receipt binding the complete entity set.
+
 ## Repository boundary
 
 The intended package layout is:

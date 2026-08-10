@@ -24,6 +24,11 @@ under observed, durable capacity and concurrency constraints.
   History/Queue grab, persists its intent, then claims only one stopped,
   unowned hash with one Fence tag and durable read-back. It returns an exact
   terminal receipt without resuming that pre-existing torrent.
+- Accept separately authorized `post_pnr_historical_adoption` only through the
+  local version-1 socket. Its complete canonical entity set is one reservation
+  and one hash tag; it permits an absent Queue only after exact complete public
+  History evidence, while a present Queue must agree in full. It never broadens
+  observer-first polling or acquires musical or foreign transfers.
 - Observe qBittorrent transfer and seeding state through its adapter without
   treating cached or incomplete responses as authority.
 - Maintain reservations after transfer completion, emit a terminal acquisition
@@ -64,6 +69,10 @@ operation to source, client, Arr entity, hash, category, save path, and Fence
 reservation ID. This public receipt can contain the exact requested identity;
 Fence status and metrics remain aggregate-only and never expose paths, hashes,
 or operation IDs.
+
+`post_pnr_historical_adoption_query(operation_id)` returns the corresponding
+historical receipt only after durable tag read-back. Its receipt carries the
+complete canonical entity set; no status, metric, or log projection does.
 
 Fence readiness requires every configured Arr download client to add work
 stopped with its exact category. qBittorrent's global start-paused preference

@@ -83,6 +83,15 @@ terminal `post_pnr_adoption_receipt`; it must not inspect Fence SQLite state.
 The receipt confirms only the stopped tagged claim and does not authorize a
 resume or any downstream lifecycle action.
 
+`post_pnr_historical_adoption` is the distinct recovery-safe authority for an
+already-imported historical hash. It accepts one canonical `entity_ids` set:
+one Radarr/Sonarr entity or a Sonarr pack. The caller uses
+`post_pnr_historical_adoption_query(operation_id)` after a lost response.
+Fence requires complete exact History evidence and permits Queue absence only
+for this named operation; a present Queue must agree in full. The terminal
+`post_pnr_historical_adoption_receipt` binds source, configured client, all
+canonical entity IDs, hash, category, save path, reservation, and `adopted`.
+
 Each Publisher source profile also declares a bounded bundle settle interval,
 accepted sidecar extensions, and optional required language aliases and
 container evidence. These narrow eligibility only: Publisher always performs

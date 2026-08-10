@@ -78,6 +78,21 @@ class PostPnrAdoptionIntent:
     history_id: int
 
 
+@dataclass(frozen=True)
+class PostPnrHistoricalAdoptionIntent:
+    """Deployment-authorized claim of one pre-watermark Arr hash and entity set."""
+
+    operation_id: str
+    source: str
+    download_client_id: int
+    entity_ids: tuple[str, ...]
+    torrent_hash: str
+    category: str
+    save_path: str
+    expected_bytes: int
+    history_ids: tuple[int, ...]
+
+
 @dataclass
 class Reservation:
     operation_id: str
@@ -144,6 +159,7 @@ class FenceState:
         self._watermarks: dict[str, int] = {}
         self._quiescing = False
         self._post_pnr_adoptions: dict[str, PostPnrAdoptionIntent] = {}
+        self._post_pnr_historical_adoptions: dict[str, PostPnrHistoricalAdoptionIntent] = {}
 
     @property
     def reserved_bytes(self) -> int:
@@ -179,6 +195,12 @@ class FenceState:
 
     def post_pnr_adoption(self, operation_id: str) -> PostPnrAdoptionIntent | None:
         return self._post_pnr_adoptions.get(operation_id)
+
+    def post_pnr_historical_adoption(self, operation_id: str) -> PostPnrHistoricalAdoptionIntent | None:
+        return self._post_pnr_historical_adoptions.get(operation_id)
+
+    def is_post_pnr_adoption(self, operation_id: str) -> bool:
+        return operation_id in self._post_pnr_adoptions or operation_id in self._post_pnr_historical_adoptions
 
     def record_watermark(self, source: str, watermark: int) -> None:
         if not isinstance(source, str) or not source or isinstance(watermark, bool) or not isinstance(watermark, int) or watermark < 0:
@@ -267,7 +289,7 @@ class FenceState:
             immutable = (existing.source, existing.download_client_id, existing.entity_id, existing.torrent_hash, existing.category, existing.save_path)
             requested = (intent.source, intent.download_client_id, intent.entity_id, intent.torrent_hash, intent.category, intent.save_path)
             return AdmissionDecision(immutable == requested, "idempotent" if immutable == requested else "conflict")
-        if intent.operation_id in self._reservations:
+        if intent.operation_id in self._reservations or any(item.torrent_hash == intent.torrent_hash for item in self._reservations.values()):
             return AdmissionDecision(False, "conflict")
         if not qbittorrent_ready:
             return AdmissionDecision(False, "qbittorrent_unready")
@@ -279,6 +301,49 @@ class FenceState:
         fingerprint = hashlib.sha256((intent.source + "\x00" + intent.entity_id + "\x00" + intent.torrent_hash + "\x00" + str(intent.history_id)).encode("ascii")).hexdigest()
         self._reservations[intent.operation_id] = Reservation(intent.operation_id, f"fence:{intent.operation_id}", intent.source, intent.entity_id, intent.entity_id, intent.expected_bytes, intent.expected_bytes, ReservationState.GRAB_BOUND, torrent_hash=intent.torrent_hash, download_id=intent.torrent_hash, selector_fingerprint=fingerprint, watermark="post-pnr")
         self._post_pnr_adoptions[intent.operation_id] = intent
+        return AdmissionDecision(True, "admitted")
+
+    def adopt_post_pnr_historical(self, intent: PostPnrHistoricalAdoptionIntent, *, qbittorrent_ready: bool) -> AdmissionDecision:
+        """Persist one exact historical entity set before tagging its stopped hash."""
+        valid_ids = (
+            isinstance(intent.entity_ids, tuple) and 1 <= len(intent.entity_ids) <= 128
+            and all(isinstance(item, str) and item.isdecimal() and str(int(item)) == item for item in intent.entity_ids)
+            and intent.entity_ids == tuple(sorted(intent.entity_ids, key=int)) and len(set(intent.entity_ids)) == len(intent.entity_ids)
+            and (intent.source != "radarr" or len(intent.entity_ids) == 1)
+        )
+        valid_history = (
+            isinstance(intent.history_ids, tuple) and len(intent.history_ids) == len(intent.entity_ids)
+            and all(isinstance(item, int) and not isinstance(item, bool) and item > 0 for item in intent.history_ids)
+            and len(set(intent.history_ids)) == len(intent.history_ids)
+        )
+        valid = (
+            isinstance(intent.operation_id, str) and intent.operation_id
+            and intent.source in {"radarr", "sonarr"}
+            and isinstance(intent.download_client_id, int) and not isinstance(intent.download_client_id, bool) and intent.download_client_id > 0
+            and valid_ids and valid_history and _torrent_hash(intent.torrent_hash)
+            and isinstance(intent.category, str) and bool(intent.category)
+            and isinstance(intent.save_path, str) and intent.save_path.startswith("/") and "\x00" not in intent.save_path and all(part not in {"", ".", ".."} for part in intent.save_path.split("/")[1:])
+            and isinstance(intent.expected_bytes, int) and not isinstance(intent.expected_bytes, bool) and intent.expected_bytes > 0
+        )
+        if not valid or self._quiescing:
+            return AdmissionDecision(False, "invalid_historical_post_pnr_adoption" if not valid else "quiescing")
+        existing = self._post_pnr_historical_adoptions.get(intent.operation_id)
+        if existing is not None:
+            immutable = (existing.source, existing.download_client_id, existing.entity_ids, existing.torrent_hash, existing.category, existing.save_path)
+            requested = (intent.source, intent.download_client_id, intent.entity_ids, intent.torrent_hash, intent.category, intent.save_path)
+            return AdmissionDecision(immutable == requested, "idempotent" if immutable == requested else "conflict")
+        if intent.operation_id in self._reservations or any(item.torrent_hash == intent.torrent_hash for item in self._reservations.values()):
+            return AdmissionDecision(False, "conflict")
+        if not qbittorrent_ready:
+            return AdmissionDecision(False, "qbittorrent_unready")
+        active = [item for item in self._reservations.values() if item.state is not ReservationState.RELEASED]
+        if len(active) >= self._policy.max_inflight:
+            return AdmissionDecision(False, "concurrency_exhausted")
+        if self.reserved_bytes + intent.expected_bytes > self._policy.capacity_bytes:
+            return AdmissionDecision(False, "capacity_exhausted")
+        fingerprint = hashlib.sha256((intent.source + "\x00" + ",".join(intent.entity_ids) + "\x00" + intent.torrent_hash + "\x00" + ",".join(str(item) for item in intent.history_ids)).encode("ascii")).hexdigest()
+        self._reservations[intent.operation_id] = Reservation(intent.operation_id, f"fence:{intent.operation_id}", intent.source, intent.entity_ids[0], intent.entity_ids[0], intent.expected_bytes, intent.expected_bytes, ReservationState.GRAB_BOUND, torrent_hash=intent.torrent_hash, download_id=intent.torrent_hash.upper(), selector_fingerprint=fingerprint, watermark="post-pnr-historical")
+        self._post_pnr_historical_adoptions[intent.operation_id] = intent
         return AdmissionDecision(True, "admitted")
 
     def bind_observed_grab(self, operation_id: str, *, download_id: str, torrent_hash: str) -> None:
@@ -449,6 +514,7 @@ class FenceState:
         result._watermarks = dict(self._watermarks)
         result._quiescing = self._quiescing
         result._post_pnr_adoptions = dict(self._post_pnr_adoptions)
+        result._post_pnr_historical_adoptions = dict(self._post_pnr_historical_adoptions)
         return result
 
     def replace_with(self, other: "FenceState") -> None:
@@ -456,6 +522,7 @@ class FenceState:
         self._watermarks = other._watermarks
         self._quiescing = other._quiescing
         self._post_pnr_adoptions = other._post_pnr_adoptions
+        self._post_pnr_historical_adoptions = other._post_pnr_historical_adoptions
 
     def watermarks(self) -> dict[str, int]:
         return dict(self._watermarks)
@@ -473,8 +540,21 @@ class FenceState:
             "history_id": item.history_id,
         } for item in self._post_pnr_adoptions.values())
 
+    def post_pnr_historical_records(self) -> tuple[dict[str, object], ...]:
+        return tuple({
+            "operation_id": item.operation_id,
+            "source": item.source,
+            "download_client_id": item.download_client_id,
+            "entity_ids": list(item.entity_ids),
+            "torrent_hash": item.torrent_hash,
+            "category": item.category,
+            "save_path": item.save_path,
+            "expected_bytes": item.expected_bytes,
+            "history_ids": list(item.history_ids),
+        } for item in self._post_pnr_historical_adoptions.values())
+
     @classmethod
-    def from_snapshot(cls, policy: FencePolicy, records: Iterable[Mapping[str, object]], watermarks: Mapping[str, object], *, quiescing: bool = False, post_pnr_adoptions: Iterable[Mapping[str, object]] = ()) -> "FenceState":
+    def from_snapshot(cls, policy: FencePolicy, records: Iterable[Mapping[str, object]], watermarks: Mapping[str, object], *, quiescing: bool = False, post_pnr_adoptions: Iterable[Mapping[str, object]] = (), post_pnr_historical_adoptions: Iterable[Mapping[str, object]] = ()) -> "FenceState":
         result = cls.from_records(policy, records)
         for source, watermark in watermarks.items():
             result.record_watermark(source, watermark)  # type: ignore[arg-type]
@@ -500,4 +580,28 @@ class FenceState:
             if intent.operation_id in result._post_pnr_adoptions or reservation is None or reservation.source != intent.source or reservation.media_id != intent.entity_id or reservation.torrent_hash != intent.torrent_hash or reservation.requested_bytes != intent.expected_bytes or reservation.state not in {ReservationState.GRAB_BOUND, ReservationState.TAG_INTENT_RECORDED, ReservationState.QBITTORRENT_STOPPED}:
                 raise ContractError("durable post-PNR adoption is invalid")
             result._post_pnr_adoptions[intent.operation_id] = intent
+        historical_expected = {"operation_id", "source", "download_client_id", "entity_ids", "torrent_hash", "category", "save_path", "expected_bytes", "history_ids"}
+        for record in post_pnr_historical_adoptions:
+            if set(record) != historical_expected:
+                raise ContractError("durable historical post-PNR adoption is invalid")
+            entity_ids, history_ids = record.get("entity_ids"), record.get("history_ids")
+            if not isinstance(entity_ids, list) or not isinstance(history_ids, list):
+                raise ContractError("durable historical post-PNR adoption is invalid")
+            try:
+                intent = PostPnrHistoricalAdoptionIntent(
+                    operation_id=record["operation_id"], source=record["source"], download_client_id=record["download_client_id"],
+                    entity_ids=tuple(entity_ids), torrent_hash=record["torrent_hash"], category=record["category"],
+                    save_path=record["save_path"], expected_bytes=record["expected_bytes"], history_ids=tuple(history_ids),
+                )
+            except TypeError as exc:
+                raise ContractError("durable historical post-PNR adoption is invalid") from exc
+            probe = cls(policy)
+            if not probe.adopt_post_pnr_historical(intent, qbittorrent_ready=True).admitted:
+                raise ContractError("durable historical post-PNR adoption is invalid")
+            reservation = result._reservations.get(intent.operation_id)
+            if intent.operation_id in result._post_pnr_historical_adoptions or reservation is None or reservation.source != intent.source or reservation.media_id != intent.entity_ids[0] or reservation.torrent_hash != intent.torrent_hash or reservation.requested_bytes != intent.expected_bytes or reservation.state not in {ReservationState.GRAB_BOUND, ReservationState.TAG_INTENT_RECORDED, ReservationState.QBITTORRENT_STOPPED}:
+                raise ContractError("durable historical post-PNR adoption is invalid")
+            if any(item.torrent_hash == intent.torrent_hash for operation_id, item in result._reservations.items() if operation_id != intent.operation_id):
+                raise ContractError("durable historical post-PNR adoption is invalid")
+            result._post_pnr_historical_adoptions[intent.operation_id] = intent
         return result

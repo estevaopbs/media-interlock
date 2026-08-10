@@ -43,6 +43,10 @@ stopped/unowned read-before-write and tag read-back under the shared lease,
 lost-response replay, restart recovery, conflicting replay, and unchanged
 foreign music ownership. Fence metrics are checked for absence of paths,
 hashes, and operation IDs.
+Historical post-PNR gates additionally prove Queue-absent Radarr singletons and
+Sonarr packs, exact complete History sets, Queue agreement when present,
+qBittorrent-derived size when absent, conflicting hash claims, and recovery at
+intent, tag, persistence, read-back, restart, and lost-response boundaries.
 Deployment tests also reject overlapping roots, competing canonical writers,
 auto-resuming downloads, and a competing qBittorrent resume credential.
 

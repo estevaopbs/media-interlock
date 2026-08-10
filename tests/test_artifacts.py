@@ -45,7 +45,7 @@ class ArtifactDefinitionTests(unittest.TestCase):
     def test_corrective_release_version_is_consistent(self) -> None:
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-        self.assertEqual("0.1.6", __version__)
+        self.assertEqual("0.1.7", __version__)
         self.assertEqual(__version__, project["project"]["version"])
 
     def test_packaged_readme_declares_the_current_immutable_release(self) -> None:
@@ -53,13 +53,12 @@ class ArtifactDefinitionTests(unittest.TestCase):
         readme = (ROOT / project["project"]["readme"]).read_text(encoding="utf-8")
         state = (ROOT / "docs" / "current" / "state.md").read_text(encoding="utf-8")
 
-        self.assertIn("MediaInterlock 0.1.6 is the current immutable public", readme)
+        self.assertIn("MediaInterlock 0.1.7 is the next local release candidate", readme)
         self.assertIn("Release 0.1.5 remains preserved as its immutable predecessor.", readme)
-        self.assertIn("MediaInterlock 0.1.6 is the immutable public downstream-consumption release.", state)
+        self.assertIn("MediaInterlock 0.1.7 is the next local release candidate.", state)
         self.assertIn("Version 0.1.5 remains preserved", state)
         self.assertNotIn("local corrective candidate", readme.lower())
-        self.assertNotIn("unpublished", readme.lower())
-        self.assertNotIn("has not been tagged or published", readme.lower())
+        self.assertIn("not been tagged, pushed, or published", readme.lower())
 
     def test_artifact_builder_rejects_a_runtime_outside_the_python_profile(self) -> None:
         builder = _artifact_builder()

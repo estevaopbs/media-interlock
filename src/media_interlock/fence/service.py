@@ -11,9 +11,9 @@ from typing import Callable, Mapping, Protocol
 import uuid
 
 from ..adapters.arr import ArrExternalGrab
-from ..contracts import Envelope, post_pnr_adoption_receipt
+from ..contracts import Envelope, post_pnr_adoption_receipt, post_pnr_historical_adoption_receipt
 from .headroom import PhysicalHeadroom
-from .model import AdmissionDecision, ExternalAdoptionIntent, FenceState, PostPnrAdoptionIntent, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentObservation, ReservationState
+from .model import AdmissionDecision, ExternalAdoptionIntent, FenceState, PostPnrAdoptionIntent, PostPnrHistoricalAdoptionIntent, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentObservation, ReservationState
 
 
 class ReservationStore(Protocol):
@@ -50,6 +50,8 @@ class ArrExternalObserver(Protocol):
     def external_grabs_after(self, watermark: int, *, category: str, download_client_id: int): ...
 
     def sealed_external_grab(self, entity_id: str, torrent_hash: str, *, category: str, download_client_id: int): ...
+
+    def sealed_historical_external_grab(self, entity_ids: tuple[str, ...], torrent_hash: str, *, category: str, download_client_id: int): ...
 
 
 @dataclass(frozen=True)
@@ -211,6 +213,40 @@ class FenceService:
             self._persist(candidate)
         return self._claim_post_pnr(operation_id)
 
+    def post_pnr_historical_adopt(self, *, operation_id: str, source: str, download_client_id: int, entity_ids: tuple[str, ...], torrent_hash: str, category: str, save_path: str) -> AdmissionDecision:
+        """Claim a pre-watermark singleton or Sonarr pack by exact public evidence."""
+        profile = self._sources.get(source)
+        observer = self._observers.get(source)
+        if profile is None or observer is None or profile.download_client_id != download_client_id or profile.category != category or str(profile.qbittorrent_save_path) != save_path:
+            return AdmissionDecision(False, "identity_drift")
+        existing = self._state.post_pnr_historical_adoption(operation_id)
+        if existing is not None:
+            requested = (source, download_client_id, entity_ids, torrent_hash, category, save_path)
+            immutable = (existing.source, existing.download_client_id, existing.entity_ids, existing.torrent_hash, existing.category, existing.save_path)
+            if requested != immutable:
+                return AdmissionDecision(False, "conflict")
+            return self._claim_post_pnr(operation_id)
+        try:
+            qbittorrent_ready = self._qbittorrent.ready()
+            stopped = self._qbittorrent.observe_existing_stopped(torrent_hash, category, save_path=profile.qbittorrent_save_path)
+            grab = observer.sealed_historical_external_grab(entity_ids, torrent_hash, category=category, download_client_id=download_client_id)
+        except Exception:
+            return AdmissionDecision(False, "unavailable")
+        if stopped.kind != "observed" or stopped.observed_bytes is None or grab is None:
+            return AdmissionDecision(False, "identity_ambiguous")
+        if grab.entity_ids != entity_ids or grab.torrent_hash != torrent_hash or grab.queue_expected_bytes not in {None, stopped.observed_bytes}:
+            return AdmissionDecision(False, "identity_ambiguous")
+        intent = PostPnrHistoricalAdoptionIntent(operation_id, source, download_client_id, entity_ids, torrent_hash, category, save_path, stopped.observed_bytes, grab.history_ids)
+        candidate = self._state.clone()
+        decision = candidate.adopt_post_pnr_historical(intent, qbittorrent_ready=qbittorrent_ready)
+        if not decision.admitted:
+            return decision
+        if decision.reason == "admitted":
+            if not self._physical_ready(candidate):
+                return AdmissionDecision(False, "physical_headroom")
+            self._persist(candidate)
+        return self._claim_post_pnr(operation_id)
+
     def _claim_post_pnr(self, operation_id: str) -> AdmissionDecision:
         try:
             reservation = self._state.reservation(operation_id)
@@ -218,7 +254,7 @@ class FenceService:
             source = self._sources[reservation.source]
         except (KeyError, AttributeError):
             return AdmissionDecision(False, "unavailable")
-        if intent is None:
+        if intent is None and self._state.post_pnr_historical_adoption(operation_id) is None:
             return AdmissionDecision(False, "unavailable")
         if reservation.state is ReservationState.QBITTORRENT_STOPPED:
             return AdmissionDecision(True, "adopted")
@@ -232,11 +268,11 @@ class FenceService:
             self._persist(candidate)
             with self._hold_mutation_lease():
                 stopped = self._qbittorrent.observe_existing_stopped(reservation.torrent_hash, source.category, save_path=source.qbittorrent_save_path)
-                if stopped.kind != "observed":
+                if stopped.kind != "observed" or (self._state.post_pnr_historical_adoption(operation_id) is not None and stopped.observed_bytes != reservation.requested_bytes):
                     return AdmissionDecision(False, "pending")
                 tagged = self._qbittorrent.apply_reservation_tag(reservation.torrent_hash, reservation.reservation_id)
                 readback = self._qbittorrent.observe_tagged_stopped(reservation.torrent_hash, source.category, reservation.reservation_id, save_path=source.qbittorrent_save_path) if tagged else None
-                if readback is None or readback.kind != "observed" or readback.observed_bytes is None:
+                if readback is None or readback.kind != "observed" or readback.observed_bytes is None or (self._state.post_pnr_historical_adoption(operation_id) is not None and readback.observed_bytes != reservation.requested_bytes):
                     return AdmissionDecision(False, "pending")
                 candidate = self._state.clone()
                 candidate.mark_qbittorrent_tagged(operation_id, observed_bytes=readback.observed_bytes, remaining_download_bytes=readback.remaining_bytes)
@@ -249,11 +285,11 @@ class FenceService:
         try:
             reservation = self._state.reservation(operation_id)
             source = self._sources[reservation.source]
-            if self._state.post_pnr_adoption(operation_id) is None or reservation.state is not ReservationState.TAG_INTENT_RECORDED or reservation.torrent_hash is None:
+            if not self._state.is_post_pnr_adoption(operation_id) or reservation.state is not ReservationState.TAG_INTENT_RECORDED or reservation.torrent_hash is None:
                 return False
             with self._hold_mutation_lease():
                 observed = self._qbittorrent.observe_tagged_stopped(reservation.torrent_hash, source.category, reservation.reservation_id, save_path=source.qbittorrent_save_path)
-                if observed.kind != "observed" or observed.observed_bytes is None:
+                if observed.kind != "observed" or observed.observed_bytes is None or (self._state.post_pnr_historical_adoption(operation_id) is not None and observed.observed_bytes != reservation.requested_bytes):
                     return False
                 candidate = self._state.clone()
                 candidate.mark_qbittorrent_tagged(operation_id, observed_bytes=observed.observed_bytes, remaining_download_bytes=observed.remaining_bytes)
@@ -271,6 +307,16 @@ class FenceService:
         if intent is None or reservation.state is not ReservationState.QBITTORRENT_STOPPED:
             return None
         return post_pnr_adoption_receipt(operation_id, source=intent.source, download_client_id=intent.download_client_id, entity_id=intent.entity_id, torrent_hash=intent.torrent_hash, category=intent.category, save_path=intent.save_path, fence_reservation_id=reservation.reservation_id)
+
+    def post_pnr_historical_receipt(self, operation_id: str) -> Envelope | None:
+        try:
+            intent = self._state.post_pnr_historical_adoption(operation_id)
+            reservation = self._state.reservation(operation_id)
+        except KeyError:
+            return None
+        if intent is None or reservation.state is not ReservationState.QBITTORRENT_STOPPED:
+            return None
+        return post_pnr_historical_adoption_receipt(operation_id, source=intent.source, download_client_id=intent.download_client_id, entity_ids=intent.entity_ids, torrent_hash=intent.torrent_hash, category=intent.category, save_path=intent.save_path, fence_reservation_id=reservation.reservation_id)
 
     def quiesce(self, *, enabled: bool) -> bool:
         """Durably pause or reopen only hashes already owned by this ledger."""
@@ -441,14 +487,14 @@ class FenceService:
             state = record["state"]
             assert isinstance(operation_id, str) and isinstance(reservation_id, str)
             if state == ReservationState.GRAB_BOUND.value:
-                if self._state.post_pnr_adoption(operation_id) is not None:
+                if self._state.is_post_pnr_adoption(operation_id):
                     self._claim_post_pnr(operation_id)
                     continue
                 download_id = record["download_id"]
                 if isinstance(download_id, str) and isinstance(torrent_hash, str):
                     self.bind_grab(operation_id, download_id, torrent_hash)
             elif state == ReservationState.TAG_INTENT_RECORDED.value:
-                if self._state.post_pnr_adoption(operation_id) is not None:
+                if self._state.is_post_pnr_adoption(operation_id):
                     self._recover_post_pnr_tag(operation_id)
                     continue
                 reservation = self._state.reservation(operation_id)
@@ -471,7 +517,7 @@ class FenceService:
                     self._persist(candidate)
                     self._recover_resume(operation_id, reservation_id, torrent_hash, reservation.source)
             elif state == ReservationState.QBITTORRENT_STOPPED.value:
-                if self._state.post_pnr_adoption(operation_id) is not None:
+                if self._state.is_post_pnr_adoption(operation_id):
                     continue
                 if not self._ready_for_resume(self._state):
                     continue
