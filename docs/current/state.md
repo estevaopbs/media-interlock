@@ -1,18 +1,18 @@
 # Current state
 
-MediaInterlock 0.1.7 is the immutable public downstream-consumption release.
-The local 0.1.8 release candidate adds the separate durable
-`post_pnr_historical_activation` authority. It starts only a confirmed historical
-adoption, retains its Fence ownership and bytes, and marks it managed so it no
-longer occupies an admission concurrency slot. Its terminal receipt remains
-recoverable through explicit query across restart and quiescence.
+MediaInterlock 0.1.8 is the immutable public downstream-consumption release.
+It adds the separate durable `post_pnr_historical_activation` authority. It
+starts only a confirmed historical adoption, retains its Fence ownership and
+bytes, and marks it managed so it no longer occupies an admission concurrency
+slot. Its terminal receipt remains recoverable through explicit query across
+restart and quiescence.
 Its annotated tag
-[`v0.1.7`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.7)
+[`v0.1.8`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.8)
 resolves to its immutable source commit. The release publishes one wheel and
 three public OCI manifests, each executing Python 3.14.7. Its canonical
 artifact manifest binds all identities to one source revision and version.
-Version 0.1.6 remains preserved as the preceding immutable release. Its annotated tag
-[`v0.1.6`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.6)
+Version 0.1.7 remains preserved as the preceding immutable release. Its annotated tag
+[`v0.1.7`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.7)
 resolves to its immutable source commit. The release publishes one wheel and
 three public OCI manifests, each executing Python 3.14.7. Its post-PNR Fence
 adoption path accepts one deployment-authorized existing Arr eligibility and
