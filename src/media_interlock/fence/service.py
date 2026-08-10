@@ -331,6 +331,14 @@ class FenceService:
             return AdmissionDecision(False, "quiescing" if self._state.quiescing else "unavailable")
         if self._state.historical_activation_managed(operation_id):
             return AdmissionDecision(True, "managed")
+        if self._state.historical_activation_state(operation_id) is None:
+            try:
+                with self._hold_mutation_lease():
+                    stopped = self._qbittorrent.observe_tagged_stopped(reservation.torrent_hash, profile.category, reservation.reservation_id, save_path=profile.qbittorrent_save_path)
+            except Exception:
+                return AdmissionDecision(False, "unavailable")
+            if stopped.kind != "observed" or stopped.observed_bytes != intent.expected_bytes:
+                return AdmissionDecision(False, "identity_drift")
         candidate = self._state.clone()
         try:
             candidate.request_historical_activation(PostPnrHistoricalActivationIntent(operation_id))

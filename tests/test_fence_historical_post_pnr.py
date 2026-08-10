@@ -205,6 +205,18 @@ class HistoricalPostPnrIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1, self.posts.count("/api/v2/torrents/stop"))
             restored_store.close(); restored._test_lease.close()  # type: ignore[attr-defined]
 
+    async def test_activation_rejects_a_hash_already_active_before_its_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store, daemon = self._daemon(Path(directory))
+            operation_id = str(uuid.uuid4())
+            self.assertEqual("post_pnr_historical_adoption_receipt", daemon._dispatch(self._request(operation_id)).kind)
+            self.torrent["state"] = "downloading"; self.posts.clear()
+            result = daemon._dispatch(post_pnr_historical_activation(operation_id))
+            self.assertEqual(StatusCode.INHIBITED.value, result.body["code"])
+            self.assertEqual(ReservationState.QBITTORRENT_STOPPED, daemon._service._state.reservation(operation_id).state)
+            self.assertNotIn("/api/v2/torrents/start", self.posts)
+            store.close(); daemon._test_lease.close()  # type: ignore[attr-defined]
+
     async def test_restart_recovers_historical_intent_and_lost_tag_readback_without_repeating_effect(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root, socket_path, operation_id = Path(directory), Path(directory) / "fence.sock", str(uuid.uuid4())
