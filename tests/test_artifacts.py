@@ -54,7 +54,7 @@ class ArtifactDefinitionTests(unittest.TestCase):
         state = (ROOT / "docs" / "current" / "state.md").read_text(encoding="utf-8")
 
         self.assertIn("MediaInterlock 0.1.7 is the current immutable public", readme)
-        self.assertIn("Release 0.1.5 remains preserved as its immutable predecessor.", readme)
+        self.assertIn("Version 0.1.6 remains preserved as its immutable predecessor.", readme)
         self.assertIn("MediaInterlock 0.1.7 is the immutable public downstream-consumption release.", state)
         self.assertIn("Version 0.1.5 remains preserved", state)
         self.assertNotIn("local corrective candidate", readme.lower())
