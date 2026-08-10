@@ -1,28 +1,21 @@
 # Current state
 
-MediaInterlock 0.1.5 is the immutable public downstream-consumption release.
+MediaInterlock 0.1.6 is the immutable public downstream-consumption release.
 Its annotated tag
+[`v0.1.6`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.6)
+resolves to its immutable source commit. The release publishes one wheel and
+three public OCI manifests, each executing Python 3.14.7. Its post-PNR Fence
+adoption path accepts one deployment-authorized existing Arr eligibility and
+returns an exact durable receipt only after the stopped, unowned qBittorrent
+hash has been tagged and read back under the shared mutation lease. The path is
+separate from observer-first polling and never resumes that torrent. The public
+GitHub release is immutable and the wheel and manifest identities are verified
+again without credentials after publication.
+
+Version 0.1.5 remains preserved at tag
 [`v0.1.5`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.5)
-resolves to source commit `a4fc1afa086e628a2c8b283281bd22560bda79f8`.
-The release publishes wheel SHA-256
-`d584ad5cb5ca2072796a6604c78ee5da6d343ea51749469e4ed991cfd1a951e2`
-and these public OCI manifest digests, each executing Python 3.14.7:
-
-- Reconciler: `sha256:6ce430f86eae6a2577de41be6d7de3555eb8b481e1e7eacb7efbeead174414eb`;
-- Fence: `sha256:42117a1d6083fe026ea1c79219459c80a9da79657d78a6657f04e6f88564e14f`;
-- Publisher: `sha256:c3b11870f6e3f63bcedcd98a22c602bc733459f50c20bd8186883e53615177e4`.
-
-The public GitHub API reports the release immutable, and credential-free
-downloads, manifest inspection, and runtime probes reproduce those identities.
-Version 0.1.5 preserves the 0.1.4 functional contract and corrects the release
-status incorporated into README and wheel metadata.
-
-The next unpublished candidate extends the version-1 Fence socket with a
-post-PNR adoption path for one deployment-authorized, pre-existing Arr
-eligibility. Its exact terminal receipt is recoverable by operation ID after a
-lost response or restart and binds source, Arr client/entity, hash, category,
-save path, and Fence reservation. It is not observer-first polling and never
-resumes the claimed torrent. The candidate remains untagged and unpublished.
+as the preceding immutable release. It preserves the 0.1.4 functional contract
+and corrects the release status incorporated into README and wheel metadata.
 
 Version 0.1.3 added a version-1 Publisher Unix
 operation query with durable accepted, pending, catalog-confirmed, conflict,

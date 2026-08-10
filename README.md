@@ -18,15 +18,18 @@ active only when configured.
 
 ## Project status
 
-MediaInterlock 0.1.5 is the current immutable public
-[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.5).
-Release 0.1.4 remains preserved as its immutable predecessor.
+MediaInterlock 0.1.6 is the current immutable public
+[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.6).
+Release 0.1.5 remains preserved as its immutable predecessor.
 Release 0.1.1 remains preserved but its OCI images use Python 3.14.6 rather than
 the fixed 3.14.7 compatibility profile. Version 0.1.3 added per-operation
 Publisher status and exact terminal receipts; 0.1.4 translates a shared
 Arr-visible import prefix into each source's distinct Publisher staging root.
 Version 0.1.5 preserves that functional contract and corrects the release
-status incorporated into the public README and wheel metadata.
+status incorporated into the public README and wheel metadata. Version 0.1.6
+adds explicit post-PNR Fence adoption: one deployment-authorized existing Arr
+eligibility is durably tagged, remains stopped, and has a recoverable exact
+receipt without exposing Fence's private store.
 The released artifacts have been
 exercised only with disposable upstream services, durable local state, Unix
 sockets, one wheel, and OCI images for all three components. Nothing in this
