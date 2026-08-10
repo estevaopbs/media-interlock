@@ -191,6 +191,20 @@ class HistoricalPostPnrIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("/api/v2/torrents/start", self.posts)
             restored_store.close(); restored._test_lease.close()  # type: ignore[attr-defined]
 
+    async def test_restart_recovers_quiescent_pause_for_managed_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, operation_id = Path(directory), str(uuid.uuid4())
+            store, daemon = self._daemon(root)
+            self.assertEqual("post_pnr_historical_adoption_receipt", daemon._dispatch(self._request(operation_id)).kind)
+            self.assertTrue(daemon._service.post_pnr_historical_activate(operation_id).admitted)
+            candidate = daemon._service._state.clone(); candidate.begin_quiescence(); store.save(candidate)
+            self.posts.clear(); store.close(); daemon._test_lease.close()  # type: ignore[attr-defined]
+            restored_store, restored = self._daemon(root)
+            restored.recover()
+            self.assertEqual(ReservationState.QBITTORRENT_PAUSED, restored._service._state.reservation(operation_id).state)
+            self.assertEqual(1, self.posts.count("/api/v2/torrents/stop"))
+            restored_store.close(); restored._test_lease.close()  # type: ignore[attr-defined]
+
     async def test_restart_recovers_historical_intent_and_lost_tag_readback_without_repeating_effect(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root, socket_path, operation_id = Path(directory), Path(directory) / "fence.sock", str(uuid.uuid4())

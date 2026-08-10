@@ -542,7 +542,15 @@ class FenceService:
             torrent_hash = record["torrent_hash"]
             state = record["state"]
             assert isinstance(operation_id, str) and isinstance(reservation_id, str)
-            if state == ReservationState.ACTIVATION_INTENT_RECORDED.value:
+            if self._state.quiescing and state in {ReservationState.QBITTORRENT_ACTIVE.value, ReservationState.QBITTORRENT_MANAGED.value}:
+                candidate = self._state.clone()
+                try:
+                    candidate.request_pause(operation_id)
+                except Exception:
+                    continue
+                self._persist(candidate)
+                self._recover_pause(operation_id)
+            elif state == ReservationState.ACTIVATION_INTENT_RECORDED.value:
                 self._recover_historical_activation(operation_id)
             elif state == ReservationState.GRAB_BOUND.value:
                 if self._state.is_post_pnr_adoption(operation_id):

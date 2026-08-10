@@ -13,7 +13,7 @@ class FenceObservability:
         self._lease_probe = lease_probe
 
     def status(self, *, qbittorrent_ready: bool, prowlarr_ready: bool, publisher_ready: bool) -> dict[str, object]:
-        unresolved = any(record["state"] in {ReservationState.TAG_INTENT_RECORDED.value, ReservationState.RESUME_INTENT_RECORDED.value} for record in self._state.records())
+        unresolved = any(record["state"] in {ReservationState.TAG_INTENT_RECORDED.value, ReservationState.ACTIVATION_INTENT_RECORDED.value, ReservationState.RESUME_INTENT_RECORDED.value} for record in self._state.records())
         quiescence_unresolved = sum(record["state"] == ReservationState.PAUSE_INTENT_RECORDED.value for record in self._state.records())
         status = "ready" if qbittorrent_ready and prowlarr_ready and publisher_ready and self._state.within_capacity and not unresolved and not self._state.quiescing else "inhibited"
         return {"version": "v1", "status": status, "reserved_bytes": self._state.reserved_bytes, "inflight": self._inflight(), "quiescing": self._state.quiescing, "quiescence_unresolved": quiescence_unresolved}
