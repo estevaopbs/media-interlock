@@ -23,11 +23,14 @@ class FenceDaemon:
             response = self._dispatch(envelope)
             writer.write(response.encode())
             await writer.drain()
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ContractError):
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError, ContractError):
             pass
         finally:
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except ConnectionError:
+                pass
 
     def _dispatch(self, envelope: Envelope) -> Envelope:
         if envelope.kind == "acquisition_pre_admission":
@@ -39,6 +42,21 @@ class FenceDaemon:
         if envelope.kind == "acquisition_grab_binding":
             bound = self._service.bind_grab(envelope.operation_id, str(envelope.body["download_id"]), str(envelope.body["torrent_hash"]))
             return status_response(envelope.operation_id, StatusCode.OK if bound else StatusCode.INHIBITED, "grab bound" if bound else "grab pending")
+        if envelope.kind == "post_pnr_adoption":
+            body = envelope.body
+            decision = self._service.post_pnr_adopt(
+                operation_id=envelope.operation_id, source=str(body["source"]), download_client_id=int(body["download_client_id"]),
+                entity_id=str(body["entity_id"]), torrent_hash=str(body["torrent_hash"]), category=str(body["category"]), save_path=str(body["save_path"]),
+            )
+            if not decision.admitted:
+                return status_response(envelope.operation_id, StatusCode.CONFLICT if decision.reason in {"conflict", "identity_drift", "identity_ambiguous"} else StatusCode.INHIBITED, decision.reason)
+            receipt = self._service.post_pnr_receipt(envelope.operation_id)
+            if receipt is not None:
+                return receipt
+            return status_response(envelope.operation_id, StatusCode.INHIBITED, decision.reason)
+        if envelope.kind == "post_pnr_adoption_query":
+            receipt = self._service.post_pnr_receipt(envelope.operation_id)
+            return receipt if receipt is not None else status_response(envelope.operation_id, StatusCode.UNAVAILABLE, "post-PNR adoption unavailable")
         if envelope.kind == "acquisition_freeze":
             frozen = self._service.freeze(envelope.operation_id)
             return status_response(envelope.operation_id, StatusCode.OK if frozen else StatusCode.INHIBITED, "acquisition frozen" if frozen else "acquisition freeze pending")

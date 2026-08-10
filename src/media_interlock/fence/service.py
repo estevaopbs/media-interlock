@@ -11,9 +11,9 @@ from typing import Callable, Mapping, Protocol
 import uuid
 
 from ..adapters.arr import ArrExternalGrab
-from ..contracts import Envelope
+from ..contracts import Envelope, post_pnr_adoption_receipt
 from .headroom import PhysicalHeadroom
-from .model import AdmissionDecision, ExternalAdoptionIntent, FenceState, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentObservation, ReservationState
+from .model import AdmissionDecision, ExternalAdoptionIntent, FenceState, PostPnrAdoptionIntent, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentObservation, ReservationState
 
 
 class ReservationStore(Protocol):
@@ -48,6 +48,8 @@ class MutationLease(Protocol):
 
 class ArrExternalObserver(Protocol):
     def external_grabs_after(self, watermark: int, *, category: str, download_client_id: int): ...
+
+    def sealed_external_grab(self, entity_id: str, torrent_hash: str, *, category: str, download_client_id: int): ...
 
 
 @dataclass(frozen=True)
@@ -177,6 +179,98 @@ class FenceService:
                 return False
             self._persist(candidate)
         return True
+
+    def post_pnr_adopt(self, *, operation_id: str, source: str, download_client_id: int, entity_id: str, torrent_hash: str, category: str, save_path: str) -> AdmissionDecision:
+        """Claim exactly one pre-existing Arr eligibility; this call is the post-PNR authority boundary."""
+        profile = self._sources.get(source)
+        observer = self._observers.get(source)
+        if profile is None or observer is None or profile.download_client_id != download_client_id or profile.category != category or str(profile.qbittorrent_save_path) != save_path:
+            return AdmissionDecision(False, "identity_drift")
+        existing = self._state.post_pnr_adoption(operation_id)
+        if existing is not None:
+            requested = (source, download_client_id, entity_id, torrent_hash, category, save_path)
+            immutable = (existing.source, existing.download_client_id, existing.entity_id, existing.torrent_hash, existing.category, existing.save_path)
+            if requested != immutable:
+                return AdmissionDecision(False, "conflict")
+            return self._claim_post_pnr(operation_id)
+        try:
+            grab = observer.sealed_external_grab(entity_id, torrent_hash, category=category, download_client_id=download_client_id)
+            qbittorrent_ready = self._qbittorrent.ready()
+        except Exception:
+            return AdmissionDecision(False, "unavailable")
+        if grab is None or grab.entity_id != entity_id or grab.torrent_hash != torrent_hash:
+            return AdmissionDecision(False, "identity_ambiguous")
+        intent = PostPnrAdoptionIntent(operation_id, source, download_client_id, entity_id, torrent_hash, category, save_path, grab.expected_bytes, grab.history_id)
+        candidate = self._state.clone()
+        decision = candidate.adopt_post_pnr(intent, qbittorrent_ready=qbittorrent_ready)
+        if not decision.admitted:
+            return decision
+        if decision.reason == "admitted":
+            if not self._physical_ready(candidate):
+                return AdmissionDecision(False, "physical_headroom")
+            self._persist(candidate)
+        return self._claim_post_pnr(operation_id)
+
+    def _claim_post_pnr(self, operation_id: str) -> AdmissionDecision:
+        try:
+            reservation = self._state.reservation(operation_id)
+            intent = self._state.post_pnr_adoption(operation_id)
+            source = self._sources[reservation.source]
+        except (KeyError, AttributeError):
+            return AdmissionDecision(False, "unavailable")
+        if intent is None:
+            return AdmissionDecision(False, "unavailable")
+        if reservation.state is ReservationState.QBITTORRENT_STOPPED:
+            return AdmissionDecision(True, "adopted")
+        if reservation.state is ReservationState.TAG_INTENT_RECORDED:
+            return AdmissionDecision(self._recover_post_pnr_tag(operation_id), "adopted" if self._state.reservation(operation_id).state is ReservationState.QBITTORRENT_STOPPED else "pending")
+        if reservation.state is not ReservationState.GRAB_BOUND:
+            return AdmissionDecision(False, "conflict")
+        candidate = self._state.clone()
+        try:
+            candidate.request_tag(operation_id)
+            self._persist(candidate)
+            with self._hold_mutation_lease():
+                stopped = self._qbittorrent.observe_existing_stopped(reservation.torrent_hash, source.category, save_path=source.qbittorrent_save_path)
+                if stopped.kind != "observed":
+                    return AdmissionDecision(False, "pending")
+                tagged = self._qbittorrent.apply_reservation_tag(reservation.torrent_hash, reservation.reservation_id)
+                readback = self._qbittorrent.observe_tagged_stopped(reservation.torrent_hash, source.category, reservation.reservation_id, save_path=source.qbittorrent_save_path) if tagged else None
+                if readback is None or readback.kind != "observed" or readback.observed_bytes is None:
+                    return AdmissionDecision(False, "pending")
+                candidate = self._state.clone()
+                candidate.mark_qbittorrent_tagged(operation_id, observed_bytes=readback.observed_bytes, remaining_download_bytes=readback.remaining_bytes)
+                self._persist(candidate)
+        except Exception:
+            return AdmissionDecision(False, "pending")
+        return AdmissionDecision(True, "adopted")
+
+    def _recover_post_pnr_tag(self, operation_id: str) -> bool:
+        try:
+            reservation = self._state.reservation(operation_id)
+            source = self._sources[reservation.source]
+            if self._state.post_pnr_adoption(operation_id) is None or reservation.state is not ReservationState.TAG_INTENT_RECORDED or reservation.torrent_hash is None:
+                return False
+            with self._hold_mutation_lease():
+                observed = self._qbittorrent.observe_tagged_stopped(reservation.torrent_hash, source.category, reservation.reservation_id, save_path=source.qbittorrent_save_path)
+                if observed.kind != "observed" or observed.observed_bytes is None:
+                    return False
+                candidate = self._state.clone()
+                candidate.mark_qbittorrent_tagged(operation_id, observed_bytes=observed.observed_bytes, remaining_download_bytes=observed.remaining_bytes)
+                self._persist(candidate)
+        except Exception:
+            return False
+        return True
+
+    def post_pnr_receipt(self, operation_id: str) -> Envelope | None:
+        try:
+            intent = self._state.post_pnr_adoption(operation_id)
+            reservation = self._state.reservation(operation_id)
+        except KeyError:
+            return None
+        if intent is None or reservation.state is not ReservationState.QBITTORRENT_STOPPED:
+            return None
+        return post_pnr_adoption_receipt(operation_id, source=intent.source, download_client_id=intent.download_client_id, entity_id=intent.entity_id, torrent_hash=intent.torrent_hash, category=intent.category, save_path=intent.save_path, fence_reservation_id=reservation.reservation_id)
 
     def quiesce(self, *, enabled: bool) -> bool:
         """Durably pause or reopen only hashes already owned by this ledger."""
@@ -347,10 +441,16 @@ class FenceService:
             state = record["state"]
             assert isinstance(operation_id, str) and isinstance(reservation_id, str)
             if state == ReservationState.GRAB_BOUND.value:
+                if self._state.post_pnr_adoption(operation_id) is not None:
+                    self._claim_post_pnr(operation_id)
+                    continue
                 download_id = record["download_id"]
                 if isinstance(download_id, str) and isinstance(torrent_hash, str):
                     self.bind_grab(operation_id, download_id, torrent_hash)
             elif state == ReservationState.TAG_INTENT_RECORDED.value:
+                if self._state.post_pnr_adoption(operation_id) is not None:
+                    self._recover_post_pnr_tag(operation_id)
+                    continue
                 reservation = self._state.reservation(operation_id)
                 source = self._sources.get(reservation.source)
                 if source is None or not isinstance(torrent_hash, str):
@@ -371,6 +471,8 @@ class FenceService:
                     self._persist(candidate)
                     self._recover_resume(operation_id, reservation_id, torrent_hash, reservation.source)
             elif state == ReservationState.QBITTORRENT_STOPPED.value:
+                if self._state.post_pnr_adoption(operation_id) is not None:
+                    continue
                 if not self._ready_for_resume(self._state):
                     continue
                 candidate = self._state.clone()

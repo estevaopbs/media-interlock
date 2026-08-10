@@ -13,6 +13,9 @@ from media_interlock.contracts import (
     acquisition_grab_binding,
     acquisition_pre_admission,
     custody_receipt,
+    post_pnr_adoption,
+    post_pnr_adoption_query,
+    post_pnr_adoption_receipt,
     quiesce_request,
     publisher_assisted_complete,
     publisher_assisted_intent,
@@ -29,6 +32,36 @@ OPERATION_ID = str(uuid.UUID("12345678-1234-4678-9234-567812345678"))
 
 
 class ContractTests(unittest.TestCase):
+    def test_post_pnr_adoption_contract_binds_the_exact_sealed_identity(self) -> None:
+        request = post_pnr_adoption(
+            operation_id=OPERATION_ID,
+            source="radarr",
+            download_client_id=7,
+            entity_id="42",
+            torrent_hash="a" * 40,
+            category="media-interlock-radarr",
+            save_path="/downloads/movies",
+        )
+        receipt = post_pnr_adoption_receipt(
+            OPERATION_ID,
+            source="radarr",
+            download_client_id=7,
+            entity_id="42",
+            torrent_hash="a" * 40,
+            category="media-interlock-radarr",
+            save_path="/downloads/movies",
+            fence_reservation_id="fence:" + OPERATION_ID,
+        )
+
+        self.assertEqual(receipt.body, request.body | {"state": "adopted", "fence_reservation_id": "fence:" + OPERATION_ID})
+        self.assertEqual({}, post_pnr_adoption_query(OPERATION_ID).body)
+        self.assertEqual(receipt, Envelope.decode(receipt.encode()))
+        with self.assertRaises(ContractError):
+            post_pnr_adoption(
+                operation_id=OPERATION_ID, source="radarr", download_client_id=7, entity_id="42",
+                torrent_hash="a" * 40, category="media-interlock-radarr", save_path="relative",
+            )
+
     def test_publisher_operation_contract_separates_nonterminal_status_from_terminal_receipt(self) -> None:
         query = publisher_operation_query(OPERATION_ID)
         pending = publisher_operation_status(

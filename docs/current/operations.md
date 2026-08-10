@@ -70,6 +70,19 @@ the paths and observable upstream settings; deployment manifests, identities,
 mounts, ACLs, and credentials enforce the parts outside the process. Both are
 required, and negative probes belong to downstream acceptance.
 
+For a deployment eligibility that predates the Fence observation watermark,
+the post-PNR authority is a canonical `post_pnr_adoption` socket envelope.
+The caller must issue it only after its own PNR authorization; MediaInterlock
+does not model, store, or infer that deployment decision. It supplies the
+exact configured source, Arr download-client and entity IDs, lowercase torrent
+hash, category, and save path. Fence rejects a mismatch, zero/multiple Arr
+matches, a non-stopped or already-owned qBittorrent hash, any read-back drift,
+or a conflicting replay. A caller retries the identical envelope after a lost
+response and uses `post_pnr_adoption_query(operation_id)` to obtain the sole
+terminal `post_pnr_adoption_receipt`; it must not inspect Fence SQLite state.
+The receipt confirms only the stopped tagged claim and does not authorize a
+resume or any downstream lifecycle action.
+
 Each Publisher source profile also declares a bounded bundle settle interval,
 accepted sidecar extensions, and optional required language aliases and
 container evidence. These narrow eligibility only: Publisher always performs

@@ -31,12 +31,12 @@ class FenceStore:
             snapshot = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise ContractError("durable Fence state is not valid JSON") from exc
-        if not isinstance(snapshot, dict) or set(snapshot) != {"reservations", "watermarks", "quiescing"} or not isinstance(snapshot["reservations"], list) or not isinstance(snapshot["watermarks"], dict) or not isinstance(snapshot["quiescing"], bool):
+        if not isinstance(snapshot, dict) or set(snapshot) not in ({"reservations", "watermarks", "quiescing"}, {"reservations", "watermarks", "quiescing", "post_pnr_adoptions"}) or not isinstance(snapshot["reservations"], list) or not isinstance(snapshot["watermarks"], dict) or not isinstance(snapshot["quiescing"], bool) or ("post_pnr_adoptions" in snapshot and not isinstance(snapshot["post_pnr_adoptions"], list)):
             raise ContractError("durable Fence state is not a v2 snapshot")
-        return FenceState.from_snapshot(policy, snapshot["reservations"], snapshot["watermarks"], quiescing=snapshot["quiescing"])
+        return FenceState.from_snapshot(policy, snapshot["reservations"], snapshot["watermarks"], quiescing=snapshot["quiescing"], post_pnr_adoptions=snapshot.get("post_pnr_adoptions", []))
 
     def save(self, state: FenceState) -> None:
-        snapshot = {"reservations": state.records(), "watermarks": state.watermarks(), "quiescing": state.quiescing}
+        snapshot = {"reservations": state.records(), "watermarks": state.watermarks(), "quiescing": state.quiescing, "post_pnr_adoptions": state.post_pnr_records()}
         self._store.put(self._KEY, json.dumps(snapshot, sort_keys=True, separators=(",", ":"), allow_nan=False))
 
     def close(self) -> None:

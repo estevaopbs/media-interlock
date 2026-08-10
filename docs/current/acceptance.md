@@ -36,6 +36,13 @@ absence of paths, titles, hashes, and operation IDs.
 Conflict recovery also injects a durable-store write failure: re-query must
 expose the original accepted identity and manifest binding, never an unbound
 success that the conflicting caller could mistake for its own request.
+Fence post-PNR adoption gates use its real Unix daemon, durable SQLite store,
+production qBittorrent and Arr HTTP adapters, and a restart. They cover exact
+source/client/entity/hash/category/save-path binding, intent-before-tag,
+stopped/unowned read-before-write and tag read-back under the shared lease,
+lost-response replay, restart recovery, conflicting replay, and unchanged
+foreign music ownership. Fence metrics are checked for absence of paths,
+hashes, and operation IDs.
 Deployment tests also reject overlapping roots, competing canonical writers,
 auto-resuming downloads, and a competing qBittorrent resume credential.
 

@@ -60,6 +60,19 @@ qBittorrent save path and positive size before it tags or resumes it. Terminal
 observation contains the real Arr download ID and stable operation correlation
 identities, not an authoritative external path.
 
+After a deployment's post-PNR authorization, its local authority may submit one
+`post_pnr_adoption` envelope to Fence's version-1 Unix socket. This is a
+separate, explicit path; observer-first polling never synthesizes it. The
+envelope names the configured source, Arr client/entity, canonical torrent
+hash, category, and qBittorrent save path. Fence re-observes one exact public
+Arr History/Queue grab, then re-observes the stopped, unowned qBittorrent
+torrent under `shared-qbittorrent-mutation/v1`, persists intent before adding its one
+owner tag, and returns `post_pnr_adoption_receipt` only after durable tag
+read-back. It does not resume the torrent. Querying the same operation with
+`post_pnr_adoption_query` recovers that receipt after a lost response or
+restart; conflicting replay, ambiguous Arr identity, qBittorrent drift, and
+pre-existing owner tags fail closed.
+
 ## Repository boundary
 
 The intended package layout is:

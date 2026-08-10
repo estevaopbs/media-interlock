@@ -17,6 +17,13 @@ downloads, manifest inspection, and runtime probes reproduce those identities.
 Version 0.1.5 preserves the 0.1.4 functional contract and corrects the release
 status incorporated into README and wheel metadata.
 
+The next unpublished candidate extends the version-1 Fence socket with a
+post-PNR adoption path for one deployment-authorized, pre-existing Arr
+eligibility. Its exact terminal receipt is recoverable by operation ID after a
+lost response or restart and binds source, Arr client/entity, hash, category,
+save path, and Fence reservation. It is not observer-first polling and never
+resumes the claimed torrent. The candidate remains untagged and unpublished.
+
 Version 0.1.3 added a version-1 Publisher Unix
 operation query with durable accepted, pending, catalog-confirmed, conflict,
 unavailable, and terminal visible-confirmed results. Its exact terminal receipt

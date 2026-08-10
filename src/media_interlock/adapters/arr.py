@@ -309,6 +309,39 @@ class ArrHistoryAdapter:
             grabs.append(ArrExternalGrab(entity_id, download_id, torrent_hash, queue_matches[0]["size"], history_id))
         return ArrExternalObservation(max(record["id"] for record in later), tuple(grabs))
 
+    def sealed_external_grab(self, entity_id: str, torrent_hash: str, *, category: str, download_client_id: int) -> ArrExternalGrab | None:
+        """Re-observe one deployment-authorized existing Arr grab exactly once."""
+        public_id = _public_id(int(entity_id)) if isinstance(entity_id, str) and entity_id.isdecimal() else None
+        if public_id != entity_id or not isinstance(torrent_hash, str) or len(torrent_hash) != 40 or any(character not in "0123456789abcdef" for character in torrent_hash):
+            return None
+        client_name = self._stopped_qbittorrent_client_name(category, download_client_id)
+        if client_name is None:
+            return None
+        history = self._paged("history")
+        queue = self._paged("queue")
+        if history is None or queue is None:
+            return None
+        matching_history = [
+            record for record in history
+            if record.get("eventType") == "grabbed"
+            and _public_id(record.get(self.release_entity_key)) == entity_id
+            and record.get("downloadId") == torrent_hash.upper()
+            and isinstance(record.get("id"), int) and not isinstance(record.get("id"), bool) and record["id"] > 0
+        ]
+        if len(matching_history) != 1:
+            return None
+        matching_queue = [
+            record for record in queue
+            if _public_id(record.get(self.release_entity_key)) == entity_id
+            and record.get("downloadId") == torrent_hash.upper()
+            and record.get("downloadClient") == client_name
+            and record.get("protocol") == "torrent"
+            and isinstance(record.get("size"), int) and not isinstance(record.get("size"), bool) and record["size"] > 0
+        ]
+        if len(matching_queue) != 1:
+            return None
+        return ArrExternalGrab(entity_id, torrent_hash.upper(), torrent_hash, matching_queue[0]["size"], matching_history[0]["id"])
+
     def stopped_qbittorrent_client(self, category: str, download_client_id: int) -> bool:
         """Require the configured enabled Arr qBittorrent client to add stopped.
 

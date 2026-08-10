@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+import hashlib
 from typing import Iterable, Mapping
 
 from ..contracts import ContractError, Envelope, acquisition_pre_admission, terminal_acquisition
@@ -60,6 +61,21 @@ class ExternalAdoptionIntent:
     expected_bytes: int
     history_id: int
     observation_fingerprint: str
+
+
+@dataclass(frozen=True)
+class PostPnrAdoptionIntent:
+    """Deployment-authorized claim of one already-stopped Arr grab."""
+
+    operation_id: str
+    source: str
+    download_client_id: int
+    entity_id: str
+    torrent_hash: str
+    category: str
+    save_path: str
+    expected_bytes: int
+    history_id: int
 
 
 @dataclass
@@ -127,6 +143,7 @@ class FenceState:
         self._reservations: dict[str, Reservation] = {}
         self._watermarks: dict[str, int] = {}
         self._quiescing = False
+        self._post_pnr_adoptions: dict[str, PostPnrAdoptionIntent] = {}
 
     @property
     def reserved_bytes(self) -> int:
@@ -159,6 +176,9 @@ class FenceState:
             if reservation.observation_fingerprint == fingerprint:
                 return operation_id
         return None
+
+    def post_pnr_adoption(self, operation_id: str) -> PostPnrAdoptionIntent | None:
+        return self._post_pnr_adoptions.get(operation_id)
 
     def record_watermark(self, source: str, watermark: int) -> None:
         if not isinstance(source, str) or not source or isinstance(watermark, bool) or not isinstance(watermark, int) or watermark < 0:
@@ -225,6 +245,40 @@ class FenceState:
         if self.reserved_bytes + intent.expected_bytes > self._policy.capacity_bytes:
             return AdmissionDecision(False, "capacity_exhausted")
         self._reservations[intent.operation_id] = Reservation(intent.operation_id, f"fence:{intent.operation_id}", intent.source, intent.entity_id, intent.entity_id, intent.expected_bytes, intent.expected_bytes, ReservationState.PRE_ADMITTED, torrent_hash=intent.torrent_hash, download_id=intent.download_id, observation_fingerprint=intent.observation_fingerprint, external_history_id=intent.history_id)
+        return AdmissionDecision(True, "admitted")
+
+    def adopt_post_pnr(self, intent: PostPnrAdoptionIntent, *, qbittorrent_ready: bool) -> AdmissionDecision:
+        """Persist one deployment-authorized sealed eligibility before tagging it."""
+        valid = (
+            isinstance(intent.operation_id, str) and intent.operation_id
+            and intent.source in {"radarr", "sonarr"}
+            and isinstance(intent.download_client_id, int) and not isinstance(intent.download_client_id, bool) and intent.download_client_id > 0
+            and isinstance(intent.entity_id, str) and intent.entity_id.isdecimal() and str(int(intent.entity_id)) == intent.entity_id
+            and _torrent_hash(intent.torrent_hash)
+            and isinstance(intent.category, str) and bool(intent.category)
+            and isinstance(intent.save_path, str) and intent.save_path.startswith("/") and "\x00" not in intent.save_path and all(part not in {"", ".", ".."} for part in intent.save_path.split("/")[1:])
+            and isinstance(intent.expected_bytes, int) and not isinstance(intent.expected_bytes, bool) and intent.expected_bytes > 0
+            and isinstance(intent.history_id, int) and not isinstance(intent.history_id, bool) and intent.history_id > 0
+        )
+        if not valid or self._quiescing:
+            return AdmissionDecision(False, "invalid_post_pnr_adoption" if not valid else "quiescing")
+        existing = self._post_pnr_adoptions.get(intent.operation_id)
+        if existing is not None:
+            immutable = (existing.source, existing.download_client_id, existing.entity_id, existing.torrent_hash, existing.category, existing.save_path)
+            requested = (intent.source, intent.download_client_id, intent.entity_id, intent.torrent_hash, intent.category, intent.save_path)
+            return AdmissionDecision(immutable == requested, "idempotent" if immutable == requested else "conflict")
+        if intent.operation_id in self._reservations:
+            return AdmissionDecision(False, "conflict")
+        if not qbittorrent_ready:
+            return AdmissionDecision(False, "qbittorrent_unready")
+        active = [item for item in self._reservations.values() if item.state is not ReservationState.RELEASED]
+        if len(active) >= self._policy.max_inflight:
+            return AdmissionDecision(False, "concurrency_exhausted")
+        if self.reserved_bytes + intent.expected_bytes > self._policy.capacity_bytes:
+            return AdmissionDecision(False, "capacity_exhausted")
+        fingerprint = hashlib.sha256((intent.source + "\x00" + intent.entity_id + "\x00" + intent.torrent_hash + "\x00" + str(intent.history_id)).encode("ascii")).hexdigest()
+        self._reservations[intent.operation_id] = Reservation(intent.operation_id, f"fence:{intent.operation_id}", intent.source, intent.entity_id, intent.entity_id, intent.expected_bytes, intent.expected_bytes, ReservationState.GRAB_BOUND, torrent_hash=intent.torrent_hash, download_id=intent.torrent_hash, selector_fingerprint=fingerprint, watermark="post-pnr")
+        self._post_pnr_adoptions[intent.operation_id] = intent
         return AdmissionDecision(True, "admitted")
 
     def bind_observed_grab(self, operation_id: str, *, download_id: str, torrent_hash: str) -> None:
@@ -394,22 +448,56 @@ class FenceState:
         result = FenceState.from_records(self._policy, self.records())
         result._watermarks = dict(self._watermarks)
         result._quiescing = self._quiescing
+        result._post_pnr_adoptions = dict(self._post_pnr_adoptions)
         return result
 
     def replace_with(self, other: "FenceState") -> None:
         self._reservations = other._reservations
         self._watermarks = other._watermarks
         self._quiescing = other._quiescing
+        self._post_pnr_adoptions = other._post_pnr_adoptions
 
     def watermarks(self) -> dict[str, int]:
         return dict(self._watermarks)
 
+    def post_pnr_records(self) -> tuple[dict[str, object], ...]:
+        return tuple({
+            "operation_id": item.operation_id,
+            "source": item.source,
+            "download_client_id": item.download_client_id,
+            "entity_id": item.entity_id,
+            "torrent_hash": item.torrent_hash,
+            "category": item.category,
+            "save_path": item.save_path,
+            "expected_bytes": item.expected_bytes,
+            "history_id": item.history_id,
+        } for item in self._post_pnr_adoptions.values())
+
     @classmethod
-    def from_snapshot(cls, policy: FencePolicy, records: Iterable[Mapping[str, object]], watermarks: Mapping[str, object], *, quiescing: bool = False) -> "FenceState":
+    def from_snapshot(cls, policy: FencePolicy, records: Iterable[Mapping[str, object]], watermarks: Mapping[str, object], *, quiescing: bool = False, post_pnr_adoptions: Iterable[Mapping[str, object]] = ()) -> "FenceState":
         result = cls.from_records(policy, records)
         for source, watermark in watermarks.items():
             result.record_watermark(source, watermark)  # type: ignore[arg-type]
         if not isinstance(quiescing, bool):
             raise ContractError("durable Fence quiescence is invalid")
         result._quiescing = quiescing
+        expected = {"operation_id", "source", "download_client_id", "entity_id", "torrent_hash", "category", "save_path", "expected_bytes", "history_id"}
+        for record in post_pnr_adoptions:
+            if set(record) != expected:
+                raise ContractError("durable post-PNR adoption is invalid")
+            try:
+                intent = PostPnrAdoptionIntent(
+                    operation_id=record["operation_id"], source=record["source"], download_client_id=record["download_client_id"],
+                    entity_id=record["entity_id"], torrent_hash=record["torrent_hash"], category=record["category"],
+                    save_path=record["save_path"], expected_bytes=record["expected_bytes"], history_id=record["history_id"],
+                )
+            except TypeError as exc:
+                raise ContractError("durable post-PNR adoption is invalid") from exc
+            probe = cls(policy)
+            if not probe.adopt_post_pnr(intent, qbittorrent_ready=True).admitted:
+                raise ContractError("durable post-PNR adoption is invalid")
+            reservation = result._reservations.get(intent.operation_id)
+            if intent.operation_id in result._post_pnr_adoptions or reservation is None or reservation.source != intent.source or reservation.media_id != intent.entity_id or reservation.torrent_hash != intent.torrent_hash or reservation.requested_bytes != intent.expected_bytes or reservation.state not in {ReservationState.GRAB_BOUND, ReservationState.TAG_INTENT_RECORDED, ReservationState.QBITTORRENT_STOPPED}:
+                raise ContractError("durable post-PNR adoption is invalid")
+            result._post_pnr_adoptions[intent.operation_id] = intent
         return result

@@ -9,7 +9,7 @@ import _source_tree  # noqa: F401
 
 from media_interlock.contracts import ContractError, custody_receipt
 from media_interlock.adapters.arr import ArrExternalGrab, ArrExternalObservation
-from media_interlock.fence.model import ExternalAdoptionIntent, FencePolicy, FenceState, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentObservation, ReservationState
+from media_interlock.fence.model import ExternalAdoptionIntent, FencePolicy, FenceState, PostPnrAdoptionIntent, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentObservation, ReservationState
 from media_interlock.fence.headroom import HeadroomPool, PhysicalHeadroom
 from media_interlock.fence.service import FenceService, FenceSource
 from media_interlock.fence.store import FenceStore
@@ -132,6 +132,63 @@ class FenceStateTests(unittest.TestCase):
 
 
 class FenceServiceTests(unittest.TestCase):
+    def test_post_pnr_recovery_from_durable_intent_claims_without_resuming(self) -> None:
+        events: list[str] = []
+
+        class Store:
+            def save(self, _: FenceState) -> None: events.append("save")
+
+        class Qbittorrent:
+            def observe_existing_stopped(self, *_: object, **__: object) -> QbittorrentObservation:
+                events.append("observe")
+                return QbittorrentObservation("observed", 400)
+            def apply_reservation_tag(self, *_: object) -> bool:
+                events.append("tag")
+                return True
+            def observe_tagged_stopped(self, *_: object, **__: object) -> QbittorrentObservation:
+                events.append("read-back")
+                return QbittorrentObservation("observed", 400)
+            def resume(self, *_: object) -> bool:
+                events.append("resume")
+                return True
+
+        state = FenceState(FencePolicy(1_000, 1))
+        adoption = PostPnrAdoptionIntent(OPERATION_ID, "radarr", 7, "42", HASH, CATEGORY, "/downloads/radarr", 400, 8)
+        self.assertTrue(state.adopt_post_pnr(adoption, qbittorrent_ready=True).admitted)
+
+        FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE}).recover()
+
+        self.assertEqual(ReservationState.QBITTORRENT_STOPPED, state.reservation(OPERATION_ID).state)
+        self.assertEqual(["observe", "tag", "read-back"], [event for event in events if event != "save"])
+
+    def test_post_pnr_recovery_reads_back_a_crashed_tag_intent_without_resuming(self) -> None:
+        events: list[str] = []
+
+        class Store:
+            def save(self, _: FenceState) -> None: events.append("save")
+
+        class Qbittorrent:
+            def observe_tagged_stopped(self, *_: object, **__: object) -> QbittorrentObservation:
+                events.append("read-back")
+                return QbittorrentObservation("observed", 400)
+            def resume(self, *_: object) -> bool:
+                events.append("resume")
+                return True
+
+        state = FenceState(FencePolicy(1_000, 1))
+        adoption = PostPnrAdoptionIntent(OPERATION_ID, "radarr", 7, "42", HASH, CATEGORY, "/downloads/radarr", 400, 8)
+        self.assertTrue(state.adopt_post_pnr(adoption, qbittorrent_ready=True).admitted)
+        state.request_tag(OPERATION_ID)  # persisted intent survived a crash after the tag effect
+
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE})
+        service.recover()
+
+        self.assertEqual(ReservationState.QBITTORRENT_STOPPED, state.reservation(OPERATION_ID).state)
+        self.assertEqual([], [event for event in events if event == "resume"])
+        receipt = service.post_pnr_receipt(OPERATION_ID)
+        assert receipt is not None
+        self.assertEqual("adopted", receipt.body["state"])
+
     def test_freeze_pauses_only_the_exact_terminal_owned_hash_under_the_lease(self) -> None:
         events: list[str] = []
 

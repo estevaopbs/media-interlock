@@ -65,6 +65,30 @@ def _sha256(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
+def _post_pnr_adoption_body(value: Mapping[str, Any]) -> None:
+    expected = {"source", "download_client_id", "entity_id", "torrent_hash", "category", "save_path"}
+    if (
+        set(value) != expected
+        or value.get("source") not in {"radarr", "sonarr"}
+        or isinstance(value.get("download_client_id"), bool)
+        or not isinstance(value.get("download_client_id"), int)
+        or value["download_client_id"] <= 0
+        or not isinstance(value.get("entity_id"), str)
+        or not value["entity_id"].isdecimal()
+        or str(int(value["entity_id"])) != value["entity_id"]
+        or not isinstance(value.get("torrent_hash"), str)
+        or len(value["torrent_hash"]) != 40
+        or any(character not in "0123456789abcdef" for character in value["torrent_hash"])
+        or not isinstance(value.get("category"), str)
+        or not value["category"]
+        or not isinstance(value.get("save_path"), str)
+        or not value["save_path"].startswith("/")
+        or "\x00" in value["save_path"]
+        or any(part in {"", ".", ".."} for part in value["save_path"].split("/")[1:])
+    ):
+        raise ContractError("post-PNR adoption fields are invalid")
+
+
 def _manifest_sha256(manifest: Mapping[str, Any] | object) -> str:
     try:
         encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -118,7 +142,7 @@ class Envelope:
     def __post_init__(self) -> None:
         if not isinstance(self.version, str) or self.version != CONTRACT_VERSION:
             raise ContractError("unsupported contract version")
-        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_pre_admission", "acquisition_grab_binding", "acquisition_freeze", "terminal_acquisition", "custody_receipt", "publisher_bootstrap", "publisher_assisted_intent", "publisher_assisted_complete", "publisher_operation_query", "publisher_operation_status", "publisher_operation_receipt", "metrics", "observe", "quiesce"}:
+        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_pre_admission", "acquisition_grab_binding", "acquisition_freeze", "post_pnr_adoption", "post_pnr_adoption_query", "post_pnr_adoption_receipt", "terminal_acquisition", "custody_receipt", "publisher_bootstrap", "publisher_assisted_intent", "publisher_assisted_complete", "publisher_operation_query", "publisher_operation_status", "publisher_operation_receipt", "metrics", "observe", "quiesce"}:
             raise ContractError("unknown contract kind")
         _operation_id(self.operation_id)
         normalized = _json_body(self.body)
@@ -134,6 +158,15 @@ class Envelope:
         elif self.kind == "acquisition_grab_binding":
             if set(normalized) != {"download_id", "torrent_hash"} or not isinstance(normalized.get("download_id"), str) or not normalized["download_id"] or len(normalized["download_id"]) != 40 or any(char not in "0123456789abcdefABCDEF" for char in normalized["download_id"]) or not isinstance(normalized.get("torrent_hash"), str) or len(normalized["torrent_hash"]) != 40 or any(char not in "0123456789abcdef" for char in normalized["torrent_hash"]) or normalized["download_id"].lower() != normalized["torrent_hash"]:
                 raise ContractError("acquisition grab binding fields are invalid")
+        elif self.kind == "post_pnr_adoption":
+            _post_pnr_adoption_body(normalized)
+        elif self.kind == "post_pnr_adoption_query":
+            if normalized:
+                raise ContractError("post-PNR adoption query has fields")
+        elif self.kind == "post_pnr_adoption_receipt":
+            if normalized.get("state") != "adopted" or not isinstance(normalized.get("fence_reservation_id"), str) or not normalized["fence_reservation_id"]:
+                raise ContractError("post-PNR adoption receipt fields are invalid")
+            _post_pnr_adoption_body({key: value for key, value in normalized.items() if key not in {"state", "fence_reservation_id"}})
         elif self.kind == "terminal_acquisition":
             expected = {"bytes_reserved", "download_id", "fence_reservation_id", "media_id", "source", "upstream_id"}
             if set(normalized) != expected:
@@ -253,6 +286,34 @@ def acquisition_grab_binding(*, operation_id: str, download_id: str, torrent_has
 
 def acquisition_freeze(*, operation_id: str) -> Envelope:
     return Envelope(CONTRACT_VERSION, "acquisition_freeze", _operation_id(operation_id), {})
+
+
+def post_pnr_adoption(*, operation_id: str, source: str, download_client_id: int, entity_id: str, torrent_hash: str, category: str, save_path: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "post_pnr_adoption", _operation_id(operation_id), {
+        "source": source,
+        "download_client_id": download_client_id,
+        "entity_id": entity_id,
+        "torrent_hash": torrent_hash,
+        "category": category,
+        "save_path": save_path,
+    })
+
+
+def post_pnr_adoption_query(operation_id: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "post_pnr_adoption_query", _operation_id(operation_id), {})
+
+
+def post_pnr_adoption_receipt(operation_id: str, *, source: str, download_client_id: int, entity_id: str, torrent_hash: str, category: str, save_path: str, fence_reservation_id: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "post_pnr_adoption_receipt", _operation_id(operation_id), {
+        "source": source,
+        "download_client_id": download_client_id,
+        "entity_id": entity_id,
+        "torrent_hash": torrent_hash,
+        "category": category,
+        "save_path": save_path,
+        "fence_reservation_id": fence_reservation_id,
+        "state": "adopted",
+    })
 
 
 def publisher_bootstrap(*, operation_id: str, manifest: Mapping[str, Any]) -> Envelope:

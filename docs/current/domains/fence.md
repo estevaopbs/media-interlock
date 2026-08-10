@@ -18,6 +18,12 @@ under observed, durable capacity and concurrency constraints.
   externally initiated stopped torrent only after its configured download-client
   identity, entity, hash, size, category, and save path agree. The durable
   observation fingerprint is distinct from a Reconciler release fingerprint.
+- Accept a separately authorized `post_pnr_adoption` only through the local
+  version-1 socket. It validates the exact configured Arr client, entity,
+  canonical hash, category, and qBittorrent save path against one public
+  History/Queue grab, persists its intent, then claims only one stopped,
+  unowned hash with one Fence tag and durable read-back. It returns an exact
+  terminal receipt without resuming that pre-existing torrent.
 - Observe qBittorrent transfer and seeding state through its adapter without
   treating cached or incomplete responses as authority.
 - Maintain reservations after transfer completion, emit a terminal acquisition
@@ -50,6 +56,14 @@ unless the former canonically lowers to the latter. Terminal observations carry 
 download ID and are persisted before the socket returns them. Status reports
 only aggregate reservation counts and bytes; metrics add the bounded
 shared-lease probe described below.
+
+`post_pnr_adoption_query(operation_id)` is the recovery surface for this
+explicit authority path. Before the durable tag read-back it returns no
+terminal receipt; afterward it returns `post_pnr_adoption_receipt` binding the
+operation to source, client, Arr entity, hash, category, save path, and Fence
+reservation ID. This public receipt can contain the exact requested identity;
+Fence status and metrics remain aggregate-only and never expose paths, hashes,
+or operation IDs.
 
 Fence readiness requires every configured Arr download client to add work
 stopped with its exact category. qBittorrent's global start-paused preference
