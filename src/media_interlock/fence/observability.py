@@ -36,4 +36,8 @@ class FenceObservability:
         return "\n".join(lines) + "\n"
 
     def _inflight(self) -> int:
-        return sum(record["state"] != ReservationState.RELEASED.value for record in self._state.records())
+        return sum(
+            record["state"] != ReservationState.RELEASED.value
+            and not self._state.historical_activation_managed(str(record["operation_id"]))
+            for record in self._state.records()
+        )

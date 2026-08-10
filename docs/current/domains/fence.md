@@ -29,6 +29,11 @@ under observed, durable capacity and concurrency constraints.
   and one hash tag; it permits an absent Queue only after exact complete public
   History evidence, while a present Queue must agree in full. It never broadens
   observer-first polling or acquires musical or foreign transfers.
+- Activate an adopted historical hash only through the identity-free
+  `post_pnr_historical_activation` authority. It persists intent before one
+  leased exact start/read-back, retains the reservation and bytes, and marks it
+  managed only afterward; managed ownership is quiesced exactly but does not
+  consume a new-admission inflight slot.
 - Observe qBittorrent transfer and seeding state through its adapter without
   treating cached or incomplete responses as authority.
 - Maintain reservations after transfer completion, emit a terminal acquisition
@@ -73,6 +78,11 @@ or operation IDs.
 `post_pnr_historical_adoption_query(operation_id)` returns the corresponding
 historical receipt only after durable tag read-back. Its receipt carries the
 complete canonical entity set; no status, metric, or log projection does.
+
+`post_pnr_historical_activation_query(operation_id)` returns its exact managed
+receipt only after active read-back. It derives identity solely from the sealed
+historical adoption and remains identical while the owned hash is active,
+paused, resumed, or recovered after restart.
 
 Fence readiness requires every configured Arr download client to add work
 stopped with its exact category. qBittorrent's global start-paused preference

@@ -21,6 +21,9 @@ active only when configured.
 MediaInterlock 0.1.7 is the current immutable public
 [GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.7).
 Version 0.1.6 remains preserved as its immutable predecessor.
+The local 0.1.8 release candidate adds explicit historical activation: only an
+already sealed `post_pnr_historical_adoption` may be durably started and
+managed by Fence, while retaining its reservation and capacity accounting.
 Release 0.1.1 remains preserved but its OCI images use Python 3.14.6 rather than
 the fixed 3.14.7 compatibility profile. Version 0.1.3 added per-operation
 Publisher status and exact terminal receipts; 0.1.4 translates a shared

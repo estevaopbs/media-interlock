@@ -91,6 +91,12 @@ Fence requires complete exact History evidence and permits Queue absence only
 for this named operation; a present Queue must agree in full. The terminal
 `post_pnr_historical_adoption_receipt` binds source, configured client, all
 canonical entity IDs, hash, category, save path, reservation, and `adopted`.
+After that receipt, `post_pnr_historical_activation(operation_id)` supplies the
+only authority to start the same sealed hash. It accepts no caller-supplied
+identity. `post_pnr_historical_activation_query(operation_id)` recovers one
+exact `managed` receipt across restart or quiescence. Managed reservations keep
+their bytes and ownership but no longer consume `max_inflight`; stopped or
+incomplete historical activation remains fail-closed and inflight.
 
 Each Publisher source profile also declares a bounded bundle settle interval,
 accepted sidecar extensions, and optional required language aliases and

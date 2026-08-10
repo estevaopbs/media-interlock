@@ -45,7 +45,7 @@ class ArtifactDefinitionTests(unittest.TestCase):
     def test_corrective_release_version_is_consistent(self) -> None:
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-        self.assertEqual("0.1.7", __version__)
+        self.assertEqual("0.1.8", __version__)
         self.assertEqual(__version__, project["project"]["version"])
 
     def test_packaged_readme_declares_the_current_immutable_release(self) -> None:

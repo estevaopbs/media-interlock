@@ -19,6 +19,8 @@ class ReservationState(StrEnum):
     GRAB_BOUND = "grab_bound"
     TAG_INTENT_RECORDED = "tag_intent_recorded"
     QBITTORRENT_STOPPED = "qbittorrent_stopped"
+    ACTIVATION_INTENT_RECORDED = "activation_intent_recorded"
+    QBITTORRENT_MANAGED = "qbittorrent_managed"
     RESUME_INTENT_RECORDED = "resume_intent_recorded"
     QBITTORRENT_ACTIVE = "qbittorrent_active"
     PAUSE_INTENT_RECORDED = "pause_intent_recorded"
@@ -93,6 +95,13 @@ class PostPnrHistoricalAdoptionIntent:
     history_ids: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class PostPnrHistoricalActivationIntent:
+    """Identity-free request to start one sealed historical adoption."""
+
+    operation_id: str
+
+
 @dataclass
 class Reservation:
     operation_id: str
@@ -142,11 +151,13 @@ class QbittorrentActivityObservation:
 
     kind: str
     active: bool | None = None
+    observed_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in {"absent", "unknown", "ambiguous", "observed"}:
             raise ValueError("qBittorrent activity observation kind is invalid")
-        if (self.kind == "observed") != isinstance(self.active, bool):
+        valid_bytes = self.observed_bytes is None or (isinstance(self.observed_bytes, int) and not isinstance(self.observed_bytes, bool) and self.observed_bytes > 0)
+        if (self.kind == "observed") != isinstance(self.active, bool) or (self.kind != "observed" and self.observed_bytes is not None) or not valid_bytes:
             raise ValueError("qBittorrent activity observation value is invalid")
 
 
@@ -160,6 +171,7 @@ class FenceState:
         self._quiescing = False
         self._post_pnr_adoptions: dict[str, PostPnrAdoptionIntent] = {}
         self._post_pnr_historical_adoptions: dict[str, PostPnrHistoricalAdoptionIntent] = {}
+        self._post_pnr_historical_activations: dict[str, str] = {}
 
     @property
     def reserved_bytes(self) -> int:
@@ -202,6 +214,19 @@ class FenceState:
     def is_post_pnr_adoption(self, operation_id: str) -> bool:
         return operation_id in self._post_pnr_adoptions or operation_id in self._post_pnr_historical_adoptions
 
+    def historical_activation_state(self, operation_id: str) -> str | None:
+        return self._post_pnr_historical_activations.get(operation_id)
+
+    def historical_activation_managed(self, operation_id: str) -> bool:
+        return self._post_pnr_historical_activations.get(operation_id) == "managed"
+
+    def _inflight(self) -> int:
+        return sum(
+            item.state is not ReservationState.RELEASED
+            and not (item.operation_id in self._post_pnr_historical_adoptions and self.historical_activation_managed(item.operation_id))
+            for item in self._reservations.values()
+        )
+
     def record_watermark(self, source: str, watermark: int) -> None:
         if not isinstance(source, str) or not source or isinstance(watermark, bool) or not isinstance(watermark, int) or watermark < 0:
             raise ContractError("external Arr watermark is invalid")
@@ -226,8 +251,7 @@ class FenceState:
             return AdmissionDecision(False, "prowlarr_unready")
         if not publisher_ready:
             return AdmissionDecision(False, "publisher_backpressure")
-        active = [item for item in self._reservations.values() if item.state is not ReservationState.RELEASED]
-        if len(active) >= self._policy.max_inflight:
+        if self._inflight() >= self._policy.max_inflight:
             return AdmissionDecision(False, "concurrency_exhausted")
         if self.reserved_bytes + intent.expected_bytes > self._policy.capacity_bytes:
             return AdmissionDecision(False, "capacity_exhausted")
@@ -261,8 +285,7 @@ class FenceState:
             return AdmissionDecision(False, "qbittorrent_unready")
         if not publisher_ready:
             return AdmissionDecision(False, "publisher_backpressure")
-        active = [item for item in self._reservations.values() if item.state is not ReservationState.RELEASED]
-        if len(active) >= self._policy.max_inflight:
+        if self._inflight() >= self._policy.max_inflight:
             return AdmissionDecision(False, "concurrency_exhausted")
         if self.reserved_bytes + intent.expected_bytes > self._policy.capacity_bytes:
             return AdmissionDecision(False, "capacity_exhausted")
@@ -293,8 +316,7 @@ class FenceState:
             return AdmissionDecision(False, "conflict")
         if not qbittorrent_ready:
             return AdmissionDecision(False, "qbittorrent_unready")
-        active = [item for item in self._reservations.values() if item.state is not ReservationState.RELEASED]
-        if len(active) >= self._policy.max_inflight:
+        if self._inflight() >= self._policy.max_inflight:
             return AdmissionDecision(False, "concurrency_exhausted")
         if self.reserved_bytes + intent.expected_bytes > self._policy.capacity_bytes:
             return AdmissionDecision(False, "capacity_exhausted")
@@ -336,8 +358,7 @@ class FenceState:
             return AdmissionDecision(False, "conflict")
         if not qbittorrent_ready:
             return AdmissionDecision(False, "qbittorrent_unready")
-        active = [item for item in self._reservations.values() if item.state is not ReservationState.RELEASED]
-        if len(active) >= self._policy.max_inflight:
+        if self._inflight() >= self._policy.max_inflight:
             return AdmissionDecision(False, "concurrency_exhausted")
         if self.reserved_bytes + intent.expected_bytes > self._policy.capacity_bytes:
             return AdmissionDecision(False, "capacity_exhausted")
@@ -387,9 +408,30 @@ class FenceState:
             raise ContractError("qBittorrent resume transition is invalid")
         reservation.state = ReservationState.RESUME_INTENT_RECORDED
 
+    def request_historical_activation(self, intent: PostPnrHistoricalActivationIntent) -> None:
+        reservation = self._reservations.get(intent.operation_id)
+        if reservation is None or intent.operation_id not in self._post_pnr_historical_adoptions or self._quiescing:
+            raise ContractError("historical activation is unavailable")
+        prior = self._post_pnr_historical_activations.get(intent.operation_id)
+        if prior == "managed":
+            return
+        if prior == "intent" and reservation.state is ReservationState.ACTIVATION_INTENT_RECORDED:
+            return
+        if prior is not None or reservation.state is not ReservationState.QBITTORRENT_STOPPED:
+            raise ContractError("historical activation transition is invalid")
+        self._post_pnr_historical_activations[intent.operation_id] = "intent"
+        reservation.state = ReservationState.ACTIVATION_INTENT_RECORDED
+
+    def mark_historical_managed(self, operation_id: str) -> None:
+        reservation = self.reservation(operation_id)
+        if self._post_pnr_historical_activations.get(operation_id) != "intent" or reservation.state is not ReservationState.ACTIVATION_INTENT_RECORDED:
+            raise ContractError("historical activation observation is invalid")
+        self._post_pnr_historical_activations[operation_id] = "managed"
+        reservation.state = ReservationState.QBITTORRENT_MANAGED
+
     def request_pause(self, operation_id: str) -> None:
         reservation = self.reservation(operation_id)
-        if not self._quiescing or reservation.state is not ReservationState.QBITTORRENT_ACTIVE or not reservation.torrent_hash:
+        if not self._quiescing or reservation.state not in {ReservationState.QBITTORRENT_ACTIVE, ReservationState.QBITTORRENT_MANAGED} or not reservation.torrent_hash:
             raise ContractError("qBittorrent pause intent transition is invalid")
         reservation.state = ReservationState.PAUSE_INTENT_RECORDED
 
@@ -403,7 +445,7 @@ class FenceState:
         reservation = self.reservation(operation_id)
         if reservation.state is not ReservationState.RESUME_INTENT_RECORDED:
             raise ContractError("qBittorrent active transition is invalid")
-        reservation.state = ReservationState.QBITTORRENT_ACTIVE
+        reservation.state = ReservationState.QBITTORRENT_MANAGED if self.historical_activation_managed(operation_id) else ReservationState.QBITTORRENT_ACTIVE
 
     def request_freeze(self, operation_id: str) -> None:
         reservation = self.reservation(operation_id)
@@ -515,6 +557,7 @@ class FenceState:
         result._quiescing = self._quiescing
         result._post_pnr_adoptions = dict(self._post_pnr_adoptions)
         result._post_pnr_historical_adoptions = dict(self._post_pnr_historical_adoptions)
+        result._post_pnr_historical_activations = dict(self._post_pnr_historical_activations)
         return result
 
     def replace_with(self, other: "FenceState") -> None:
@@ -523,6 +566,7 @@ class FenceState:
         self._quiescing = other._quiescing
         self._post_pnr_adoptions = other._post_pnr_adoptions
         self._post_pnr_historical_adoptions = other._post_pnr_historical_adoptions
+        self._post_pnr_historical_activations = other._post_pnr_historical_activations
 
     def watermarks(self) -> dict[str, int]:
         return dict(self._watermarks)
@@ -553,8 +597,11 @@ class FenceState:
             "history_ids": list(item.history_ids),
         } for item in self._post_pnr_historical_adoptions.values())
 
+    def post_pnr_historical_activation_records(self) -> tuple[dict[str, object], ...]:
+        return tuple({"operation_id": operation_id, "state": state} for operation_id, state in self._post_pnr_historical_activations.items())
+
     @classmethod
-    def from_snapshot(cls, policy: FencePolicy, records: Iterable[Mapping[str, object]], watermarks: Mapping[str, object], *, quiescing: bool = False, post_pnr_adoptions: Iterable[Mapping[str, object]] = (), post_pnr_historical_adoptions: Iterable[Mapping[str, object]] = ()) -> "FenceState":
+    def from_snapshot(cls, policy: FencePolicy, records: Iterable[Mapping[str, object]], watermarks: Mapping[str, object], *, quiescing: bool = False, post_pnr_adoptions: Iterable[Mapping[str, object]] = (), post_pnr_historical_adoptions: Iterable[Mapping[str, object]] = (), post_pnr_historical_activations: Iterable[Mapping[str, object]] = ()) -> "FenceState":
         result = cls.from_records(policy, records)
         for source, watermark in watermarks.items():
             result.record_watermark(source, watermark)  # type: ignore[arg-type]
@@ -599,9 +646,20 @@ class FenceState:
             if not probe.adopt_post_pnr_historical(intent, qbittorrent_ready=True).admitted:
                 raise ContractError("durable historical post-PNR adoption is invalid")
             reservation = result._reservations.get(intent.operation_id)
-            if intent.operation_id in result._post_pnr_historical_adoptions or reservation is None or reservation.source != intent.source or reservation.media_id != intent.entity_ids[0] or reservation.torrent_hash != intent.torrent_hash or reservation.requested_bytes != intent.expected_bytes or reservation.state not in {ReservationState.GRAB_BOUND, ReservationState.TAG_INTENT_RECORDED, ReservationState.QBITTORRENT_STOPPED}:
+            if intent.operation_id in result._post_pnr_historical_adoptions or reservation is None or reservation.source != intent.source or reservation.media_id != intent.entity_ids[0] or reservation.torrent_hash != intent.torrent_hash or reservation.requested_bytes != intent.expected_bytes or reservation.state not in {ReservationState.GRAB_BOUND, ReservationState.TAG_INTENT_RECORDED, ReservationState.QBITTORRENT_STOPPED, ReservationState.ACTIVATION_INTENT_RECORDED, ReservationState.QBITTORRENT_MANAGED, ReservationState.PAUSE_INTENT_RECORDED, ReservationState.QBITTORRENT_PAUSED, ReservationState.RESUME_INTENT_RECORDED}:
                 raise ContractError("durable historical post-PNR adoption is invalid")
             if any(item.torrent_hash == intent.torrent_hash for operation_id, item in result._reservations.items() if operation_id != intent.operation_id):
                 raise ContractError("durable historical post-PNR adoption is invalid")
             result._post_pnr_historical_adoptions[intent.operation_id] = intent
+        for record in post_pnr_historical_activations:
+            if set(record) != {"operation_id", "state"} or not isinstance(record.get("operation_id"), str) or record.get("state") not in {"intent", "managed"}:
+                raise ContractError("durable historical post-PNR activation is invalid")
+            operation_id = record["operation_id"]
+            reservation = result._reservations.get(operation_id)
+            if operation_id not in result._post_pnr_historical_adoptions or reservation is None or operation_id in result._post_pnr_historical_activations:
+                raise ContractError("durable historical post-PNR activation is invalid")
+            state = record["state"]
+            if (state == "intent" and reservation.state is not ReservationState.ACTIVATION_INTENT_RECORDED) or (state == "managed" and reservation.state not in {ReservationState.QBITTORRENT_MANAGED, ReservationState.PAUSE_INTENT_RECORDED, ReservationState.QBITTORRENT_PAUSED, ReservationState.RESUME_INTENT_RECORDED}):
+                raise ContractError("durable historical post-PNR activation is invalid")
+            result._post_pnr_historical_activations[operation_id] = state
         return result

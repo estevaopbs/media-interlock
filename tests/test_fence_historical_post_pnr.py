@@ -17,9 +17,9 @@ from media_interlock.adapters.radarr import RadarrAdapter
 from media_interlock.adapters.sonarr import SonarrAdapter
 from media_interlock._infra.advisory_lease import AdvisoryLease
 from media_interlock.config import SecretReference
-from media_interlock.contracts import StatusCode, post_pnr_historical_adoption, post_pnr_historical_adoption_query
+from media_interlock.contracts import StatusCode, post_pnr_historical_activation, post_pnr_historical_activation_query, post_pnr_historical_adoption, post_pnr_historical_adoption_query
 from media_interlock.fence.daemon import FenceDaemon
-from media_interlock.fence.model import FencePolicy, PostPnrHistoricalAdoptionIntent, ReservationState
+from media_interlock.fence.model import FencePolicy, PostPnrHistoricalActivationIntent, PostPnrHistoricalAdoptionIntent, ReservationState
 from media_interlock.fence.observability import FenceObservability
 from media_interlock.fence.service import FenceService, FenceSource
 from media_interlock.fence.store import FenceStore
@@ -54,6 +54,10 @@ class HistoricalPostPnrIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     self.send_response(200); self.send_header("Set-Cookie", "SID=fixture; Path=/"); self.end_headers(); self.wfile.write(b"Ok.")
                 elif self.path == "/api/v2/torrents/addTags" and fields.get("hashes") == [fixture.torrent_hash]:
                     fixture.torrent["tags"] = fields["tags"][0]; self.send_response(200); self.end_headers(); self.wfile.write(b"Ok.")
+                elif self.path == "/api/v2/torrents/start" and fields.get("hashes") == [fixture.torrent_hash]:
+                    fixture.torrent["state"] = "downloading"; self.send_response(200); self.end_headers(); self.wfile.write(b"Ok.")
+                elif self.path == "/api/v2/torrents/stop" and fields.get("hashes") == [fixture.torrent_hash]:
+                    fixture.torrent["state"] = "pausedDL"; self.send_response(200); self.end_headers(); self.wfile.write(b"Ok.")
                 else:
                     self.send_error(400)
 
@@ -145,6 +149,47 @@ class HistoricalPostPnrIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(1, self.posts.count("/api/v2/torrents/addTags"))
             finally:
                 server.close(); await server.wait_closed(); restored_store.close(); restored._test_lease.close()  # type: ignore[attr-defined]
+
+    async def test_activation_is_durable_managed_and_quiescence_only_mutates_its_owned_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, socket_path, operation_id = Path(directory), Path(directory) / "fence.sock", str(uuid.uuid4())
+            store, daemon = self._daemon(root)
+            server = await asyncio.start_unix_server(daemon.handle, path=socket_path)
+            try:
+                stopped = await self._exchange(socket_path, self._request(operation_id))
+                self.assertEqual("post_pnr_historical_adoption_receipt", stopped.kind)
+                receipt = await self._exchange(socket_path, post_pnr_historical_activation(operation_id))
+                self.assertEqual("post_pnr_historical_activation_receipt", receipt.kind, receipt.body)
+                self.assertEqual("managed", receipt.body["state"])
+                self.assertEqual(1, self.posts.count("/api/v2/torrents/start"))
+                self.assertEqual(ReservationState.QBITTORRENT_MANAGED, daemon._service._state.reservation(operation_id).state)
+                self.assertEqual(0, daemon._observability.status(qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True)["inflight"])
+                self.assertEqual(400, daemon._observability.status(qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True)["reserved_bytes"])
+                self.assertTrue(daemon._service.quiesce(enabled=True))
+                self.assertEqual("pausedDL", self.torrent["state"])
+                self.assertTrue(daemon._service.quiesce(enabled=False))
+                self.assertEqual("downloading", self.torrent["state"])
+                self.assertEqual(receipt, await self._exchange(socket_path, post_pnr_historical_activation_query(operation_id)))
+            finally:
+                server.close(); await server.wait_closed(); store.close(); daemon._test_lease.close()  # type: ignore[attr-defined]
+
+    async def test_restart_adopts_an_already_started_activation_without_a_second_start(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, operation_id = Path(directory), str(uuid.uuid4())
+            store, daemon = self._daemon(root)
+            self.assertEqual("post_pnr_historical_adoption_receipt", daemon._dispatch(self._request(operation_id)).kind)
+            candidate = daemon._service._state.clone()
+            candidate.request_historical_activation(PostPnrHistoricalActivationIntent(operation_id))
+            store.save(candidate)
+            self.torrent["state"] = "downloading"; self.posts.clear()
+            store.close(); daemon._test_lease.close()  # type: ignore[attr-defined]
+            restored_store, restored = self._daemon(root)
+            restored.recover()
+            receipt = restored._service.post_pnr_historical_activation_receipt(operation_id)
+            self.assertIsNotNone(receipt)
+            self.assertEqual(ReservationState.QBITTORRENT_MANAGED, restored._service._state.reservation(operation_id).state)
+            self.assertNotIn("/api/v2/torrents/start", self.posts)
+            restored_store.close(); restored._test_lease.close()  # type: ignore[attr-defined]
 
     async def test_restart_recovers_historical_intent_and_lost_tag_readback_without_repeating_effect(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

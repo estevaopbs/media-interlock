@@ -85,6 +85,13 @@ unowned qBittorrent observation supplies the durable expected size. Under the
 shared mutation lease Fence re-observes that exact profile identity, writes one
 intent and one tag, and returns one receipt binding the complete entity set.
 
+`post_pnr_historical_activation` is a second identity-free version-1 authority
+using the same operation ID. Fence derives every identity from its sealed
+historical intent, durably records activation before the exact leased start,
+then returns a `managed` receipt only after active read-back. Managed historical
+reservations retain ownership and bytes but are excluded from logical inflight
+admission; normal quiescence may pause and resume only their exact owned hash.
+
 ## Repository boundary
 
 The intended package layout is:

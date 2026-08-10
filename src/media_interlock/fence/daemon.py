@@ -72,6 +72,15 @@ class FenceDaemon:
         if envelope.kind == "post_pnr_historical_adoption_query":
             receipt = self._service.post_pnr_historical_receipt(envelope.operation_id)
             return receipt if receipt is not None else status_response(envelope.operation_id, StatusCode.UNAVAILABLE, "historical post-PNR adoption unavailable")
+        if envelope.kind == "post_pnr_historical_activation":
+            decision = self._service.post_pnr_historical_activate(envelope.operation_id)
+            if not decision.admitted:
+                return status_response(envelope.operation_id, StatusCode.CONFLICT if decision.reason == "conflict" else StatusCode.INHIBITED, decision.reason)
+            receipt = self._service.post_pnr_historical_activation_receipt(envelope.operation_id)
+            return receipt if receipt is not None else status_response(envelope.operation_id, StatusCode.INHIBITED, decision.reason)
+        if envelope.kind == "post_pnr_historical_activation_query":
+            receipt = self._service.post_pnr_historical_activation_receipt(envelope.operation_id)
+            return receipt if receipt is not None else status_response(envelope.operation_id, StatusCode.UNAVAILABLE, "historical post-PNR activation unavailable")
         if envelope.kind == "acquisition_freeze":
             frozen = self._service.freeze(envelope.operation_id)
             return status_response(envelope.operation_id, StatusCode.OK if frozen else StatusCode.INHIBITED, "acquisition frozen" if frozen else "acquisition freeze pending")

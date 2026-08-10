@@ -9,7 +9,7 @@ import _source_tree  # noqa: F401
 
 from media_interlock.contracts import ContractError, custody_receipt
 from media_interlock.adapters.arr import ArrExternalGrab, ArrExternalObservation
-from media_interlock.fence.model import ExternalAdoptionIntent, FencePolicy, FenceState, PostPnrAdoptionIntent, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentObservation, ReservationState
+from media_interlock.fence.model import ExternalAdoptionIntent, FencePolicy, FenceState, PostPnrAdoptionIntent, PostPnrHistoricalActivationIntent, PostPnrHistoricalAdoptionIntent, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentObservation, ReservationState
 from media_interlock.fence.headroom import HeadroomPool, PhysicalHeadroom
 from media_interlock.fence.service import FenceService, FenceSource
 from media_interlock.fence.store import FenceStore
@@ -35,6 +35,21 @@ def bound(state: FenceState, *, size: int = 400) -> None:
 
 
 class FenceStateTests(unittest.TestCase):
+    def test_managed_historical_reservations_keep_bytes_but_free_all_inflight_slots(self) -> None:
+        state = FenceState(FencePolicy(capacity_bytes=100_000, max_inflight=13))
+        operation_ids = [str(uuid.uuid4()) for _ in range(13)]
+        for index, operation_id in enumerate(operation_ids):
+            historical = PostPnrHistoricalAdoptionIntent(operation_id, "sonarr", 7, (str(index + 1),), f"{index:040x}", "media-interlock-sonarr", "/downloads/shows", 400, (index + 1,))
+            self.assertTrue(state.adopt_post_pnr_historical(historical, qbittorrent_ready=True).admitted)
+            state.request_tag(operation_id); state.mark_qbittorrent_tagged(operation_id, observed_bytes=400)
+            state.request_historical_activation(PostPnrHistoricalActivationIntent(operation_id)); state.mark_historical_managed(operation_id)
+        restored = FenceState.from_snapshot(FencePolicy(capacity_bytes=100_000, max_inflight=4), state.records(), {}, post_pnr_historical_adoptions=state.post_pnr_historical_records(), post_pnr_historical_activations=state.post_pnr_historical_activation_records())
+        self.assertEqual(5_200, restored.reserved_bytes)
+        for index in range(4):
+            decision = restored.pre_admit(PreAdmissionIntent(str(uuid.uuid4()), "radarr", f"movie-{index}", "c" * 64, 100, str(index)), qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True)
+            self.assertTrue(decision.admitted)
+        self.assertEqual("concurrency_exhausted", restored.pre_admit(PreAdmissionIntent(str(uuid.uuid4()), "radarr", "movie-final", "d" * 64, 100, "last"), qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True).reason)
+
     def test_terminal_reservation_requires_an_exact_freeze_before_hardlink_custody_release(self) -> None:
         state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
         bound(state)

@@ -17,6 +17,9 @@ from media_interlock.contracts import (
     post_pnr_adoption_query,
     post_pnr_adoption_receipt,
     post_pnr_historical_adoption,
+    post_pnr_historical_activation,
+    post_pnr_historical_activation_query,
+    post_pnr_historical_activation_receipt,
     post_pnr_historical_adoption_receipt,
     quiesce_request,
     publisher_assisted_complete,
@@ -34,6 +37,20 @@ OPERATION_ID = str(uuid.UUID("12345678-1234-4678-9234-567812345678"))
 
 
 class ContractTests(unittest.TestCase):
+    def test_historical_activation_is_an_identity_free_recovery_authority(self) -> None:
+        request = post_pnr_historical_activation(OPERATION_ID)
+        query = post_pnr_historical_activation_query(OPERATION_ID)
+        receipt = post_pnr_historical_activation_receipt(
+            OPERATION_ID, source="sonarr", download_client_id=7, entity_ids=("42", "43"),
+            torrent_hash="a" * 40, category="media-interlock-sonarr", save_path="/downloads/shows",
+            fence_reservation_id="fence:" + OPERATION_ID,
+        )
+
+        self.assertEqual({}, request.body)
+        self.assertEqual({}, query.body)
+        self.assertEqual("managed", receipt.body["state"])
+        self.assertEqual(receipt, Envelope.decode(receipt.encode()))
+
     def test_historical_post_pnr_contract_requires_a_canonical_entity_set(self) -> None:
         request = post_pnr_historical_adoption(
             operation_id=OPERATION_ID,

@@ -171,7 +171,7 @@ class Envelope:
     def __post_init__(self) -> None:
         if not isinstance(self.version, str) or self.version != CONTRACT_VERSION:
             raise ContractError("unsupported contract version")
-        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_pre_admission", "acquisition_grab_binding", "acquisition_freeze", "post_pnr_adoption", "post_pnr_adoption_query", "post_pnr_adoption_receipt", "post_pnr_historical_adoption", "post_pnr_historical_adoption_query", "post_pnr_historical_adoption_receipt", "terminal_acquisition", "custody_receipt", "publisher_bootstrap", "publisher_assisted_intent", "publisher_assisted_complete", "publisher_operation_query", "publisher_operation_status", "publisher_operation_receipt", "metrics", "observe", "quiesce"}:
+        if not isinstance(self.kind, str) or self.kind not in {"status", "acquisition_pre_admission", "acquisition_grab_binding", "acquisition_freeze", "post_pnr_adoption", "post_pnr_adoption_query", "post_pnr_adoption_receipt", "post_pnr_historical_adoption", "post_pnr_historical_adoption_query", "post_pnr_historical_adoption_receipt", "post_pnr_historical_activation", "post_pnr_historical_activation_query", "post_pnr_historical_activation_receipt", "terminal_acquisition", "custody_receipt", "publisher_bootstrap", "publisher_assisted_intent", "publisher_assisted_complete", "publisher_operation_query", "publisher_operation_status", "publisher_operation_receipt", "metrics", "observe", "quiesce"}:
             raise ContractError("unknown contract kind")
         _operation_id(self.operation_id)
         normalized = _json_body(self.body)
@@ -204,6 +204,13 @@ class Envelope:
         elif self.kind == "post_pnr_historical_adoption_receipt":
             if normalized.get("state") != "adopted" or not isinstance(normalized.get("fence_reservation_id"), str) or not normalized["fence_reservation_id"]:
                 raise ContractError("historical post-PNR adoption receipt fields are invalid")
+            _post_pnr_historical_adoption_body({key: value for key, value in normalized.items() if key not in {"state", "fence_reservation_id"}})
+        elif self.kind in {"post_pnr_historical_activation", "post_pnr_historical_activation_query"}:
+            if normalized:
+                raise ContractError("historical post-PNR activation has fields")
+        elif self.kind == "post_pnr_historical_activation_receipt":
+            if normalized.get("state") != "managed" or not isinstance(normalized.get("fence_reservation_id"), str) or not normalized["fence_reservation_id"]:
+                raise ContractError("historical post-PNR activation receipt fields are invalid")
             _post_pnr_historical_adoption_body({key: value for key, value in normalized.items() if key not in {"state", "fence_reservation_id"}})
         elif self.kind == "terminal_acquisition":
             expected = {"bytes_reserved", "download_id", "fence_reservation_id", "media_id", "source", "upstream_id"}
@@ -379,6 +386,27 @@ def post_pnr_historical_adoption_receipt(operation_id: str, *, source: str, down
         "save_path": save_path,
         "fence_reservation_id": fence_reservation_id,
         "state": "adopted",
+    })
+
+
+def post_pnr_historical_activation(operation_id: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "post_pnr_historical_activation", _operation_id(operation_id), {})
+
+
+def post_pnr_historical_activation_query(operation_id: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "post_pnr_historical_activation_query", _operation_id(operation_id), {})
+
+
+def post_pnr_historical_activation_receipt(operation_id: str, *, source: str, download_client_id: int, entity_ids: tuple[str, ...] | list[str], torrent_hash: str, category: str, save_path: str, fence_reservation_id: str) -> Envelope:
+    return Envelope(CONTRACT_VERSION, "post_pnr_historical_activation_receipt", _operation_id(operation_id), {
+        "source": source,
+        "download_client_id": download_client_id,
+        "entity_ids": list(entity_ids),
+        "torrent_hash": torrent_hash,
+        "category": category,
+        "save_path": save_path,
+        "fence_reservation_id": fence_reservation_id,
+        "state": "managed",
     })
 
 

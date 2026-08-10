@@ -47,6 +47,11 @@ Historical post-PNR gates additionally prove Queue-absent Radarr singletons and
 Sonarr packs, exact complete History sets, Queue agreement when present,
 qBittorrent-derived size when absent, conflicting hash claims, and recovery at
 intent, tag, persistence, read-back, restart, and lost-response boundaries.
+Historical activation gates use the same real HTTP adapters, Unix daemon,
+SQLite store, and shared lease to prove intent-before-start, active read-back,
+lost-response query, restart recovery without duplicate start, exact quiesce
+pause/resume, retained bytes, and the exclusion of managed historical
+reservations from logical inflight admission only.
 Deployment tests also reject overlapping roots, competing canonical writers,
 auto-resuming downloads, and a competing qBittorrent resume credential.
 
