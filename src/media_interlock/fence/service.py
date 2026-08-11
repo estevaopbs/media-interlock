@@ -47,6 +47,8 @@ class MutationLease(Protocol):
 
 
 class ArrExternalObserver(Protocol):
+    def history_watermark(self) -> int | None: ...
+
     def external_grabs_after(self, watermark: int, *, category: str, download_client_id: int): ...
 
     def sealed_external_grab(self, entity_id: str, torrent_hash: str, *, category: str, download_client_id: int): ...
@@ -155,20 +157,26 @@ class FenceService:
             if observer is None:
                 continue
             watermark = self._state.watermark(source_name)
-            try:
-                observation = observer.external_grabs_after(0 if watermark is None else watermark, category=source.category, download_client_id=source.download_client_id)
-            except Exception:
-                return False
-            if observation is None:
-                return False
             if watermark is None:
+                try:
+                    baseline = observer.history_watermark()
+                except Exception:
+                    return False
+                if baseline is None:
+                    return False
                 candidate = self._state.clone()
                 try:
-                    candidate.record_watermark(source_name, observation.watermark)
+                    candidate.record_watermark(source_name, baseline)
                 except Exception:
                     return False
                 self._persist(candidate)
                 continue
+            try:
+                observation = observer.external_grabs_after(watermark, category=source.category, download_client_id=source.download_client_id)
+            except Exception:
+                return False
+            if observation is None:
+                return False
             if observation.watermark < watermark:
                 return False
             for grab in observation.grabs:

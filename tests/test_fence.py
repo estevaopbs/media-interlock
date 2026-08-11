@@ -565,21 +565,22 @@ class FenceServiceTests(unittest.TestCase):
 
         class Observer:
             calls: list[int] = []
+            def history_watermark(self) -> int: return 7
             def external_grabs_after(self, watermark: int, **_: object) -> ArrExternalObservation:
                 self.calls.append(watermark)
-                return ArrExternalObservation(7, ()) if watermark == 0 else ArrExternalObservation(8, (grab,))
+                return ArrExternalObservation(8, (grab,))
 
         state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
         observer = Observer()
         service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": FenceSource(CATEGORY, Path("/downloads/radarr"), 7)}, observers={"radarr": observer})
 
         self.assertTrue(service.poll_external(publisher_ready=True))
-        self.assertEqual((0,), tuple(observer.calls))
+        self.assertEqual((), tuple(observer.calls))
         self.assertEqual([], [event for event in events if event.startswith(("tag:", "resume:"))])
         self.assertEqual(7, state.watermark("radarr"))
 
         self.assertTrue(service.poll_external(publisher_ready=True))
-        self.assertEqual((0, 7), tuple(observer.calls))
+        self.assertEqual((7,), tuple(observer.calls))
         reservation = next(iter(state.records()))
         self.assertEqual(HASH, reservation["torrent_hash"])
         self.assertIsNotNone(reservation["observation_fingerprint"])
@@ -603,8 +604,9 @@ class FenceServiceTests(unittest.TestCase):
         grab = ArrExternalGrab("42", HASH.upper(), HASH, 400, 8)
 
         class Observer:
+            def history_watermark(self) -> int: return 7
             def external_grabs_after(self, watermark: int, **_: object) -> ArrExternalObservation:
-                return ArrExternalObservation(7, ()) if watermark == 0 else ArrExternalObservation(8, (grab,))
+                return ArrExternalObservation(8, (grab,))
 
         state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
         service = FenceService(
@@ -642,8 +644,9 @@ class FenceServiceTests(unittest.TestCase):
 
         grab = ArrExternalGrab("42", HASH, HASH, 400, 8)
         class Observer:
+            def history_watermark(self) -> int: return 7
             def external_grabs_after(self, watermark: int, **_: object) -> ArrExternalObservation:
-                return ArrExternalObservation(7, ()) if watermark == 0 else ArrExternalObservation(8, (grab,))
+                return ArrExternalObservation(8, (grab,))
 
         state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
         qbittorrent = Qbittorrent()

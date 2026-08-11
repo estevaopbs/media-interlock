@@ -18,9 +18,11 @@ active only when configured.
 
 ## Project status
 
-MediaInterlock 0.1.17 is the current immutable public
-[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.17).
-Version 0.1.16 remains preserved as its immutable predecessor.
+MediaInterlock 0.1.18 is the current immutable public
+[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.18).
+Version 0.1.17 remains preserved as its immutable predecessor.
+Version 0.1.18 baselines a newly observed Arr source from its highest public
+History ID without trying to correlate historical grabs with the current Queue.
 Version 0.1.17 lets Fence adopt an exact external stopped magnet whose Queue
 size is still zero by accounting the positive release size sealed in Arr
 History. Version 0.1.16 repairs that identity and an unobserved catalog path
