@@ -213,15 +213,22 @@ class PublisherState:
         ):
             raise ContractError("catalog expectation transition is invalid")
         existing = (publication.catalog_library_id, publication.expected_catalog_path)
-        if existing != (None, None) and existing != (library_id, expected_catalog_path):
+        changed = existing != (None, None) and existing != (library_id, expected_catalog_path)
+        if changed and (
+            publication.state is PublicationState.DELIVERED
+            or publication.catalog_item_id is not None
+            or publication.catalog_media_source_id is not None
+        ):
             raise ContractError("catalog expectation conflicts with durable Publisher state")
-        legacy_observation = publication.state is PublicationState.CATALOG_PENDING and existing == (None, None)
+        reset_observation = publication.state is PublicationState.CATALOG_PENDING and (
+            existing == (None, None) or changed
+        )
         self._publications[operation_id] = replace(
             publication,
             catalog_library_id=library_id,
             expected_catalog_path=expected_catalog_path,
-            catalog_item_id=None if legacy_observation else publication.catalog_item_id,
-            catalog_media_source_id=None if legacy_observation else publication.catalog_media_source_id,
+            catalog_item_id=None if reset_observation else publication.catalog_item_id,
+            catalog_media_source_id=None if reset_observation else publication.catalog_media_source_id,
         )
 
     def mark_catalog_observed(self, operation_id: str, item_id: str, media_source_id: str) -> None:

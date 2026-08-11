@@ -292,6 +292,20 @@ class AssetGenerationPublisher:
                 pass
         return slot_path / payload.name
 
+    def ensure_catalog_identity(
+        self,
+        asset_slot: str,
+        generation_id: str,
+        item_type: str,
+        provider_ids: Mapping[str, str],
+    ) -> Path:
+        payload = self.generation_payload(asset_slot, generation_id)
+        self._ensure_catalog_nfo(payload, item_type, provider_ids)
+        self._seal_bundle_modes(payload.parent)
+        os.chmod(payload.parent, 0o755)
+        GenerationPublisher._fsync_directory(payload.parent)
+        return payload
+
     @staticmethod
     def _ensure_catalog_nfo(
         payload: Path,

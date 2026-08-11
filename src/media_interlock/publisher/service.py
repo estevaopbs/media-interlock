@@ -69,6 +69,8 @@ class AssetGenerationControl(Protocol):
 
     def publish(self, asset_slot: str, generation_id: str, candidate: VerifiedCandidate | VerifiedBundle, *, previous_generation_id: str | None = None, hardlink_frozen: bool = False, item_type: str | None = None, provider_ids: Mapping[str, str] | None = None) -> Path: ...
 
+    def ensure_catalog_identity(self, asset_slot: str, generation_id: str, item_type: str, provider_ids: Mapping[str, str]) -> Path: ...
+
     def garbage_collect(self, asset_slot: str, retained_generation_ids: set[str]) -> None: ...
 
 
@@ -470,6 +472,13 @@ class AssetPublisherWorkProcessor:
                 self._service.commit_asset_generation(operation_id, self._generations)
             publication = self._service._state.publication(operation_id)
             if publication.state is PublicationState.CATALOG_PENDING:
+                assert publication.asset_slot and publication.generation_id and publication.item_type and publication.provider_ids is not None
+                self._generations.ensure_catalog_identity(
+                    publication.asset_slot,
+                    publication.generation_id,
+                    publication.item_type,
+                    dict(publication.provider_ids),
+                )
                 if self._service.observe_and_deliver_asset(operation_id, self._catalog, self._translation, library_id=self._library_id):
                     self._service.garbage_collect_assets(self._generations)
             publication = self._service._state.publication(operation_id)

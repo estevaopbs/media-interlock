@@ -1,10 +1,10 @@
 # Current state
 
-MediaInterlock 0.1.15 is the immutable public downstream-consumption release.
-Fence now retries each durable completed acquisition to Publisher until it can
-accept the exact custody receipt, without a deployment-owned relay.
+MediaInterlock 0.1.16 is the immutable public downstream-consumption release.
+Publisher now repairs a missing catalog identity sidecar and rebinds an
+unobserved pending catalog path after a deployment mount change.
 Its annotated tag
-[`v0.1.15`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.15)
+[`v0.1.16`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.16)
 resolves to its immutable source commit. The release publishes one wheel and
 three public OCI manifests, each executing Python 3.14.7. Its canonical
 artifact manifest binds all identities to one source revision and version.

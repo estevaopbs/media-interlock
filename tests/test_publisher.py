@@ -119,6 +119,30 @@ class PublisherCustodyTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "conflicts"):
             state.bind_catalog_expectation(OPERATION_ID, "library-2", "/other/payload.mkv")
 
+    def test_unobserved_catalog_pending_binding_can_follow_a_new_mount_prefix(self) -> None:
+        state = PublisherState()
+        state.adopt_terminal(self.terminal())
+        state.mark_candidate_verified(OPERATION_ID, "movie.mkv", 5, "a" * 64)
+        state.bind_asset_identity(OPERATION_ID, "radarr:tmdb-42", "Movie", {"Tmdb": "42"})
+        state.record_generation_intent(OPERATION_ID, None)
+        state.mark_generation_committed(OPERATION_ID)
+        state.bind_catalog_expectation(
+            OPERATION_ID,
+            "library-1",
+            "/old/radarr-tmdb-42/payload.mkv",
+        )
+        state.mark_notification_attempted(OPERATION_ID)
+
+        state.bind_catalog_expectation(
+            OPERATION_ID,
+            "library-1",
+            "/new/radarr-tmdb-42/payload.mkv",
+        )
+
+        publication = state.publication(OPERATION_ID)
+        self.assertEqual("/new/radarr-tmdb-42/payload.mkv", publication.expected_catalog_path)
+        self.assertIsNone(publication.catalog_item_id)
+
     def test_sealed_bundle_manifest_survives_a_publisher_state_round_trip(self) -> None:
         from media_interlock.publisher.filesystem import BundleVerifier
 
@@ -320,6 +344,8 @@ class PublisherCustodyTests(unittest.TestCase):
                 def publish(self, _asset: str, _generation: str, candidate, **__: object) -> Path:
                     self.candidate = candidate
                     return Path("/canonical/library/radarr-tmdb-42/payload.mkv")
+                def ensure_catalog_identity(self, *_: object) -> Path:
+                    return Path("/canonical/library/radarr-tmdb-42/payload.mkv")
 
             state = PublisherState()
             service = PublisherService(state, Store())
@@ -345,6 +371,8 @@ class PublisherCustodyTests(unittest.TestCase):
             def visible_generation(self, _: str) -> None: return None
             def publish(self, _asset: str, _generation: str, _candidate: object, **kwargs: object) -> Path:
                 self.hardlink_frozen = kwargs["hardlink_frozen"]
+                return Path("/canonical/library/radarr-tmdb-42/payload.mkv")
+            def ensure_catalog_identity(self, *_: object) -> Path:
                 return Path("/canonical/library/radarr-tmdb-42/payload.mkv")
             def garbage_collect(self, *_: object) -> None: pass
 
@@ -769,6 +797,32 @@ class CandidateFilesystemTests(unittest.TestCase):
             nfo = payload.with_suffix(".nfo")
             self.assertEqual(0o444, nfo.stat().st_mode & 0o777)
             self.assertIn(b'<uniqueid type="tmdb" default="true">45745</uniqueid>', nfo.read_bytes())
+
+    def test_catalog_pending_generation_repairs_a_missing_identity_sidecar(self) -> None:
+        from media_interlock.publisher.generation import AssetGenerationPublisher
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            canonical = Path(directory) / "canonical"
+            staging.mkdir()
+            canonical.mkdir()
+            (staging / "movie.mkv").write_bytes(b"video")
+            publisher = AssetGenerationPublisher(staging, canonical, namespace="library")
+            payload = publisher.publish(
+                "radarr:tmdb-45745",
+                OPERATION_ID,
+                CandidateVerifier(staging).verify("movie.mkv"),
+            )
+            self.assertFalse(payload.with_suffix(".nfo").exists())
+
+            publisher.ensure_catalog_identity(
+                "radarr:tmdb-45745",
+                OPERATION_ID,
+                "Movie",
+                {"Tmdb": "45745"},
+            )
+
+            self.assertIn(b">45745</uniqueid>", payload.with_suffix(".nfo").read_bytes())
 
     def test_asset_slots_keep_unrelated_assets_visible_across_updates(self) -> None:
         from media_interlock.publisher.generation import AssetGenerationPublisher
