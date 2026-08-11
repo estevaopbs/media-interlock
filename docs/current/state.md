@@ -1,12 +1,22 @@
 # Current state
 
-MediaInterlock 0.1.20 is the immutable public downstream-consumption release.
-Publisher keeps immutable generations and stable asset pointers private while
+MediaInterlock 0.1.21 is the immutable public downstream-consumption release.
+Reconciler now has a product-owned automatic loop that inventories existing
+Radarr and Sonarr files against native quality-profile cutoffs. It persists
+per-file-generation checkpoints and rolling budgets, calculates configurable
+geometric cooldowns from media age, optionally performs one final search at
+the terminal horizon, preserves native Arr release ordering, and applies
+configured score/custom-format filters before a bounded Fence-mediated grab.
+Its annotated tag
+[`v0.1.21`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.21)
+resolves to its immutable source commit.
+
+Version 0.1.20 remains preserved as its immutable predecessor. Publisher keeps
+immutable generations and stable asset pointers private while
 exposing their media and sidecars as regular hardlinks at the exact Arr-derived
 relative path. This preserves the native movie and series hierarchy consumed
 by scanners that ignore file symlinks, including Jellyfin, and recovers an
 unobserved pending generation from either preceding public layout.
-Version 0.1.19 remains preserved as its immutable predecessor.
 Its annotated tag
 [`v0.1.20`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.20)
 resolves to its immutable source commit. The release publishes one wheel and
@@ -115,10 +125,10 @@ and exact static direct-play verification before delivery.
 Publisher also exposes a per-operation public projection without requiring
 access to its private SQLite state; aggregate metrics remain metadata-free.
 
-Reconciler has a private durable intent store, typed movie and episode policy,
-native ordered Arr release selection, causal Queue/History polling, exact
-Unix Fence pre-admission and grab binding, and conservative recovery across
-possible release effects.
+Reconciler has private durable intent and schedule state, typed independent
+movie and episode policy, full existing-file inventory, native ordered Arr
+release selection, causal Queue/History polling, exact Unix Fence pre-admission
+and grab binding, and conservative recovery across possible release effects.
 
 The release rehearsal runs the production HTTP adapter code against disposable
 pinned-shape upstreams, invokes the Reconciler CLI, crosses both daemon Unix

@@ -136,8 +136,8 @@ shared domain model, or universal client.
 - The fence owns acquisition admission, reservations, qBittorrent effects,
   observed transfer state, and seeding constraints.
 
-The component pages own their detailed behavior. Stack lifecycle, scheduler
-installation, reverse proxies, network namespaces, firewall rules, backups,
+The component pages own their detailed behavior. Stack lifecycle, process
+supervision, reverse proxies, network namespaces, firewall rules, backups,
 snapshots, restore, and local migrations remain outside the package.
 
 ## Adapters
@@ -231,12 +231,13 @@ preconditions are not optional policy and cannot be replaced by operator trust.
 
 ## Interfaces, packaging, and platform
 
-The reconciler is a one-shot job. Publisher and fence are daemons. Version 1
-uses newline-delimited canonical JSON envelopes over local Unix sockets only.
+The reconciler supports one-shot passes and a product-owned scheduling daemon;
+Publisher and fence are daemons. Version 1 uses newline-delimited canonical
+JSON envelopes over local Unix sockets only.
 Every envelope has a version, kind, operation identity, and body; unknown
 fields and unsupported versions fail closed. Container deployments mount an
-explicit shared runtime directory. TCP APIs, a web UI, and an embedded scheduler
-are not initial features.
+explicit shared runtime directory. TCP APIs and a web UI are not initial
+features.
 
 Each component exposes bounded `--version` and `--check-config` probes; the
 daemons additionally expose local status and metrics. Distribution targets are

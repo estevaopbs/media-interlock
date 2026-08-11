@@ -162,12 +162,24 @@ class ReconciliationPolicy:
     minimum_age_days: int
     terminal_horizon_days: int
     cooldown_seconds: int
+    cooldown_step_days: int
+    cooldown_multiplier: float
+    maximum_cooldown_seconds: int
+    final_search: bool
     max_attempts: int
     max_searches_per_run: int
+    max_searches_per_hour: int
+    max_searches_per_day: int
+    max_grabs_per_run: int
+    minimum_candidate_score: int
+    minimum_score_gain: int
+    required_candidate_formats: tuple[str, ...]
+    forbidden_candidate_formats: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class ReconcilerConfig(ComponentConfig):
+    poll_interval_seconds: int
     movie: ReconciliationPolicy
     episode: ReconciliationPolicy
     sources: Mapping[str, ReconcilerSourceProfile]
@@ -258,6 +270,44 @@ def _optional_nonnegative(table: Mapping[str, object], name: str, location: str,
     if name not in table:
         return default
     return _required_nonnegative(table, name, location, maximum)
+
+
+def _optional_integer(table: Mapping[str, object], name: str, location: str, minimum: int, maximum: int, *, default: int) -> int:
+    value = table.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ConfigError(f"{location}.{name} must be a bounded integer")
+    return value
+
+
+def _optional_positive(table: Mapping[str, object], name: str, location: str, maximum: int, *, default: int) -> int:
+    if name not in table:
+        return default
+    return _required_positive(table, name, location, maximum)
+
+
+def _optional_bool(table: Mapping[str, object], name: str, location: str, *, default: bool) -> bool:
+    value = table.get(name, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f"{location}.{name} must be boolean")
+    return value
+
+
+def _optional_multiplier(table: Mapping[str, object], name: str, location: str, *, default: float) -> float:
+    value = table.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 1.0 <= float(value) <= 100.0:
+        raise ConfigError(f"{location}.{name} must be a bounded multiplier")
+    return float(value)
+
+
+def _optional_format_names(table: Mapping[str, object], name: str, location: str) -> tuple[str, ...]:
+    raw = table.get(name, [])
+    if not isinstance(raw, list) or len(raw) > 64:
+        raise ConfigError(f"{location}.{name} must be a bounded list")
+    if any(not isinstance(value, str) or not value or len(value) > 128 or "\x00" in value for value in raw):
+        raise ConfigError(f"{location}.{name} has an invalid value")
+    if len(set(raw)) != len(raw):
+        raise ConfigError(f"{location}.{name} must not repeat values")
+    return tuple(raw)
 
 
 def _optional_bundle_strings(table: Mapping[str, object], name: str, location: str, *, default: tuple[str, ...], extension: bool = False) -> tuple[str, ...]:
@@ -366,7 +416,14 @@ def _required_posix_prefix(table: Mapping[str, object], name: str, location: str
 
 
 def _reconciliation_policy(table: Mapping[str, object], location: str) -> ReconciliationPolicy:
-    _require_keys(table, {"minimum_age_days", "terminal_horizon_days", "cooldown_seconds", "max_attempts", "max_searches_per_run"}, location)
+    _require_keys(table, {
+        "minimum_age_days", "terminal_horizon_days", "cooldown_seconds",
+        "cooldown_step_days", "cooldown_multiplier", "maximum_cooldown_seconds",
+        "final_search", "max_attempts", "max_searches_per_run",
+        "max_searches_per_hour", "max_searches_per_day", "max_grabs_per_run",
+        "minimum_candidate_score", "minimum_score_gain",
+        "required_candidate_formats", "forbidden_candidate_formats",
+    }, location)
     minimum_age_days = _required_nonnegative(table, "minimum_age_days", location, 36_500)
     terminal_horizon_days = _required_positive(table, "terminal_horizon_days", location, 36_500)
     if terminal_horizon_days < minimum_age_days:
@@ -375,8 +432,19 @@ def _reconciliation_policy(table: Mapping[str, object], location: str) -> Reconc
         minimum_age_days,
         terminal_horizon_days,
         _required_nonnegative(table, "cooldown_seconds", location, 31_536_000),
+        _optional_positive(table, "cooldown_step_days", location, 36_500, default=7),
+        _optional_multiplier(table, "cooldown_multiplier", location, default=1.0),
+        _optional_nonnegative(table, "maximum_cooldown_seconds", location, 31_536_000, default=0),
+        _optional_bool(table, "final_search", location, default=False),
         _required_positive(table, "max_attempts", location, 1000),
         _required_positive(table, "max_searches_per_run", location, 10_000),
+        _optional_positive(table, "max_searches_per_hour", location, 10_000, default=10_000),
+        _optional_positive(table, "max_searches_per_day", location, 100_000, default=100_000),
+        _optional_positive(table, "max_grabs_per_run", location, 10_000, default=1),
+        _optional_integer(table, "minimum_candidate_score", location, -(2**31), 2**31 - 1, default=-(2**31)),
+        _optional_integer(table, "minimum_score_gain", location, -(2**31), 2**31 - 1, default=-(2**31)),
+        _optional_format_names(table, "required_candidate_formats", location),
+        _optional_format_names(table, "forbidden_candidate_formats", location),
     )
 
 
@@ -596,11 +664,12 @@ def load_config(path: Path) -> ProductConfig:
     reconciler = components["reconciler"]
     if reconciler is not None:
         table = _table(document["reconciler"], "reconciler")
-        _require_keys(table, {"state_dir", "socket_path", "movie", "episode"}, "reconciler")
+        _require_keys(table, {"state_dir", "socket_path", "poll_interval_seconds", "movie", "episode"}, "reconciler")
         reconciler = ReconcilerConfig(
             reconciler.name,
             reconciler.state_dir,
             reconciler.socket_path,
+            _optional_positive(table, "poll_interval_seconds", "reconciler", 86_400, default=300),
             _reconciliation_policy(_table(table.get("movie"), "reconciler.movie"), "reconciler.movie"),
             _reconciliation_policy(_table(table.get("episode"), "reconciler.episode"), "reconciler.episode"),
             {name: ReconcilerSourceProfile(name, source.kind, source.category, source.download_client_id) for name, source in sources.items()},

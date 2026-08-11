@@ -25,6 +25,11 @@ class ArrCorrelationTests(unittest.TestCase):
         self.release_payload: object = [{"approved": True, "protocol": "torrent", "guid": "release-42", "title": "fixture.movie.2026", "size": 400, "downloadUrl": "https://indexer.invalid/release"}]
         self.queue_payload: object = {"records": []}
         self.download_clients: object = []
+        self.cutoff_payload: object = {"records": [], "totalRecords": 0}
+        self.series_payload: object = []
+        self.profiles_payload: object = []
+        self.episodes_payload: object = []
+        self.movies_payload: object = []
         self.release_post: object | None = None
         outer = self
 
@@ -51,6 +56,28 @@ class ArrCorrelationTests(unittest.TestCase):
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
                     self.wfile.write(json.dumps(outer.queue_payload).encode())
+                    return
+                if self.path.startswith("/api/v3/wanted/cutoff?"):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(outer.cutoff_payload).encode())
+                    return
+                if self.path == "/api/v3/series":
+                    data = outer.series_payload
+                elif self.path == "/api/v3/qualityprofile":
+                    data = outer.profiles_payload
+                elif self.path.startswith("/api/v3/episode?"):
+                    data = outer.episodes_payload
+                elif self.path == "/api/v3/movie?includeMovieFile=true":
+                    data = outer.movies_payload
+                else:
+                    data = None
+                if data is not None:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(data).encode())
                     return
                 if self.path == "/api/v3/downloadclient":
                     self.send_response(200)
@@ -221,6 +248,129 @@ class ArrCorrelationTests(unittest.TestCase):
         self.assertEqual(expected, self.release_post)
         assert self.request is not None
         self.assertEqual("/api/v3/release?movieId=42", self.request[0])
+
+    def test_cutoff_inventory_exposes_release_age_generation_and_current_score(self) -> None:
+        self.cutoff_payload = {
+            "records": [{
+                "id": 42,
+                "airDateUtc": "2026-08-02T15:00:00Z",
+                "episodeFileId": 7,
+                "episodeFile": {"id": 7, "customFormatScore": 4_000},
+            }],
+            "totalRecords": 1,
+        }
+
+        entities = self.adapter(SonarrAdapter).cutoff_entities()
+
+        self.assertIsNotNone(entities)
+        assert entities is not None
+        self.assertEqual(1, len(entities))
+        self.assertEqual("sonarr", entities[0].source)
+        self.assertEqual("42", entities[0].entity_id)
+        self.assertEqual("7", entities[0].generation)
+        self.assertEqual(4_000, entities[0].current_score)
+        self.assertEqual(1_785_682_800, entities[0].released_at)
+
+    def test_full_inventory_keeps_unmonitored_files_below_custom_format_cutoff(self) -> None:
+        self.series_payload = [{"id": 5, "qualityProfileId": 8}]
+        self.profiles_payload = [{
+            "id": 8,
+            "upgradeAllowed": True,
+            "cutoff": 3,
+            "cutoffFormatScore": 8_000,
+            "minUpgradeFormatScore": 1,
+            "items": [{"quality": {"id": 3}, "items": [], "allowed": True}],
+        }]
+        self.episodes_payload = [{
+            "id": 42,
+            "hasFile": True,
+            "monitored": False,
+            "airDateUtc": "2026-08-02T15:00:00Z",
+            "episodeFileId": 7,
+            "episodeFile": {
+                "id": 7,
+                "customFormatScore": 4_000,
+                "quality": {"quality": {"id": 3}},
+            },
+        }]
+
+        entities = self.adapter(SonarrAdapter).upgrade_entities()
+
+        self.assertIsNotNone(entities)
+        assert entities is not None
+        self.assertEqual(("42",), tuple(entity.entity_id for entity in entities))
+        self.assertEqual(4_000, entities[0].current_score)
+
+    def test_radarr_full_inventory_finds_existing_file_below_profile_cutoff(self) -> None:
+        self.profiles_payload = [{
+            "id": 7,
+            "upgradeAllowed": True,
+            "cutoff": 3,
+            "cutoffFormatScore": 57_000,
+            "minUpgradeFormatScore": 1,
+            "items": [{"quality": {"id": 3}, "items": [], "allowed": True}],
+        }]
+        self.movies_payload = [{
+            "id": 42,
+            "hasFile": True,
+            "qualityProfileId": 7,
+            "digitalRelease": "2026-08-02T15:00:00Z",
+            "movieFileId": 9,
+            "movieFile": {
+                "id": 9,
+                "customFormatScore": 4_000,
+                "quality": {"quality": {"id": 3}},
+            },
+        }]
+
+        entities = self.adapter(RadarrAdapter).upgrade_entities()
+
+        self.assertIsNotNone(entities)
+        assert entities is not None
+        self.assertEqual(("42",), tuple(entity.entity_id for entity in entities))
+        self.assertEqual("9", entities[0].generation)
+        self.assertEqual(4_000, entities[0].current_score)
+
+    def test_candidate_policy_filters_scores_and_formats_without_reordering_arr(self) -> None:
+        self.release_payload = [
+            {
+                "approved": True, "protocol": "torrent", "guid": "original",
+                "title": "fixture.original", "size": 400,
+                "downloadUrl": "https://indexer.invalid/original",
+                "customFormatScore": 4_000,
+                "customFormats": [{"name": "Original"}],
+            },
+            {
+                "approved": True, "protocol": "torrent", "guid": "dual",
+                "title": "fixture.dual", "size": 500,
+                "downloadUrl": "https://indexer.invalid/dual",
+                "customFormatScore": 8_000,
+                "customFormats": [{"name": "Original + PT-BR"}, {"name": "Erai-raws"}],
+            },
+        ]
+        configured = __import__("test_reconciler_scheduler").policy(
+            minimum_candidate_score=8_000,
+            minimum_score_gain=1_000,
+            required_candidate_formats=("Original + PT-BR",),
+            forbidden_candidate_formats=("AI upscale",),
+        )
+
+        result = self.adapter(SonarrAdapter).approved_release("42", configured, current_score=4_000)
+
+        self.assertTrue(result.available)
+        self.assertIsNotNone(result.release)
+        assert result.release is not None
+        self.assertEqual("fixture.dual", result.release.resource["title"])
+
+    def test_valid_empty_interactive_search_is_distinct_from_adapter_failure(self) -> None:
+        self.release_payload = []
+
+        result = self.adapter(SonarrAdapter).approved_release(
+            "42", __import__("test_reconciler_scheduler").policy(), current_score=4_000
+        )
+
+        self.assertTrue(result.available)
+        self.assertIsNone(result.release)
 
     def test_interactive_selection_never_skips_an_invalid_first_approved_decision(self) -> None:
         adapter = self.adapter(RadarrAdapter)

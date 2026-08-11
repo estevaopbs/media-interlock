@@ -1,6 +1,6 @@
 # Operations
 
-The current public 0.1.20 release contains one wheel plus Reconciler, Fence, and
+The current public 0.1.21 release contains one wheel plus Reconciler, Fence, and
 Publisher OCI images.
 This page is not an installation guide and no live deployment has been tested.
 
@@ -20,7 +20,10 @@ opening state or contacting an adapter. Fence and Publisher additionally accept
 `--config FILE --status` to query their existing local daemon. These probes do
 not supervise, start, stop, or reconfigure another process.
 
-Reconciler runs to completion under an external scheduler or on demand.
+Reconciler accepts an explicit entity for an on-demand run, `--run-due` for one
+automatic inventory pass, or `--daemon` for its product-owned recurring loop.
+The deployment service manager supervises the daemon; no downstream recurring
+script or timer is required.
 Publisher and fence run independently and expose health, metrics, and versioned
 Unix socket endpoints. `media-interlock-publisher --config FILE --status` and
 the corresponding Fence command query only their local daemon status. They do
@@ -59,6 +62,17 @@ adapter sections; each process reads only its owned typed projection.
 Configuration files contain no secret values. Secret references use `env:` or
 `file:` forms, resolve only when an adapter first needs them, and are redacted from
 diagnostics.
+
+`reconciler.poll_interval_seconds` controls the automatic loop interval. The
+independent `[reconciler.movie]` and `[reconciler.episode]` policies configure
+minimum age, terminal horizon, base cooldown, cooldown age-step and multiplier,
+optional cooldown cap, optional final search, maximum attempts, per-run/hour/day
+search budgets, per-run grab budget, minimum candidate score and gain, and
+required or forbidden Arr custom-format names. A zero cooldown cap means no cap.
+Arr quality-profile ordering, cutoff, custom-format scores, and approval remain
+the native resolution, audio, subtitle, and release-group ranking authority;
+MediaInterlock preserves that order and may only narrow it with its configured
+candidate filters.
 
 Startup fails before side effects when configuration is unknown, ambiguous, or
 incompatible. A missing optional adapter disables only capabilities that depend

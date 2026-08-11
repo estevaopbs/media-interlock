@@ -6,13 +6,15 @@ import json
 import hashlib
 from dataclasses import dataclass
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request
 
-from ..config import SecretReference
+from ..config import ReconciliationPolicy, SecretReference
+from ..reconciler.scheduler import UpgradeEntity
 from ._http import request_bytes
 
 
@@ -29,6 +31,14 @@ class ArrRelease:
     resource: dict[str, object]
     selector_fingerprint: str
     expected_bytes: int
+
+
+@dataclass(frozen=True)
+class ArrReleaseSearch:
+    """A completed interactive search, including a valid empty result."""
+
+    available: bool
+    release: ArrRelease | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +80,64 @@ class ArrExternalObservation:
     grabs: tuple[ArrExternalGrab, ...]
 
 
+def _utc_timestamp(value: object) -> int | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    timestamp = int(parsed.timestamp())
+    return timestamp if timestamp >= 0 else None
+
+
+def _profile_needs_upgrade(profile: object, file: object) -> bool | None:
+    if not isinstance(profile, dict) or not isinstance(file, dict) or profile.get("upgradeAllowed") is not True:
+        return False
+    current_score = file.get("customFormatScore", 0)
+    cutoff_score = profile.get("cutoffFormatScore", 0)
+    minimum_gain = profile.get("minUpgradeFormatScore", 1)
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in (current_score, cutoff_score, minimum_gain)):
+        return None
+    if current_score < cutoff_score and cutoff_score - current_score >= minimum_gain:
+        return True
+    quality = file.get("quality")
+    current_quality = quality.get("quality") if isinstance(quality, dict) else None
+    current_id = _public_id(current_quality.get("id")) if isinstance(current_quality, dict) else None
+    cutoff_id = _public_id(profile.get("cutoff"))
+    items = profile.get("items")
+    if current_id is None or cutoff_id is None or not isinstance(items, list):
+        return None
+    ranks: dict[str, int] = {}
+    for rank, item in enumerate(items):
+        if not isinstance(item, dict):
+            return None
+        quality_item = item.get("quality")
+        grouped = item.get("items")
+        if isinstance(quality_item, dict):
+            quality_id = _public_id(quality_item.get("id"))
+            if quality_id is None:
+                return None
+            ranks[quality_id] = rank
+        elif isinstance(grouped, list):
+            group_id = _public_id(item.get("id"))
+            if group_id is not None:
+                ranks[group_id] = rank
+            for member in grouped:
+                member_quality = member.get("quality") if isinstance(member, dict) else None
+                member_id = _public_id(member_quality.get("id")) if isinstance(member_quality, dict) else None
+                if member_id is None:
+                    return None
+                ranks[member_id] = rank
+        else:
+            return None
+    if current_id not in ranks or cutoff_id not in ranks:
+        return None
+    return ranks[current_id] < ranks[cutoff_id]
+
+
 class ArrHistoryAdapter:
     media_keys: tuple[str, ...] = ()
     source_name = ""
@@ -99,34 +167,97 @@ class ArrHistoryAdapter:
             raise RuntimeError("unexpected Arr status")
         return json.loads(body.decode("utf-8"))
 
-    def first_approved_release(self, entity_id: str) -> ArrRelease | None:
+    def _release_resources(self, entity_id: str) -> tuple[bool, list[dict[str, object]]]:
         public_id = _public_id(int(entity_id)) if entity_id.isdecimal() else None
         if public_id != entity_id or not self.release_entity_key:
-            return None
+            return False, []
         request = Request(f"{self._base_url}/api/v3/release?{urlencode({self.release_entity_key: entity_id})}", headers={"X-Api-Key": self._resolve(self._api_key)})
         try:
             status, body = request_bytes(request, timeout=self._timeout)
             releases = json.loads(body.decode("utf-8"))
         except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
+            return False, []
+        if status != 200 or not isinstance(releases, list) or not all(isinstance(resource, dict) for resource in releases):
+            return False, []
+        return True, releases
+
+    @staticmethod
+    def _materialize_release(resource: dict[str, object]) -> ArrRelease | None:
+        if resource.get("protocol") != "torrent":
             return None
-        if status != 200 or not isinstance(releases, list):
+        guid, title, locator, size = resource.get("guid"), resource.get("title"), resource.get("downloadUrl"), resource.get("size")
+        if not isinstance(guid, str) or not guid or not isinstance(title, str) or not title or not isinstance(locator, str) or not locator or isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            return None
+        try:
+            encoded = json.dumps(resource, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError):
+            return None
+        return ArrRelease(resource, hashlib.sha256(encoded).hexdigest(), size)
+
+    def first_approved_release(self, entity_id: str) -> ArrRelease | None:
+        available, releases = self._release_resources(entity_id)
+        if not available:
             return None
         for resource in releases:
-            if not isinstance(resource, dict):
-                return None
             if resource.get("approved") is not True:
                 continue
-            if resource.get("protocol") != "torrent":
-                return None
-            guid, title, locator, size = resource.get("guid"), resource.get("title"), resource.get("downloadUrl"), resource.get("size")
-            if not isinstance(guid, str) or not guid or not isinstance(title, str) or not title or not isinstance(locator, str) or not locator or isinstance(size, bool) or not isinstance(size, int) or size <= 0:
-                return None
-            try:
-                encoded = json.dumps(resource, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-            except (TypeError, ValueError):
-                return None
-            return ArrRelease(resource, hashlib.sha256(encoded).hexdigest(), size)
+            return self._materialize_release(resource)
         return None
+
+    def approved_release(
+        self,
+        entity_id: str,
+        policy: ReconciliationPolicy,
+        *,
+        current_score: int,
+    ) -> ArrReleaseSearch:
+        available, releases = self._release_resources(entity_id)
+        if not available:
+            return ArrReleaseSearch(False)
+        for resource in releases:
+            if resource.get("approved") is not True:
+                continue
+            raw_score = resource.get("customFormatScore", 0)
+            raw_formats = resource.get("customFormats", [])
+            if isinstance(raw_score, bool) or not isinstance(raw_score, int) or not isinstance(raw_formats, list):
+                return ArrReleaseSearch(False)
+            names: list[str] = []
+            for item in raw_formats:
+                if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+                    return ArrReleaseSearch(False)
+                names.append(item["name"])
+            selected = set(names)
+            if raw_score < policy.minimum_candidate_score or raw_score - current_score < policy.minimum_score_gain:
+                continue
+            if not set(policy.required_candidate_formats).issubset(selected):
+                continue
+            if set(policy.forbidden_candidate_formats) & selected:
+                continue
+            release = self._materialize_release(resource)
+            if release is None:
+                return ArrReleaseSearch(False)
+            return ArrReleaseSearch(True, release)
+        return ArrReleaseSearch(True)
+
+    def _cutoff_entity(self, record: dict[str, object]) -> UpgradeEntity | None:
+        raise NotImplementedError
+
+    def cutoff_entities(self) -> tuple[UpgradeEntity, ...] | None:
+        records = self._paged("wanted/cutoff")
+        if records is None:
+            return None
+        entities: list[UpgradeEntity] = []
+        for record in records:
+            entity = self._cutoff_entity(record)
+            if entity is None:
+                return None
+            entities.append(entity)
+        if len({entity.entity_id for entity in entities}) != len(entities):
+            return None
+        return tuple(entities)
+
+    def upgrade_entities(self) -> tuple[UpgradeEntity, ...] | None:
+        raise NotImplementedError
 
     def grab_release(self, release: ArrRelease) -> bool:
         if not isinstance(release, ArrRelease):

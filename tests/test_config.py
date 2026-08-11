@@ -163,9 +163,42 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual("/jellyfin/movies", config.sources["radarr"].jellyfin_path_prefix)
         self.assertEqual(30, config.reconciler.movie.minimum_age_days)
         self.assertEqual(10, config.reconciler.episode.max_searches_per_run)
+        self.assertEqual(-(2**31), config.reconciler.movie.minimum_candidate_score)
+        self.assertEqual(-(2**31), config.reconciler.movie.minimum_score_gain)
         self.assertEqual("env", config.adapters["prowlarr"].secrets["api_key"].source)
         self.assertNotIn("PROWLARR_API_KEY", repr(config.redacted()))
         self.assertEqual("env:<redacted>", config.redacted()["adapters"]["prowlarr"]["api_key"])
+
+    def test_reconciliation_schedule_parameters_are_typed_and_configurable(self) -> None:
+        configured = VALID_CONFIG.replace(
+            "max_searches_per_run = 10",
+            """max_searches_per_run = 10
+cooldown_step_days = 7
+cooldown_multiplier = 2.0
+maximum_cooldown_seconds = 604800
+final_search = true
+max_searches_per_hour = 4
+max_searches_per_day = 20
+max_grabs_per_run = 1
+minimum_candidate_score = 8000
+minimum_score_gain = 1
+required_candidate_formats = [\"Original\"]
+forbidden_candidate_formats = [\"AI upscale\"]""",
+        )
+
+        policy = load_config(self.write(configured)).reconciler.episode
+
+        self.assertEqual(7, policy.cooldown_step_days)
+        self.assertEqual(2.0, policy.cooldown_multiplier)
+        self.assertEqual(604800, policy.maximum_cooldown_seconds)
+        self.assertTrue(policy.final_search)
+        self.assertEqual(4, policy.max_searches_per_hour)
+        self.assertEqual(20, policy.max_searches_per_day)
+        self.assertEqual(1, policy.max_grabs_per_run)
+        self.assertEqual(8000, policy.minimum_candidate_score)
+        self.assertEqual(1, policy.minimum_score_gain)
+        self.assertEqual(("Original",), policy.required_candidate_formats)
+        self.assertEqual(("AI upscale",), policy.forbidden_candidate_formats)
 
     def test_projects_exact_radarr_and_sonarr_source_profiles(self) -> None:
         config = load_config(self.write(SOURCE_PROFILE_CONFIG))

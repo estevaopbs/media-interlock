@@ -18,10 +18,15 @@ active only when configured.
 
 ## Project status
 
-MediaInterlock 0.1.20 is the current immutable public
-[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.20).
-Version 0.1.19 remains preserved as its immutable predecessor.
-Version 0.1.20 exposes each private immutable generation as regular hardlinks
+MediaInterlock 0.1.21 is the current immutable public
+[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.21).
+Version 0.1.20 remains preserved as its immutable predecessor.
+Version 0.1.21 adds a product-owned automatic Reconciler loop. It inventories
+existing Radarr and Sonarr files against their native quality profiles, runs
+bounded due searches with durable per-file checkpoints, and exposes typed
+configuration for geometric cooldowns, terminal searches, score and custom
+format filters, search budgets, and grab budgets. Version 0.1.20 exposes each
+private immutable generation as regular hardlinks
 at the exact relative path reported by Arr, so Jellyfin scans the native movie
 or series hierarchy. Version 0.1.19 introduced the canonical relative route but
 used file symlinks, which Jellyfin does not catalog. Version 0.1.18 baselines a

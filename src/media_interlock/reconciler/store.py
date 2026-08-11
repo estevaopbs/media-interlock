@@ -7,10 +7,12 @@ from pathlib import Path
 
 from .._infra.state import SqliteStore
 from .model import ReconciliationState
+from .scheduler import ScheduleState
 
 
 class ReconcilerStore:
     _KEY = "reconciler.intents.v1"
+    _SCHEDULE_KEY = "reconciler.schedule.v1"
 
     def __init__(self, store: SqliteStore) -> None:
         self._store = store
@@ -33,6 +35,19 @@ class ReconcilerStore:
 
     def save(self, state: ReconciliationState) -> None:
         self._store.put(self._KEY, json.dumps(state.records(), sort_keys=True, separators=(",", ":"), allow_nan=False))
+
+    def load_schedule(self) -> ScheduleState:
+        raw = self._store.get(self._SCHEDULE_KEY)
+        if raw is None:
+            return ScheduleState()
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("durable Reconciler schedule is not valid JSON") from exc
+        return ScheduleState.from_record(record)
+
+    def save_schedule(self, state: ScheduleState) -> None:
+        self._store.put(self._SCHEDULE_KEY, json.dumps(state.record(), sort_keys=True, separators=(",", ":"), allow_nan=False))
 
     def close(self) -> None:
         self._store.close()

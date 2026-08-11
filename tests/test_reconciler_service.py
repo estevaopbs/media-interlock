@@ -155,3 +155,46 @@ class ReconcilerServiceTests(unittest.TestCase):
         self.assertEqual("pending", service.execute(intent, now=101))
         self.assertEqual(1, events.count("post"))
         self.assertEqual(2, events.count("observe"))
+
+    def test_selected_release_is_persisted_without_a_second_arr_search(self) -> None:
+        events: list[str] = []
+        resource = {"approved": True, "protocol": "torrent", "guid": "selected", "title": "fixture.selected", "size": 400, "downloadUrl": "https://indexer.invalid/selected"}
+        release = ArrRelease(resource, hashlib.sha256(json.dumps(resource, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), 400)
+
+        class Store:
+            def save(self, _: ReconciliationState) -> None: events.append("save")
+        class Arr:
+            def stopped_qbittorrent_client(self, _: str, __: int) -> bool: events.append("client"); return True
+            def history_watermark(self) -> int | None: events.append("watermark"); return 7
+            def first_approved_release(self, _: str) -> ArrRelease | None: raise AssertionError("must not search again")
+            def grab_release(self, selected: ArrRelease) -> bool: self_outer.assertEqual(release, selected); events.append("post"); return True
+            def observe_grab(self, _: str, selected: ArrRelease, *, watermark: int) -> ArrGrabObservation:
+                self_outer.assertEqual((release, 7), (selected, watermark)); events.append("observe"); return ArrGrabObservation("absent")
+        class Fence:
+            def pre_admit(self, _: PreAdmissionIntent) -> AdmissionDecision: events.append("preadmit"); return AdmissionDecision(True, "admitted")
+            def bind_grab(self, *_: object) -> bool: raise AssertionError
+
+        self_outer = self
+        state = ReconciliationState()
+        service = ReconcilerService(state, Store(), {"radarr": Arr()}, Fence(), {"radarr": RADARR_SOURCE})
+        intent = SearchIntent(str(uuid.uuid4()), "radarr", "42", False, "auto-v1:file-1:0")
+
+        self.assertEqual("pending", service.execute_selected(intent, release, now=100))
+        self.assertEqual(["client", "watermark", "save", "client", "preadmit", "save", "post", "observe"], events)
+
+    def test_failed_selected_release_precondition_does_not_strand_an_intent(self) -> None:
+        resource = {"approved": True, "protocol": "torrent", "guid": "selected", "title": "fixture.selected", "size": 400, "downloadUrl": "https://indexer.invalid/selected"}
+        release = ArrRelease(resource, hashlib.sha256(json.dumps(resource, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), 400)
+
+        class Store:
+            def save(self, _: ReconciliationState) -> None: raise AssertionError
+        class Arr:
+            def stopped_qbittorrent_client(self, _: str, __: int) -> bool: return False
+        class Fence: pass
+
+        state = ReconciliationState()
+        service = ReconcilerService(state, Store(), {"radarr": Arr()}, Fence(), {"radarr": RADARR_SOURCE})
+        intent = SearchIntent(str(uuid.uuid4()), "radarr", "42", False, "auto-v1:file-1:0")
+
+        self.assertEqual("inhibited", service.execute_selected(intent, release, now=100))
+        self.assertEqual((), state.intents())
