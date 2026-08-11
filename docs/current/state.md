@@ -1,6 +1,13 @@
 # Current state
 
-MediaInterlock 0.1.22 is the immutable public downstream-consumption release.
+MediaInterlock 0.1.23 is the immutable public downstream-consumption release.
+Publisher observes Jellyfin catalogs in bounded ten-item pages so rich
+`MediaSources` records stay below the HTTP response limit while retaining the
+same 1,000-item fail-closed observation ceiling. Its annotated tag
+[`v0.1.23`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.23)
+resolves to its immutable source commit.
+
+Version 0.1.22 remains preserved as its immutable predecessor.
 Publisher now exposes a distinct typed subtitle-language requirement and
 accepts only embedded subtitle tracks or matching subtitle sidecars as its
 evidence; audio tracks cannot satisfy that gate. Its annotated tag

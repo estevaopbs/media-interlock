@@ -52,8 +52,11 @@ class CatalogObservation:
 
 
 class JellyfinAdapter:
-    _PAGE_SIZE = 100
-    _MAX_PAGES = 10
+    # MediaSources can make even a modest episode page exceed the bounded
+    # 4 MiB HTTP response limit. Keep the same 1,000-item observation ceiling
+    # while requesting smaller pages from Jellyfin.
+    _PAGE_SIZE = 10
+    _MAX_PAGES = 100
     def __init__(self, base_url: str, api_key: SecretReference, *, secret_resolver: Callable[[SecretReference], str] | None = None, timeout_seconds: float = 5.0) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key

@@ -63,6 +63,7 @@ class JellyfinAdapterTests(unittest.TestCase):
         self.assertEqual("movie-item", observation.item_id)
         self.assertEqual("source-a", observation.media_source_id)
         self.assertIn("ParentId=2f9e0f39-70de-4502-85ce-7ed03cd2f01f", self.requests[0][1])
+        self.assertIn("Limit=10", self.requests[0][1])
         self.assertNotIn("Path", parse_qs(urlsplit(self.requests[0][1]).query))
 
     def test_catalog_observation_fails_closed_for_zero_multiple_or_divergent_items(self) -> None:
