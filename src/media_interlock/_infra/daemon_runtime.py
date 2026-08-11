@@ -20,11 +20,18 @@ async def run_until_shutdown(*workers: Awaitable[object]) -> None:
             continue
         installed.append(signum)
     tasks = tuple(asyncio.create_task(worker) for worker in workers)
+    shutdown_task = asyncio.create_task(shutdown.wait())
     try:
-        await shutdown.wait()
+        done, _ = await asyncio.wait(
+            (*tasks, shutdown_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if shutdown_task not in done:
+            completed = next(task for task in tasks if task in done)
+            await completed
     finally:
-        for task in tasks:
+        for task in (*tasks, shutdown_task):
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*tasks, shutdown_task, return_exceptions=True)
         for signum in installed:
             loop.remove_signal_handler(signum)

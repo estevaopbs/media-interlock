@@ -49,6 +49,31 @@ class DaemonRuntimeTest(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_worker_failure_propagates_and_cancels_peers(self) -> None:
+        from media_interlock._infra.daemon_runtime import run_until_shutdown
+
+        async def exercise() -> None:
+            stopped = asyncio.Event()
+
+            async def failing() -> None:
+                await asyncio.sleep(0)
+                raise RuntimeError("worker failed")
+
+            async def peer() -> None:
+                try:
+                    await asyncio.Future()
+                finally:
+                    stopped.set()
+
+            with self.assertRaisesRegex(RuntimeError, "worker failed"):
+                await asyncio.wait_for(
+                    run_until_shutdown(failing(), peer()),
+                    timeout=1,
+                )
+            self.assertTrue(stopped.is_set())
+
+        asyncio.run(exercise())
+
 
 if __name__ == "__main__":
     unittest.main()
