@@ -490,8 +490,6 @@ def _sources(value: object, pools: Mapping[str, CapacityPool]) -> dict[str, Sour
             _optional_bundle_aliases(profile, f"sources.{name}"),
             _optional_container_evidence(profile, f"sources.{name}"),
         )
-    if len({profile.download_client_id for profile in profiles.values()}) != len(profiles):
-        raise ConfigError("source download_client_id values must be distinct")
     if len({profile.category for profile in profiles.values()}) != len(profiles):
         raise ConfigError("source categories must be distinct")
     if len({profile.namespace for profile in profiles.values()}) != len(profiles):

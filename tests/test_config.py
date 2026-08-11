@@ -177,6 +177,14 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual("shared-qbittorrent-mutation/v1", config.fence.mutation_lock.version)
         self.assertEqual(2, config.publisher.sources["radarr"].bundle_settle_seconds)
 
+    def test_download_client_ids_are_scoped_to_each_arr(self) -> None:
+        content = SOURCE_PROFILE_CONFIG.replace("download_client_id = 8", "download_client_id = 7")
+
+        config = load_config(self.write(content))
+
+        self.assertEqual(7, config.sources["radarr"].download_client_id)
+        self.assertEqual(7, config.sources["sonarr"].download_client_id)
+
     def test_arr_visible_prefix_may_be_shared_while_publisher_stagings_are_distinct(self) -> None:
         content = SOURCE_PROFILE_CONFIG.replace(
             'arr_import_path_prefix = "/downloads/movies"',

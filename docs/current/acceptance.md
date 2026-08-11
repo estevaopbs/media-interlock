@@ -92,7 +92,7 @@ A release candidate requires:
 - disposable restart/crash rehearsal for effects changed in the cycle;
 - one consolidated independent review with findings resolved.
 
-The 0.1.9 release records its immutable source tag, wheel SHA-256, and three
+The 0.1.10 release records its immutable source tag, wheel SHA-256, and three
 public OCI digests in the current-state authority after immutable remote and
 anonymous-access verification.
 Its artifact build executes

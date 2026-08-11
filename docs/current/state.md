@@ -1,24 +1,20 @@
 # Current state
 
-MediaInterlock 0.1.9 is the immutable public downstream-consumption release.
-It adds explicit SIGINT/SIGTERM handling to Fence and Publisher so container
-shutdown cancels and awaits daemon workers before private stores, leases,
-sockets, and writer locks are closed.
+MediaInterlock 0.1.10 is the immutable public downstream-consumption release.
+It scopes download-client IDs to their individual Radarr or Sonarr API while
+retaining explicit SIGINT/SIGTERM handling in Fence and Publisher so container
+shutdown cancels and awaits daemon workers cleanly.
 Its annotated tag
-[`v0.1.9`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.9)
+[`v0.1.10`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.10)
 resolves to its immutable source commit. The release publishes one wheel and
 three public OCI manifests, each executing Python 3.14.7. Its canonical
 artifact manifest binds all identities to one source revision and version.
 
-Version 0.1.8 remains preserved as the preceding immutable release. Its annotated tag
-[`v0.1.8`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.8)
+Version 0.1.9 remains preserved as the preceding immutable release. Its annotated tag
+[`v0.1.9`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.9)
 resolves to its immutable source commit. The release publishes one wheel and
-three public OCI manifests, each executing Python 3.14.7. It added the separate
-durable `post_pnr_historical_activation` authority. It starts only a confirmed
-historical adoption, retains its Fence ownership and bytes, and marks it
-managed so it no longer occupies an admission concurrency slot. Its terminal
-receipt remains recoverable through explicit query across restart and
-quiescence.
+three public OCI manifests, each executing Python 3.14.7. It added graceful
+Fence and Publisher daemon shutdown handling.
 
 Version 0.1.5 remains preserved at tag
 [`v0.1.5`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.5)
