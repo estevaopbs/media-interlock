@@ -29,6 +29,24 @@ class JellyfinAdapterTests(unittest.TestCase):
         self.assertIsNotNone(self.adapter().observe_catalog(expected))
         self.items[0]["ProviderIds"] = {"Tmdb": "42"}
         self.assertIsNone(self.adapter().observe_catalog(expected))
+
+    def test_catalog_observation_accepts_supplemental_provider_identity(self) -> None:
+        expected = CatalogExpectation(
+            library_id="2f9e0f39-70de-4502-85ce-7ed03cd2f01f",
+            internal_path="/jellyfin/library/import/payload.mkv",
+            item_type="Episode",
+            provider_ids={"Tvdb": "11872046"},
+            expected_bytes=11,
+        )
+        self.items = [{
+            "Id": "episode-item", "Path": expected.internal_path, "Type": "Episode",
+            "ProviderIds": {"Tvdb": "11872046", "Imdb": "tt43713955"},
+            "MediaSources": [{"Id": "source-a", "Path": expected.internal_path, "Size": 11}],
+        }]
+
+        self.assertIsNotNone(self.adapter().observe_catalog(expected))
+        self.items[0]["ProviderIds"]["Tvdb"] = "different"
+        self.assertIsNone(self.adapter().observe_catalog(expected))
     def test_refresh_204_is_only_submission_not_delivery(self) -> None:
         adapter = self.adapter()
 

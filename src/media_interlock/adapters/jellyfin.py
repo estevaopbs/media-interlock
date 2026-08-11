@@ -168,13 +168,20 @@ class JellyfinAdapter:
             return None
         item_id = item.get("Id")
         provider_ids = item.get("ProviderIds")
+        expected_provider_ids = dict(expected.provider_ids)
+        provider_identity_matches = (
+            provider_ids == {}
+            if not expected_provider_ids
+            else isinstance(provider_ids, dict)
+            and all(provider_ids.get(key) == value for key, value in expected_provider_ids.items())
+        )
         if (
             not isinstance(item_id, str)
             or not item_id
             or item.get("Path") != expected.internal_path
             or item.get("Type") != expected.item_type
             or not isinstance(provider_ids, dict)
-            or provider_ids != dict(expected.provider_ids)
+            or not provider_identity_matches
             or (expected.known_item_id is not None and item_id != expected.known_item_id)
         ):
             return None

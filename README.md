@@ -18,10 +18,12 @@ active only when configured.
 
 ## Project status
 
-MediaInterlock 0.1.23 is the current immutable public
-[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.23).
-Version 0.1.22 remains preserved as its immutable predecessor.
-Version 0.1.23 bounds Jellyfin catalog observation in smaller pages so rich
+MediaInterlock 0.1.24 is the current immutable public
+[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.24).
+Version 0.1.23 remains preserved as its immutable predecessor. Version 0.1.24
+requires every Arr-sealed provider ID to match while accepting supplemental
+provider IDs added by Jellyfin metadata enrichment. Version 0.1.23 bounds
+Jellyfin catalog observation in smaller pages so rich
 `MediaSources` payloads remain below the HTTP response limit without reducing
 the 1,000-item observation ceiling. Version 0.1.22 added a distinct configurable Publisher gate for subtitle
 languages, so audio-only language evidence cannot satisfy a subtitle

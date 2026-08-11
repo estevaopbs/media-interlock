@@ -1,6 +1,13 @@
 # Current state
 
-MediaInterlock 0.1.23 is the immutable public downstream-consumption release.
+MediaInterlock 0.1.24 is the immutable public downstream-consumption release.
+Publisher requires every Arr-sealed provider ID to match while accepting
+supplemental provider IDs added by Jellyfin metadata enrichment. Its annotated
+tag
+[`v0.1.24`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.24)
+resolves to its immutable source commit.
+
+Version 0.1.23 remains preserved as its immutable predecessor.
 Publisher observes Jellyfin catalogs in bounded ten-item pages so rich
 `MediaSources` records stay below the HTTP response limit while retaining the
 same 1,000-item fail-closed observation ceiling. Its annotated tag
