@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,6 +33,7 @@ class ReconcilerCliTests(unittest.TestCase):
                 if self.path == "/api/v3/downloadclient":
                     data = [{"id": 7, "enable": True, "protocol": "torrent", "implementation": "QBittorrent", "fields": [{"name": "initialState", "value": 2}, {"name": "movieCategory", "value": "media-interlock-radarr"}]}]
                 elif self.path.startswith("/api/v3/release?"):
+                    time.sleep(5.1)
                     data = [release]
                 elif self.path.startswith("/api/v3/history?"):
                     data = {"records": [] if not grabbed[0] else [{"id": 8, "eventType": "grabbed", "movieId": 42, "sourceTitle": "fixture.movie", "downloadId": "a" * 40}], "totalRecords": 0 if not grabbed[0] else 1}

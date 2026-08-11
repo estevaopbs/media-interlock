@@ -52,7 +52,12 @@ def main(argv: list[str] | None = None) -> int:
             arr_config = config.adapters.get(source)
             profile = config.reconciler.sources.get(source)
             if arr_config is not None and profile is not None:
-                adapters[source] = adapter_class(arr_config.base_url, arr_config.secrets["api_key"], staging_root=None)
+                adapters[source] = adapter_class(
+                    arr_config.base_url,
+                    arr_config.secrets["api_key"],
+                    staging_root=None,
+                    timeout_seconds=90,
+                )
         if arguments.source not in adapters:
             raise ConfigError(f"Reconciler requires a configured {arguments.source} adapter")
         store = ReconcilerStore.open(config.reconciler.state_dir)
