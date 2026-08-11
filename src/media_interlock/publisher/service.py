@@ -67,7 +67,7 @@ class CandidateInspection(Protocol):
 class AssetGenerationControl(Protocol):
     def visible_generation(self, asset_slot: str) -> str | None: ...
 
-    def publish(self, asset_slot: str, generation_id: str, candidate: VerifiedCandidate | VerifiedBundle, *, previous_generation_id: str | None = None, hardlink_frozen: bool = False) -> Path: ...
+    def publish(self, asset_slot: str, generation_id: str, candidate: VerifiedCandidate | VerifiedBundle, *, previous_generation_id: str | None = None, hardlink_frozen: bool = False, item_type: str | None = None, provider_ids: Mapping[str, str] | None = None) -> Path: ...
 
     def garbage_collect(self, asset_slot: str, retained_generation_ids: set[str]) -> None: ...
 
@@ -303,6 +303,8 @@ class PublisherService:
                 candidate,
                 previous_generation_id=publication.previous_generation_id,
                 hardlink_frozen=publication.hardlink_frozen,
+                item_type=publication.item_type,
+                provider_ids=dict(publication.provider_ids or ()),
             )
         except Exception:
             return None

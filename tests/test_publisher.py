@@ -746,6 +746,30 @@ class CandidateFilesystemTests(unittest.TestCase):
             self.assertEqual(b"subtitle", (payload.parent / "payload.en.srt").read_bytes())
             self.assertNotEqual((staging / "movie.mkv").stat().st_ino, payload.stat().st_ino)
 
+    def test_asset_publisher_seals_provider_identity_as_jellyfin_nfo(self) -> None:
+        from media_interlock.publisher.generation import AssetGenerationPublisher
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            canonical = Path(directory) / "canonical"
+            staging.mkdir()
+            canonical.mkdir()
+            (staging / "movie.mkv").write_bytes(b"video")
+
+            payload = AssetGenerationPublisher(
+                staging, canonical, namespace="library"
+            ).publish(
+                "radarr:tmdb-45745",
+                OPERATION_ID,
+                CandidateVerifier(staging).verify("movie.mkv"),
+                item_type="Movie",
+                provider_ids={"Tmdb": "45745"},
+            )
+
+            nfo = payload.with_suffix(".nfo")
+            self.assertEqual(0o444, nfo.stat().st_mode & 0o777)
+            self.assertIn(b'<uniqueid type="tmdb" default="true">45745</uniqueid>', nfo.read_bytes())
+
     def test_asset_slots_keep_unrelated_assets_visible_across_updates(self) -> None:
         from media_interlock.publisher.generation import AssetGenerationPublisher
 

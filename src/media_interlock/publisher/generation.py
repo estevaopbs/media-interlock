@@ -11,6 +11,8 @@ import hashlib
 import re
 import ctypes
 import errno
+import xml.etree.ElementTree as ET
+from collections.abc import Mapping
 from pathlib import Path, PurePath
 
 from .filesystem import BundleMember, CandidateSafetyError, CandidateVerifier, VerifiedBundle, VerifiedCandidate
@@ -223,13 +225,14 @@ class AssetGenerationPublisher:
         self._canonical_root = canonical_root
         self._namespace = namespace
 
-    def publish(self, asset_slot: str, generation_id: str, candidate: VerifiedCandidate | VerifiedBundle, *, previous_generation_id: str | None = None, hardlink_frozen: bool = False) -> Path:
+    def publish(self, asset_slot: str, generation_id: str, candidate: VerifiedCandidate | VerifiedBundle, *, previous_generation_id: str | None = None, hardlink_frozen: bool = False, item_type: str | None = None, provider_ids: Mapping[str, str] | None = None) -> Path:
         slot = self._slot_name(asset_slot)
         if previous_generation_id is not None and not GenerationPublisher._valid_generation_id(previous_generation_id):
             raise CandidateSafetyError("prior generation identity is unsafe")
         visible_before = self.visible_generation(asset_slot)
         if visible_before == generation_id:
             payload = self.generation_payload(asset_slot, generation_id)
+            self._ensure_catalog_nfo(payload, item_type, provider_ids)
             self._seal_bundle_modes(payload.parent)
             os.chmod(payload.parent, 0o755)
             GenerationPublisher._fsync_directory(payload.parent)
@@ -252,6 +255,7 @@ class AssetGenerationPublisher:
                 prepared = generation.prepare(generation_id, candidate)
                 payload = private_root / "generations" / generation_id / self._payload_name(candidate.relative_path)
                 os.replace(prepared, payload)
+        self._ensure_catalog_nfo(payload, item_type, provider_ids)
         # The move can be durable while the following mode repair is not. Make
         # recovery idempotently restore the read-only playback contract.
         self._seal_bundle_modes(payload.parent)
@@ -287,6 +291,73 @@ class AssetGenerationPublisher:
             except FileNotFoundError:
                 pass
         return slot_path / payload.name
+
+    @staticmethod
+    def _ensure_catalog_nfo(
+        payload: Path,
+        item_type: str | None,
+        provider_ids: Mapping[str, str] | None,
+    ) -> None:
+        if item_type is None and provider_ids is None:
+            return
+        if item_type not in {"Movie", "Episode"} or not provider_ids:
+            raise CandidateSafetyError("catalog identity is incomplete")
+        if not all(
+            isinstance(key, str)
+            and key
+            and isinstance(value, str)
+            and value
+            for key, value in provider_ids.items()
+        ):
+            raise CandidateSafetyError("catalog provider identity is unsafe")
+        root = ET.Element("movie" if item_type == "Movie" else "episodedetails")
+        for index, (key, value) in enumerate(
+            sorted(provider_ids.items(), key=lambda item: item[0].casefold())
+        ):
+            node = ET.SubElement(
+                root,
+                "uniqueid",
+                {"type": key.casefold(), "default": "true" if index == 0 else "false"},
+            )
+            node.text = value
+        content = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+        destination = payload.with_suffix(".nfo")
+        try:
+            metadata = destination.lstat()
+        except FileNotFoundError:
+            temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                descriptor = os.open(
+                    temporary,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                )
+                try:
+                    offset = 0
+                    while offset < len(content):
+                        written = os.write(descriptor, content[offset:])
+                        if written <= 0:
+                            raise OSError("catalog sidecar write made no progress")
+                        offset += written
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+                os.chmod(temporary, 0o444)
+                os.replace(temporary, destination)
+                GenerationPublisher._fsync_directory(destination.parent)
+            finally:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+            return
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or destination.read_bytes() != content
+        ):
+            raise CandidateSafetyError("catalog sidecar conflicts")
+        os.chmod(destination, 0o444)
 
     def _normalize_bundle(self, generation_dir: Path, prepared_payload: Path, bundle: VerifiedBundle) -> Path:
         payload_name = self._payload_name(bundle.payload.relative_path)
@@ -359,7 +430,11 @@ class AssetGenerationPublisher:
             raise CandidateSafetyError("generation identity is unsafe")
         bundle = self._canonical_root / ".publisher" / "assets" / slot / "generations" / generation_id
         try:
-            candidates = tuple(bundle.glob("payload.*"))
+            candidates = tuple(
+                path
+                for path in bundle.glob("payload.*")
+                if path.name.count(".") == 1 and path.suffix != ".nfo"
+            )
         except FileNotFoundError as exc:
             raise CandidateSafetyError("asset generation payload is unavailable") from exc
         if len(candidates) != 1:
