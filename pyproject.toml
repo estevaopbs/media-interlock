@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "media-interlock"
-version = "0.1.10"
+version = "0.1.11"
 description = "Fail-closed media reconciliation, publication, and acquisition control"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"

@@ -18,11 +18,12 @@ active only when configured.
 
 ## Project status
 
-MediaInterlock 0.1.10 is the current immutable public
-[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.10).
-Version 0.1.9 remains preserved as its immutable predecessor.
-Version 0.1.10 retains graceful Fence and Publisher process termination and
-correctly scopes qBittorrent download-client IDs to each Arr API. Version 0.1.9
+MediaInterlock 0.1.11 is the current immutable public
+[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.11).
+Version 0.1.10 remains preserved as its immutable predecessor.
+Version 0.1.11 adds optional qBittorrent bearer API-key authentication while
+retaining the session-login contract. Version 0.1.10 correctly scopes
+qBittorrent download-client IDs to each Arr API. Version 0.1.9
 makes the Fence and Publisher daemons handle process termination
 explicitly so OCI runtimes can stop them promptly and release their sockets,
 stores, leases, and writer locks cleanly. Version 0.1.8 added explicit

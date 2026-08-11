@@ -31,14 +31,23 @@ def _fence_tags(value: object) -> set[str] | None:
 class QbittorrentAdapter:
     """Controls only tagged work in one configured category and staging root."""
 
-    def __init__(self, base_url: str, username: SecretReference, password: SecretReference, *, secret_resolver: Callable[[SecretReference], str] | None = None, timeout_seconds: float = 5.0) -> None:
+    def __init__(self, base_url: str, username: SecretReference | None, password: SecretReference | None, *, api_key: SecretReference | None = None, secret_resolver: Callable[[SecretReference], str] | None = None, timeout_seconds: float = 5.0) -> None:
         self._base_url = base_url.rstrip("/")
         self._username = username
         self._password = password
+        self._api_key = api_key
         self._resolve = secret_resolver or (lambda reference: reference.resolve())
         self._timeout = timeout_seconds
         self._opener = build_opener(_NoRedirect(), HTTPCookieProcessor(http.cookiejar.CookieJar()))
         self._authenticated = False
+
+    def _headers(self, *, content_type: bool = False) -> dict[str, str]:
+        headers = {"Referer": self._base_url}
+        if content_type:
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        if self._api_key is not None:
+            headers["Authorization"] = f"Bearer {self._resolve(self._api_key)}"
+        return headers
 
     def _invalidate_authentication(self) -> None:
         self._authenticated = False
@@ -52,7 +61,7 @@ class QbittorrentAdapter:
         return body
 
     def _post(self, path: str, fields: dict[str, str]) -> bytes:
-        request = Request(f"{self._base_url}{path}", data=urlencode(fields).encode("utf-8"), headers={"Content-Type": "application/x-www-form-urlencoded", "Referer": self._base_url}, method="POST")
+        request = Request(f"{self._base_url}{path}", data=urlencode(fields).encode("utf-8"), headers=self._headers(content_type=True), method="POST")
         try:
             with self._opener.open(request, timeout=self._timeout) as response:
                 if response.status != 200:
@@ -65,7 +74,7 @@ class QbittorrentAdapter:
             raise
 
     def _get_json(self, path: str) -> Any:
-        request = Request(f"{self._base_url}{path}", headers={"Referer": self._base_url})
+        request = Request(f"{self._base_url}{path}", headers=self._headers())
         try:
             with self._opener.open(request, timeout=self._timeout) as response:
                 if response.status != 200:
@@ -78,7 +87,7 @@ class QbittorrentAdapter:
             raise
 
     def _get_text(self, path: str) -> str:
-        request = Request(f"{self._base_url}{path}", headers={"Referer": self._base_url})
+        request = Request(f"{self._base_url}{path}", headers=self._headers())
         try:
             with self._opener.open(request, timeout=self._timeout) as response:
                 if response.status != 200:
@@ -91,8 +100,15 @@ class QbittorrentAdapter:
             raise
 
     def _login(self) -> bool:
+        if self._api_key is not None:
+            try:
+                return bool(self._resolve(self._api_key))
+            except (OSError, RuntimeError, ValueError):
+                return False
         if self._authenticated:
             return True
+        if self._username is None or self._password is None:
+            return False
         try:
             result = self._post("/api/v2/auth/login", {"username": self._resolve(self._username), "password": self._resolve(self._password)})
         except (HTTPError, URLError, OSError, RuntimeError):

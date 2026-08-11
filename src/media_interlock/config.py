@@ -401,7 +401,11 @@ def _validate_disjoint(first: Path, second: Path, first_name: str, second_name: 
 
 
 def _adapter(name: str, table: Mapping[str, object]) -> AdapterConfig:
-    secret_fields = ("username", "password") if name == "qbittorrent" else ("api_key",)
+    secret_fields = (
+        (("api_key",) if "api_key" in table else ("username", "password"))
+        if name == "qbittorrent"
+        else ("api_key",)
+    )
     _require_keys(table, {"base_url", *secret_fields}, f"adapters.{name}")
     try:
         base_url = table["base_url"]

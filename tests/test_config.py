@@ -334,3 +334,14 @@ password = "file:/run/secrets/qbittorrent-password"
         self.assertEqual("env:<redacted>", config.redacted()["adapters"]["qbittorrent"]["username"])
         with self.assertRaisesRegex(ConfigError, "missing required key: adapters.qbittorrent.password"):
             load_config(self.write(content.replace('password = "file:/run/secrets/qbittorrent-password"\n', "")))
+
+    def test_qbittorrent_may_use_one_api_key_reference(self) -> None:
+        content = VALID_CONFIG + """
+[adapters.qbittorrent]
+base_url = "https://qbittorrent.example.invalid"
+api_key = "env:QBITTORRENT_API_KEY"
+"""
+
+        config = load_config(self.write(content))
+
+        self.assertEqual({"api_key"}, set(config.adapters["qbittorrent"].secrets))

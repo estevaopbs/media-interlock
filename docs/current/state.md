@@ -1,20 +1,19 @@
 # Current state
 
-MediaInterlock 0.1.10 is the immutable public downstream-consumption release.
-It scopes download-client IDs to their individual Radarr or Sonarr API while
-retaining explicit SIGINT/SIGTERM handling in Fence and Publisher so container
-shutdown cancels and awaits daemon workers cleanly.
+MediaInterlock 0.1.11 is the immutable public downstream-consumption release.
+It adds optional qBittorrent bearer API-key authentication while preserving
+the existing username/password session-login contract.
 Its annotated tag
-[`v0.1.10`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.10)
+[`v0.1.11`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.11)
 resolves to its immutable source commit. The release publishes one wheel and
 three public OCI manifests, each executing Python 3.14.7. Its canonical
 artifact manifest binds all identities to one source revision and version.
 
-Version 0.1.9 remains preserved as the preceding immutable release. Its annotated tag
-[`v0.1.9`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.9)
+Version 0.1.10 remains preserved as the preceding immutable release. Its annotated tag
+[`v0.1.10`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.10)
 resolves to its immutable source commit. The release publishes one wheel and
-three public OCI manifests, each executing Python 3.14.7. It added graceful
-Fence and Publisher daemon shutdown handling.
+three public OCI manifests, each executing Python 3.14.7. It scoped download
+client IDs to each independent Arr API.
 
 Version 0.1.5 remains preserved at tag
 [`v0.1.5`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.5)

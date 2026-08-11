@@ -56,7 +56,12 @@ def _runtime(config: ProductConfig) -> tuple[FenceStore, FenceDaemon, FenceObser
         qbittorrent_config = config.adapters["qbittorrent"]
     except KeyError as exc:
         raise ConfigError("Fence requires a configured qBittorrent adapter") from exc
-    qbittorrent = QbittorrentAdapter(qbittorrent_config.base_url, qbittorrent_config.secrets["username"], qbittorrent_config.secrets["password"])
+    qbittorrent = QbittorrentAdapter(
+        qbittorrent_config.base_url,
+        qbittorrent_config.secrets.get("username"),
+        qbittorrent_config.secrets.get("password"),
+        api_key=qbittorrent_config.secrets.get("api_key"),
+    )
     prowlarr_config = config.adapters.get("prowlarr")
     prowlarr = None if prowlarr_config is None else ProwlarrAdapter(prowlarr_config.base_url, prowlarr_config.secrets["api_key"])
     lease = AdvisoryLease.open(config.fence.mutation_lock.path, timeout_ms=config.fence.mutation_lock.timeout_ms)

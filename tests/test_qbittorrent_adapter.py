@@ -16,6 +16,7 @@ from media_interlock.config import SecretReference
 class QbittorrentAdapterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.requests: list[tuple[str, str, dict[str, list[str]]]] = []
+        self.authorization: list[str | None] = []
         self.redirect_login = False
         outer = self
 
@@ -24,6 +25,7 @@ class QbittorrentAdapterTests(unittest.TestCase):
                 pass
 
             def do_POST(self) -> None:
+                outer.authorization.append(self.headers.get("Authorization"))
                 raw = self.rfile.read(int(self.headers["Content-Length"])).decode()
                 outer.requests.append(("POST", self.path, parse_qs(raw)))
                 if self.path == "/api/v2/auth/login":
@@ -44,6 +46,7 @@ class QbittorrentAdapterTests(unittest.TestCase):
                     self.send_error(404)
 
             def do_GET(self) -> None:
+                outer.authorization.append(self.headers.get("Authorization"))
                 outer.requests.append(("GET", self.path, {}))
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -78,6 +81,22 @@ class QbittorrentAdapterTests(unittest.TestCase):
 
         self.assertEqual(("POST", "/api/v2/auth/login", {"username": ["fixture-user"], "password": ["fixture-pass"]}), self.requests[0])
         self.assertIn(("POST", "/api/v2/torrents/start", {"hashes": ["a" * 40]}), self.requests)
+
+    def test_api_key_authentication_skips_login_and_is_sent_on_every_request(self) -> None:
+        host, port = self.server.server_address
+        adapter = QbittorrentAdapter(
+            f"http://{host}:{port}",
+            None,
+            None,
+            api_key=SecretReference("env", "QBIT_API_KEY"),
+            secret_resolver=lambda _: "fixture-api-key",
+        )
+
+        self.assertTrue(adapter.ready())
+        self.assertTrue(adapter.resume("a" * 40))
+        self.assertFalse(any(path == "/api/v2/auth/login" for _, path, _ in self.requests))
+        self.assertTrue(self.authorization)
+        self.assertEqual({"Bearer fixture-api-key"}, set(self.authorization))
 
     def test_global_start_paused_preference_does_not_replace_per_arr_stop_contracts(self) -> None:
         adapter = self.adapter()
