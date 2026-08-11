@@ -18,10 +18,12 @@ active only when configured.
 
 ## Project status
 
-MediaInterlock 0.1.13 is the current immutable public
-[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.13).
-Version 0.1.12 remains preserved as its immutable predecessor.
-Version 0.1.13 lets an exactly correlated, pre-admitted stopped magnet fetch
+MediaInterlock 0.1.14 is the current immutable public
+[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.14).
+Version 0.1.13 remains preserved as its immutable predecessor.
+Version 0.1.14 makes Fence durably retry completed acquisitions to Publisher
+until the exact custody receipt is accepted. Version 0.1.13 lets an exactly
+correlated, pre-admitted stopped magnet fetch
 its metadata while accounting the positive Arr release size already reserved
 before the grab. Version 0.1.12 gives Reconciler release searches a bounded
 90-second adapter window. Version 0.1.11 adds optional qBittorrent bearer API-key authentication while

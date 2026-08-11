@@ -637,7 +637,7 @@ class FenceService:
             reservation = self._state.reservation(operation_id)
         except KeyError:
             return None
-        if reservation.state is ReservationState.TERMINAL:
+        if reservation.state in {ReservationState.TERMINAL, ReservationState.QBITTORRENT_FROZEN}:
             return self._state.terminal_observation(operation_id)
         if reservation.state is not ReservationState.QBITTORRENT_ACTIVE or reservation.torrent_hash is None:
             return None
@@ -652,6 +652,21 @@ class FenceService:
         envelope = candidate.complete(operation_id)
         self._persist(candidate)
         return envelope
+
+    def pending_terminals(self) -> tuple[Envelope, ...]:
+        """Return durable completed acquisitions until Publisher accepts custody."""
+        terminals: list[Envelope] = []
+        for record in self._state.records():
+            if record["state"] not in {
+                ReservationState.QBITTORRENT_ACTIVE.value,
+                ReservationState.TERMINAL.value,
+                ReservationState.QBITTORRENT_FROZEN.value,
+            }:
+                continue
+            terminal = self.observe(str(record["operation_id"]))
+            if terminal is not None:
+                terminals.append(terminal)
+        return tuple(terminals)
 
     def freeze(self, operation_id: str) -> bool:
         """Durably stop one terminal owned hash for a Publisher hardlink copy."""

@@ -42,6 +42,8 @@ under observed, durable capacity and concurrency constraints.
 - Maintain reservations after transfer completion, emit a terminal acquisition
   observation, and release custody only after an exact Publisher receipt proves
   that Publisher durably reserved and adopted the payload.
+- Reoffer durable terminal acquisitions directly to Publisher until the exact
+  custody receipt is accepted, including after a freeze or lost response.
 - Report inhibited, ready, degraded, and recovering states over health, metrics,
   CLI, and a versioned Unix socket.
 - Use Prowlarr readiness only when configured policy requires that upstream

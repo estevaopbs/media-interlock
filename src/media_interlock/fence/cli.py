@@ -27,12 +27,10 @@ from .service import FenceService, FenceSource
 from .store import FenceStore
 
 
-def _component_ready(socket_path: Path) -> bool:
-    """Ask the other single-writer process; failure is unavailable, never ready."""
-    request = status_response(str(uuid.uuid4()), StatusCode.OK, "readiness")
+def _component_exchange(socket_path: Path, request: Envelope, *, timeout_seconds: float) -> Envelope | None:
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(1.0)
+            client.settimeout(timeout_seconds)
             client.connect(str(socket_path))
             client.sendall(request.encode())
             frame = bytearray()
@@ -45,8 +43,15 @@ def _component_ready(socket_path: Path) -> bool:
                     break
             response = Envelope.decode(bytes(frame))
     except (OSError, ValueError):
-        return False
-    return response.operation_id == request.operation_id and response.kind == "status" and response.body.get("code") == StatusCode.OK.value
+        return None
+    return response if response.operation_id == request.operation_id else None
+
+
+def _component_ready(socket_path: Path) -> bool:
+    """Ask the other single-writer process; failure is unavailable, never ready."""
+    request = status_response(str(uuid.uuid4()), StatusCode.OK, "readiness")
+    response = _component_exchange(socket_path, request, timeout_seconds=1.0)
+    return response is not None and response.kind == "status" and response.body.get("code") == StatusCode.OK.value
 
 
 def _runtime(config: ProductConfig) -> tuple[FenceStore, FenceDaemon, FenceObservability, AdvisoryLease]:
@@ -103,7 +108,7 @@ def _runtime(config: ProductConfig) -> tuple[FenceStore, FenceDaemon, FenceObser
     return store, daemon, observability, lease
 
 
-async def _serve(socket_path: Path, daemon: FenceDaemon) -> None:
+async def _serve(socket_path: Path, publisher_socket_path: Path, daemon: FenceDaemon) -> None:
     socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         mode = socket_path.lstat().st_mode
@@ -125,6 +130,10 @@ async def _serve(socket_path: Path, daemon: FenceDaemon) -> None:
     async def poll() -> None:
         while True:
             daemon.tick()
+            for terminal in daemon.pending_terminals():
+                receipt = await asyncio.to_thread(_component_exchange, publisher_socket_path, terminal, timeout_seconds=120.0)
+                if receipt is not None:
+                    daemon.accept_custody(receipt)
             await asyncio.sleep(5)
 
     async with server:
@@ -160,7 +169,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         assert config.fence is not None
         daemon.recover()
-        asyncio.run(_serve(config.fence.socket_path, daemon))
+        assert config.publisher is not None
+        asyncio.run(_serve(config.fence.socket_path, config.publisher.socket_path, daemon))
     except OSError as exc:
         print(render_result("unavailable", str(exc), as_json=arguments.json))
         return 1

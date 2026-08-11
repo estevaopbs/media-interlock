@@ -115,3 +115,9 @@ class FenceDaemon:
             return self._service.poll_external(publisher_ready=publisher_ready)
         except Exception:
             return False
+
+    def pending_terminals(self) -> tuple[Envelope, ...]:
+        return self._service.pending_terminals()
+
+    def accept_custody(self, receipt: Envelope) -> bool:
+        return receipt.kind == "custody_receipt" and self._service.accept_custody(receipt)

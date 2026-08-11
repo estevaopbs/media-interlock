@@ -27,6 +27,12 @@ and exposes status over a versioned Unix socket. Failure or unknown state stops
 new work at the affected boundary; it does not make another service's database
 authoritative.
 
+Fence's daemon reoffers durable terminal acquisitions directly to Publisher's
+versioned socket. A pending or lost response is retried from Fence state, so a
+deployment does not supply a recurring relay. The socket exchange does not
+block Fence's server, allowing Publisher's exact freeze callback to finish
+before it returns custody.
+
 The fence owns a completed download until an idempotent custody handshake
 finishes. It emits a terminal acquisition observation and keeps the payload's
 space reservation active. Publisher records a conservative reservation and

@@ -237,6 +237,27 @@ class FenceServiceTests(unittest.TestCase):
         self.assertEqual([f"pause:{HASH}"], [event for event in events if event.startswith("pause:")])
         self.assertLess(events.index("lease-enter"), events.index(f"observe:{HASH}"))
 
+    def test_completed_terminal_is_reoffered_after_freeze_until_custody(self) -> None:
+        class Store:
+            def save(self, _: FenceState) -> None: pass
+
+        class Qbittorrent:
+            active = True
+            def terminal_observed(self, *_: object, **__: object) -> QbittorrentActivityObservation: return QbittorrentActivityObservation("observed", True)
+            def observe_active(self, *_: object, **__: object) -> QbittorrentActivityObservation: return QbittorrentActivityObservation("observed", self.active)
+            def pause(self, *_: object) -> bool: self.active = False; return True
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        bound(state)
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE})
+
+        terminal, = service.pending_terminals()
+        self.assertEqual("terminal_acquisition", terminal.kind)
+        self.assertTrue(service.freeze(OPERATION_ID))
+        self.assertEqual(terminal, service.pending_terminals()[0])
+        self.assertTrue(service.accept_custody(custody_receipt(OPERATION_ID, terminal.body["fence_reservation_id"], "publisher-r-1")))
+        self.assertEqual((), service.pending_terminals())
+
     def test_recovery_reestablishes_a_crashed_freeze_intent_without_touching_a_foreign_hash(self) -> None:
         calls: list[str] = []
 
