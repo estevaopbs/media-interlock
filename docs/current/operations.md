@@ -1,6 +1,6 @@
 # Operations
 
-The current public 0.1.12 release contains one wheel plus Reconciler, Fence, and
+The current public 0.1.13 release contains one wheel plus Reconciler, Fence, and
 Publisher OCI images.
 This page is not an installation guide and no live deployment has been tested.
 
@@ -66,7 +66,10 @@ behavior from each configured Arr qBittorrent client, distinct source
 categories, and a regular singly linked shared mutation-lock file. Fence
 accepts a stopped add only after it observes the exact Arr download identity
 and corresponding canonical hash, category, reservation tag, and qBittorrent
-save path; it persists resume intent before the resume call. Bounded polling
+save path. A magnet whose metadata is still pending may report zero bytes only
+when that exact stopped identity is unowned; Fence accounts the positive Arr
+release size reserved before the grab, tags it, and persists resume intent
+before the resume call. Bounded polling
 can adopt an external Arr grab only after its post-watermark Queue/History
 observation is durably fingerprinted. Read-only capacity probes supply
 conservative `statvfs` headroom; they are not filesystem quotas. MediaInterlock validates

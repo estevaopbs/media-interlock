@@ -501,6 +501,28 @@ class FenceServiceTests(unittest.TestCase):
 
         self.assertLess(events.index("save:qbittorrent_stopped"), events.index("lease-exit"))
 
+    def test_pre_admitted_magnet_can_fetch_metadata_under_its_reserved_size(self) -> None:
+        class Store:
+            def save(self, _: FenceState) -> None: pass
+
+        class Qbittorrent:
+            tagged = False
+            active = False
+            def ready(self) -> bool: return True
+            def observe_existing_stopped(self, *_: object, **__: object) -> QbittorrentObservation: return QbittorrentObservation("metadata_pending")
+            def apply_reservation_tag(self, *_: object) -> bool: self.tagged = True; return True
+            def observe_tagged_stopped(self, *_: object, **__: object) -> QbittorrentObservation: return QbittorrentObservation("metadata_pending")
+            def resume(self, *_: object) -> bool: self.active = True; return True
+            def observe_active(self, *_: object, **__: object) -> QbittorrentActivityObservation: return QbittorrentActivityObservation("observed", self.active)
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        service = FenceService(state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE})
+        self.assertTrue(service.pre_admit(intent(), publisher_ready=True).admitted)
+
+        self.assertTrue(service.bind_grab(OPERATION_ID, HASH, HASH))
+        self.assertEqual(400, state.reservation(OPERATION_ID).bytes_reserved)
+        self.assertEqual(ReservationState.QBITTORRENT_ACTIVE, state.reservation(OPERATION_ID).state)
+
     def test_external_observer_baselines_then_persists_and_adopts_one_stopped_grab(self) -> None:
         events: list[str] = []
 

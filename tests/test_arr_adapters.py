@@ -249,6 +249,19 @@ class ArrCorrelationTests(unittest.TestCase):
         self.assertEqual(download_id, observation.download_id)
         self.assertEqual(download_id.lower(), observation.torrent_hash)
 
+    def test_post_grab_accepts_queue_entry_waiting_for_magnet_metadata(self) -> None:
+        adapter = self.adapter(RadarrAdapter)
+        release = adapter.first_approved_release("42")
+        assert release is not None
+        download_id = "A" * 40
+        self.payload = {"records": [{"id": 8, "eventType": "grabbed", "movieId": 42, "sourceTitle": "fixture.movie.2026", "downloadId": download_id}], "totalRecords": 1}
+        self.queue_payload = {"records": [{"id": 9, "movieId": 42, "title": "fixture.movie.2026", "downloadId": download_id, "protocol": "torrent", "size": 0}], "totalRecords": 1}
+
+        observation = adapter.observe_grab("42", release, watermark=7)
+
+        self.assertEqual("observed", observation.kind)
+        self.assertEqual(download_id.lower(), observation.torrent_hash)
+
     def test_grab_observation_never_converts_absence_or_ambiguity_to_a_grab(self) -> None:
         adapter = self.adapter(RadarrAdapter)
         release = adapter.first_approved_release("42")

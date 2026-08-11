@@ -137,7 +137,7 @@ class QbittorrentObservation:
     remaining_bytes: int | None = None
 
     def __post_init__(self) -> None:
-        if self.kind not in {"absent", "unknown", "ambiguous", "observed"}:
+        if self.kind not in {"absent", "unknown", "ambiguous", "metadata_pending", "observed"}:
             raise ValueError("qBittorrent observation kind is invalid")
         valid_size = isinstance(self.observed_bytes, int) and not isinstance(self.observed_bytes, bool) and self.observed_bytes > 0
         valid_remaining = self.remaining_bytes is None or (isinstance(self.remaining_bytes, int) and not isinstance(self.remaining_bytes, bool) and self.observed_bytes is not None and 0 <= self.remaining_bytes <= self.observed_bytes)

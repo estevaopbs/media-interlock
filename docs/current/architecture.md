@@ -55,8 +55,10 @@ History both to bind that exact later grab and to adopt post-watermark external
 Arr grabs through a separate durable observation fingerprint. It preserves
 Arr's real download ID for the terminal contract and derives one matching
 canonical lowercase torrent hash solely for qBittorrent observation, tagging,
-pause, and resume. It observes that stopped hash, source-specific category,
-qBittorrent save path and positive size before it tags or resumes it. Terminal
+pause, and resume. It observes that stopped hash, source-specific category and
+qBittorrent save path before it tags or resumes it. A magnet may still report
+zero bytes before metadata arrives; only an exact pre-admitted grab can use the
+positive Arr release size already reserved to enter metadata download. Terminal
 observation contains the real Arr download ID and stable operation correlation
 identities, not an authoritative external path.
 

@@ -141,6 +141,22 @@ class QbittorrentAdapterTests(unittest.TestCase):
 
         self.assertEqual([("/api/v2/torrents/addTags", {"hashes": "a" * 40, "tags": "fence-r-1"})], posts)
 
+    def test_stopped_magnet_without_metadata_is_distinguished_and_can_start(self) -> None:
+        adapter = self.adapter()
+        adapter._login = lambda: True  # type: ignore[method-assign]
+        torrent = {"tags": "", "category": "media-interlock", "save_path": "/staging", "hash": "a" * 40, "size": 0, "amount_left": 0, "state": "stoppedDL", "magnet_uri": "magnet:?xt=urn:btih:" + "a" * 40}
+        adapter._get_json = lambda _: [torrent]  # type: ignore[method-assign]
+
+        self.assertEqual("metadata_pending", adapter.observe_existing_stopped("a" * 40, "media-interlock", save_path=Path("/staging")).kind)
+        torrent.pop("magnet_uri")
+        self.assertEqual("unknown", adapter.observe_existing_stopped("a" * 40, "media-interlock", save_path=Path("/staging")).kind)
+        reservation_id = "fence:12345678-1234-4678-9234-567812345678"
+        torrent.update(tags=reservation_id, state="metaDL", magnet_uri="magnet:?xt=urn:btih:" + "a" * 40)
+        observation = adapter.observe_active("a" * 40, reservation_id, "media-interlock", save_path=Path("/staging"))
+        self.assertEqual("observed", observation.kind)
+        self.assertTrue(observation.active)
+        self.assertIsNone(observation.observed_bytes)
+
     def test_observation_compares_the_profile_save_path_not_a_staging_root(self) -> None:
         adapter = self.adapter()
         adapter._login = lambda: True  # type: ignore[method-assign]

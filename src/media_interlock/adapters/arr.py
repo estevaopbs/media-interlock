@@ -210,7 +210,7 @@ class ArrHistoryAdapter:
             and record.get("protocol") == "torrent"
             and not isinstance(record.get("size"), bool)
             and isinstance(record.get("size"), (int, float))
-            and record.get("size") == release.expected_bytes
+            and record.get("size") in {0, release.expected_bytes}
         ]
         if len(queue_matches) == 1:
             torrent_hash = download_id.lower()

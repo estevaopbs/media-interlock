@@ -1,15 +1,22 @@
 # Current state
 
-MediaInterlock 0.1.12 is the immutable public downstream-consumption release.
-It gives Reconciler release searches a bounded 90-second adapter window while
-keeping ordinary readiness probes short.
+MediaInterlock 0.1.13 is the immutable public downstream-consumption release.
+It lets an exactly correlated, pre-admitted stopped magnet fetch its metadata
+while retaining the positive Arr release-size reservation made before the
+grab.
 Its annotated tag
-[`v0.1.12`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.12)
+[`v0.1.13`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.13)
 resolves to its immutable source commit. The release publishes one wheel and
 three public OCI manifests, each executing Python 3.14.7. Its canonical
 artifact manifest binds all identities to one source revision and version.
 
-Version 0.1.11 remains preserved as the preceding immutable release. Its annotated tag
+Version 0.1.12 remains preserved as the preceding immutable release. Its annotated tag
+[`v0.1.12`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.12)
+resolves to its immutable source commit. It gives Reconciler release searches
+a bounded 90-second adapter window while keeping ordinary readiness probes
+short.
+
+Version 0.1.11 remains preserved as an earlier immutable release. Its annotated tag
 [`v0.1.11`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.11)
 resolves to its immutable source commit. The release publishes one wheel and
 three public OCI manifests, each executing Python 3.14.7. It added optional

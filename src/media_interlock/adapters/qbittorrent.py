@@ -151,9 +151,14 @@ class QbittorrentAdapter:
         size, state, remaining = torrent.get("size"), torrent.get("state"), torrent.get("amount_left")
         owner_tags = _fence_tags(torrent.get("tags"))
         expected_owner_tags = set() if _reservation_id is None else {_reservation_id}
-        if torrent.get("hash") != torrent_hash or torrent.get("category") != category or torrent.get("save_path") != expected_save_path or owner_tags != expected_owner_tags or isinstance(size, bool) or not isinstance(size, int) or size <= 0 or (remaining is not None and (isinstance(remaining, bool) or not isinstance(remaining, int) or not 0 <= remaining <= size)) or not isinstance(state, str):
+        if torrent.get("hash") != torrent_hash or torrent.get("category") != category or torrent.get("save_path") != expected_save_path or owner_tags != expected_owner_tags or isinstance(size, bool) or not isinstance(size, int) or size < 0 or (remaining is not None and (isinstance(remaining, bool) or not isinstance(remaining, int) or not 0 <= remaining <= size)) or not isinstance(state, str):
             return QbittorrentObservation("unknown")
-        return QbittorrentObservation("observed", size, remaining) if state.startswith("paused") or state.startswith("stopped") else QbittorrentObservation("unknown")
+        if not (state.startswith("paused") or state.startswith("stopped")):
+            return QbittorrentObservation("unknown")
+        if size == 0:
+            magnet_uri = torrent.get("magnet_uri")
+            return QbittorrentObservation("metadata_pending") if isinstance(magnet_uri, str) and magnet_uri.startswith("magnet:?") else QbittorrentObservation("unknown")
+        return QbittorrentObservation("observed", size, remaining)
 
     def apply_reservation_tag(self, torrent_hash: str, reservation_id: str) -> bool:
         if not self._login() or not _torrent_hash(torrent_hash) or not isinstance(reservation_id, str) or not reservation_id:
@@ -218,12 +223,12 @@ class QbittorrentAdapter:
         if torrent.get("hash") != torrent_hash or torrent.get("category") != category or torrent.get("save_path") != expected_save_path or _fence_tags(torrent.get("tags")) != {reservation_id}:
             return QbittorrentActivityObservation("unknown")
         state, size = torrent.get("state"), torrent.get("size")
-        if not isinstance(state, str) or isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+        if not isinstance(state, str) or isinstance(size, bool) or not isinstance(size, int) or size < 0:
             return QbittorrentActivityObservation("unknown")
         if state in {"downloading", "stalledDL", "queuedDL", "forcedDL", "metaDL", "forcedMetaDL", "uploading", "stalledUP", "queuedUP", "forcedUP"}:
-            return QbittorrentActivityObservation("observed", True, size)
+            return QbittorrentActivityObservation("observed", True, size or None)
         if state.startswith("paused") or state.startswith("stopped"):
-            return QbittorrentActivityObservation("observed", False, size)
+            return QbittorrentActivityObservation("observed", False, size or None)
         return QbittorrentActivityObservation("unknown")
 
     def terminal_observed(self, torrent_hash: str, reservation_id: str, category: str, *, save_path: Path) -> QbittorrentActivityObservation:

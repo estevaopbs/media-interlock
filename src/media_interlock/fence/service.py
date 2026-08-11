@@ -484,7 +484,7 @@ class FenceService:
             observed_bytes = self._qbittorrent.observe_existing_stopped(torrent_hash, source.category, save_path=source.qbittorrent_save_path)
         except Exception:
             return False
-        if observed_bytes.kind != "observed" or observed_bytes.observed_bytes is None:
+        if observed_bytes.kind not in {"observed", "metadata_pending"}:
             return False
         candidate = self._state.clone()
         try:
@@ -503,14 +503,16 @@ class FenceService:
                 # The first stopped observation may predate prospective intent;
                 # re-observe under the shared lease before the exact mutation.
                 stopped = self._qbittorrent.observe_existing_stopped(torrent_hash, source.category, save_path=source.qbittorrent_save_path)
-                if stopped.kind != "observed":
+                if stopped.kind not in {"observed", "metadata_pending"}:
                     return False
                 tagged = self._qbittorrent.apply_reservation_tag(torrent_hash, reservation.reservation_id)
                 tagged_bytes = self._qbittorrent.observe_tagged_stopped(torrent_hash, source.category, reservation.reservation_id, save_path=source.qbittorrent_save_path) if tagged else None
-                if tagged_bytes is None or tagged_bytes.kind != "observed" or tagged_bytes.observed_bytes is None:
+                if tagged_bytes is None or tagged_bytes.kind not in {"observed", "metadata_pending"}:
                     return False
                 candidate = self._state.clone()
-                within_capacity = candidate.mark_qbittorrent_tagged(operation_id, observed_bytes=tagged_bytes.observed_bytes, remaining_download_bytes=tagged_bytes.remaining_bytes)
+                accounted_bytes = tagged_bytes.observed_bytes if tagged_bytes.kind == "observed" else reservation.requested_bytes
+                accounted_remaining = tagged_bytes.remaining_bytes if tagged_bytes.kind == "observed" else reservation.requested_bytes
+                within_capacity = candidate.mark_qbittorrent_tagged(operation_id, observed_bytes=accounted_bytes, remaining_download_bytes=accounted_remaining)
                 # The effect is now known; make its durable ownership transition
                 # visible before another lease holder can observe the hash.
                 self._persist(candidate)
@@ -578,10 +580,12 @@ class FenceService:
                 try:
                     with self._hold_mutation_lease():
                         observed_bytes = self._qbittorrent.observe_tagged_stopped(torrent_hash, source.category, reservation_id, save_path=source.qbittorrent_save_path)
-                        if observed_bytes.kind != "observed" or observed_bytes.observed_bytes is None:
+                        if observed_bytes.kind not in {"observed", "metadata_pending"}:
                             continue
                         candidate = self._state.clone()
-                        within_capacity = candidate.mark_qbittorrent_tagged(operation_id, observed_bytes=observed_bytes.observed_bytes, remaining_download_bytes=observed_bytes.remaining_bytes)
+                        accounted_bytes = observed_bytes.observed_bytes if observed_bytes.kind == "observed" else reservation.requested_bytes
+                        accounted_remaining = observed_bytes.remaining_bytes if observed_bytes.kind == "observed" else reservation.requested_bytes
+                        within_capacity = candidate.mark_qbittorrent_tagged(operation_id, observed_bytes=accounted_bytes, remaining_download_bytes=accounted_remaining)
                         self._persist(candidate)
                 except Exception:
                     continue

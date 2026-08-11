@@ -14,6 +14,9 @@ under observed, durable capacity and concurrency constraints.
 - Bind each admitted torrent to its real Arr download ID and matching canonical
   qBittorrent hash, source category, reservation tag, and source qBittorrent
   save path before Fence resumes it.
+- Permit an exact pre-admitted stopped magnet with pending metadata to start
+  only after accounting its positive Arr release-size reservation and applying
+  the owner tag; a generic zero-size torrent remains unknown.
 - Poll bounded public Arr History and Queue pages to adopt a post-watermark,
   externally initiated stopped torrent only after its configured download-client
   identity, entity, hash, size, category, and save path agree. The durable
