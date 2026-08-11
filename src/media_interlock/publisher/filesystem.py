@@ -118,19 +118,21 @@ class BundleVerifier:
     _VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mp4", ".webm"}
     _SIDECAR_EXTENSIONS = frozenset({".ass", ".ssa", ".srt", ".vtt"})
 
-    def __init__(self, staging_root: Path, *, settle_seconds: float, sidecar_extensions: frozenset[str] | tuple[str, ...] = _SIDECAR_EXTENSIONS, required_languages: frozenset[str] | tuple[str, ...] = (), language_aliases: dict[str, str] | None = None, required_container_evidence: frozenset[str] | tuple[str, ...] = (), media_inspector: MediaInspector | None = None) -> None:
+    def __init__(self, staging_root: Path, *, settle_seconds: float, sidecar_extensions: frozenset[str] | tuple[str, ...] = _SIDECAR_EXTENSIONS, required_languages: frozenset[str] | tuple[str, ...] = (), required_subtitle_languages: frozenset[str] | tuple[str, ...] = (), language_aliases: dict[str, str] | None = None, required_container_evidence: frozenset[str] | tuple[str, ...] = (), media_inspector: MediaInspector | None = None) -> None:
         if not isinstance(staging_root, Path) or not staging_root.is_absolute() or isinstance(settle_seconds, bool) or not isinstance(settle_seconds, (int, float)) or settle_seconds < 0 or settle_seconds > 60:
             raise CandidateSafetyError("bundle verification policy is invalid")
         extensions = frozenset(sidecar_extensions)
         required = frozenset(language.lower().replace("_", "-") for language in required_languages)
+        required_subtitles = frozenset(language.lower().replace("_", "-") for language in required_subtitle_languages)
         aliases = {} if language_aliases is None else {alias.lower().replace("_", "-"): language.lower().replace("_", "-") for alias, language in language_aliases.items()}
         containers = frozenset(required_container_evidence)
-        if not extensions or any(not isinstance(extension, str) or extension not in self._SIDECAR_EXTENSIONS for extension in extensions) or any(not isinstance(language, str) or not language for language in required) or any(not isinstance(alias, str) or not alias or not isinstance(language, str) or not language for alias, language in aliases.items()) or any(not isinstance(value, str) or not value.startswith("container:") for value in containers):
+        if not extensions or any(not isinstance(extension, str) or extension not in self._SIDECAR_EXTENSIONS for extension in extensions) or any(not isinstance(language, str) or not language for language in required | required_subtitles) or any(not isinstance(alias, str) or not alias or not isinstance(language, str) or not language for alias, language in aliases.items()) or any(not isinstance(value, str) or not value.startswith("container:") for value in containers):
             raise CandidateSafetyError("bundle verification policy is invalid")
         self._root = staging_root
         self._settle_seconds = float(settle_seconds)
         self._sidecar_extensions = extensions
         self._required_languages = required
+        self._required_subtitle_languages = required_subtitles
         self._language_aliases = aliases
         self._required_container_evidence = containers
         self._candidate = CandidateVerifier(staging_root)
@@ -218,6 +220,9 @@ class BundleVerifier:
             observed_languages = sidecar_languages | set(inspection.audio_languages) | set(inspection.subtitle_languages)
             if not self._required_languages.issubset(observed_languages):
                 raise CandidateSafetyError("bundle is missing required language evidence")
+            observed_subtitle_languages = sidecar_languages | set(inspection.subtitle_languages)
+            if not self._required_subtitle_languages.issubset(observed_subtitle_languages):
+                raise CandidateSafetyError("bundle is missing required subtitle language evidence")
         finally:
             os.close(directory)
         return members, inspection

@@ -23,7 +23,8 @@ last known-good generation until a newer one is fully committed.
 - Seal exactly one contained video and its selected contained sidecars through
   two equal no-follow observations separated by the source profile's bounded
   settle interval. Source profiles may narrow sidecar extensions and require
-  language or container-inspection evidence, including configured aliases;
+  general language, subtitle-only language, or container-inspection evidence,
+  including configured aliases; audio evidence never satisfies subtitle-only policy;
   containment, double observation, digest verification, and inventory bounds
   are invariant.
 - Record immutable payload inspection evidence (container plus any bounded

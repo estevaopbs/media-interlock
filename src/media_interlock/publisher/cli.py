@@ -76,6 +76,7 @@ def _runtime(config: ProductConfig) -> tuple[PublisherStore, PublisherDaemon, tu
                 settle_seconds=profile.bundle_settle_seconds,
                 sidecar_extensions=profile.bundle_sidecar_extensions,
                 required_languages=profile.bundle_required_languages,
+                required_subtitle_languages=profile.bundle_required_subtitle_languages,
                 language_aliases=dict(profile.bundle_language_aliases),
                 required_container_evidence=profile.bundle_required_container_evidence,
             ),

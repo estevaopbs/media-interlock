@@ -252,6 +252,20 @@ forbidden_candidate_formats = [\"AI upscale\"]""",
         with self.assertRaisesRegex(ConfigError, "container_evidence"):
             load_config(self.write(content.replace("container:mkv", "codec:h264")))
 
+    def test_bundle_subtitle_language_policy_is_distinct_from_general_language_evidence(self) -> None:
+        content = VALID_CONFIG.replace(
+            'namespace = "movies"',
+            'namespace = "movies"\nbundle_required_subtitle_languages = ["pt-BR", "en", "es"]',
+            1,
+        )
+
+        config = load_config(self.write(content))
+
+        self.assertEqual(
+            ("pt-br", "en", "es"),
+            config.publisher.sources["radarr"].bundle_required_subtitle_languages,
+        )
+
     def test_rejects_unknown_and_ambiguous_configuration_before_effects(self) -> None:
         with self.assertRaisesRegex(ConfigError, "unknown key"):
             load_config(self.write(VALID_CONFIG.replace("max_inflight = 2", "max_inflight = 2\nunsafe = true")))

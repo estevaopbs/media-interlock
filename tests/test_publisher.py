@@ -716,6 +716,28 @@ class CandidateFilesystemTests(unittest.TestCase):
             with self.assertRaises(CandidateSafetyError):
                 BundleVerifier(root, settle_seconds=0, media_inspector=FailingInspector()).verify("movie.mkv")
 
+    def test_subtitle_requirement_never_accepts_audio_only_language_evidence(self) -> None:
+        from media_interlock.publisher.filesystem import BundleVerifier, MediaInspection
+
+        class AudioOnlyInspector:
+            def inspect(self, _):
+                return MediaInspection(("pt-br", "en", "es"), (), ("container:mkv",))
+
+        class SubtitleInspector:
+            def inspect(self, _):
+                return MediaInspection((), ("pt-br", "en", "es"), ("container:mkv",))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "staging"
+            root.mkdir()
+            (root / "movie.mkv").write_bytes(b"video")
+            required = ("pt-br", "en", "es")
+
+            with self.assertRaises(CandidateSafetyError):
+                BundleVerifier(root, settle_seconds=0, required_subtitle_languages=required, media_inspector=AudioOnlyInspector()).verify("movie.mkv")
+            verified = BundleVerifier(root, settle_seconds=0, required_subtitle_languages=required, media_inspector=SubtitleInspector()).verify("movie.mkv")
+            self.assertEqual(required, verified.inspection.subtitle_languages)
+
     def test_generation_publisher_copies_a_sealed_bundle_to_independent_inodes(self) -> None:
         from media_interlock.publisher.filesystem import BundleVerifier
 

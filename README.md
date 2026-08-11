@@ -18,10 +18,12 @@ active only when configured.
 
 ## Project status
 
-MediaInterlock 0.1.21 is the current immutable public
-[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.21).
-Version 0.1.20 remains preserved as its immutable predecessor.
-Version 0.1.21 adds a product-owned automatic Reconciler loop. It inventories
+MediaInterlock 0.1.22 is the current immutable public
+[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.22).
+Version 0.1.21 remains preserved as its immutable predecessor.
+Version 0.1.22 adds a distinct configurable Publisher gate for subtitle
+languages, so audio-only language evidence cannot satisfy a subtitle
+requirement. Version 0.1.21 added a product-owned automatic Reconciler loop. It inventories
 existing Radarr and Sonarr files against their native quality profiles, runs
 bounded due searches with durable per-file checkpoints, and exposes typed
 configuration for geometric cooldowns, terminal searches, score and custom

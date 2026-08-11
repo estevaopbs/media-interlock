@@ -1,6 +1,6 @@
 # Operations
 
-The current public 0.1.21 release contains one wheel plus Reconciler, Fence, and
+The current public 0.1.22 release contains one wheel plus Reconciler, Fence, and
 Publisher OCI images.
 This page is not an installation guide and no live deployment has been tested.
 
@@ -127,7 +127,9 @@ incomplete historical activation remains fail-closed and inflight.
 
 Each Publisher source profile also declares a bounded bundle settle interval,
 accepted sidecar extensions, and optional required language aliases and
-container evidence. These narrow eligibility only: Publisher always performs
+container evidence. `bundle_required_subtitle_languages` is distinct from the
+legacy general language gate: only embedded subtitle tracks and matching
+subtitle sidecars satisfy it. These narrow eligibility only: Publisher always performs
 two no-follow bundle observations and independent-inode canonical copies. If a
 profile can receive Arr hardlinks, the Publisher must be configured with the
 Fence socket; otherwise that candidate remains pending. Bootstrap and assisted

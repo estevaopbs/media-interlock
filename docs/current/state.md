@@ -1,7 +1,14 @@
 # Current state
 
-MediaInterlock 0.1.21 is the immutable public downstream-consumption release.
-Reconciler now has a product-owned automatic loop that inventories existing
+MediaInterlock 0.1.22 is the immutable public downstream-consumption release.
+Publisher now exposes a distinct typed subtitle-language requirement and
+accepts only embedded subtitle tracks or matching subtitle sidecars as its
+evidence; audio tracks cannot satisfy that gate. Its annotated tag
+[`v0.1.22`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.22)
+resolves to its immutable source commit.
+
+Version 0.1.21 remains preserved as its immutable predecessor. Reconciler has
+a product-owned automatic loop that inventories existing
 Radarr and Sonarr files against native quality-profile cutoffs. It persists
 per-file-generation checkpoints and rolling budgets, calculates configurable
 geometric cooldowns from media age, optionally performs one final search at

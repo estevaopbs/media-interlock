@@ -117,6 +117,7 @@ class PublisherSourceProfile:
     bundle_settle_seconds: int
     bundle_sidecar_extensions: tuple[str, ...]
     bundle_required_languages: tuple[str, ...]
+    bundle_required_subtitle_languages: tuple[str, ...]
     bundle_language_aliases: Mapping[str, str]
     bundle_required_container_evidence: tuple[str, ...]
 
@@ -148,6 +149,7 @@ class SourceProfile:
     bundle_settle_seconds: int
     bundle_sidecar_extensions: tuple[str, ...]
     bundle_required_languages: tuple[str, ...]
+    bundle_required_subtitle_languages: tuple[str, ...]
     bundle_language_aliases: Mapping[str, str]
     bundle_required_container_evidence: tuple[str, ...]
 
@@ -528,7 +530,7 @@ def _sources(value: object, pools: Mapping[str, CapacityPool]) -> dict[str, Sour
     allowed = {
         "kind", "download_client_id", "category", "qbittorrent_save_path", "arr_import_path_prefix",
         "staging_root", "canonical_root", "download_pool", "staging_pool", "canonical_pool",
-        "namespace", "jellyfin_library_id", "jellyfin_path_prefix", "bundle_settle_seconds", "bundle_sidecar_extensions", "bundle_required_languages", "bundle_language_aliases", "bundle_required_container_evidence",
+        "namespace", "jellyfin_library_id", "jellyfin_path_prefix", "bundle_settle_seconds", "bundle_sidecar_extensions", "bundle_required_languages", "bundle_required_subtitle_languages", "bundle_language_aliases", "bundle_required_container_evidence",
     }
     for name, expected_kind in _SOURCE_KINDS.items():
         profile = _table(table[name], f"sources.{name}")
@@ -559,6 +561,7 @@ def _sources(value: object, pools: Mapping[str, CapacityPool]) -> dict[str, Sour
             _optional_nonnegative(profile, "bundle_settle_seconds", f"sources.{name}", 60, default=2),
             _optional_bundle_strings(profile, "bundle_sidecar_extensions", f"sources.{name}", default=(".ass", ".ssa", ".srt", ".vtt"), extension=True),
             _optional_bundle_strings(profile, "bundle_required_languages", f"sources.{name}", default=()),
+            _optional_bundle_strings(profile, "bundle_required_subtitle_languages", f"sources.{name}", default=()),
             _optional_bundle_aliases(profile, f"sources.{name}"),
             _optional_container_evidence(profile, f"sources.{name}"),
         )
@@ -657,7 +660,7 @@ def load_config(path: Path) -> ProductConfig:
             base.state_dir,
             base.socket_path,
             {
-                name: PublisherSourceProfile(name, source.arr_import_path_prefix, source.staging_root, source.canonical_root, source.namespace, source.jellyfin_library_id, source.jellyfin_path_prefix, source.bundle_settle_seconds, source.bundle_sidecar_extensions, source.bundle_required_languages, source.bundle_language_aliases, source.bundle_required_container_evidence)
+                name: PublisherSourceProfile(name, source.arr_import_path_prefix, source.staging_root, source.canonical_root, source.namespace, source.jellyfin_library_id, source.jellyfin_path_prefix, source.bundle_settle_seconds, source.bundle_sidecar_extensions, source.bundle_required_languages, source.bundle_required_subtitle_languages, source.bundle_language_aliases, source.bundle_required_container_evidence)
                 for name, source in sources.items()
             },
         )
