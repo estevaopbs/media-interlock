@@ -18,11 +18,14 @@ active only when configured.
 
 ## Project status
 
-MediaInterlock 0.1.16 is the current immutable public
-[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.16).
-Version 0.1.13 remains preserved as its immutable predecessor.
-Version 0.1.16 repairs that identity and an unobserved catalog path binding for
-already-pending generations after a deployment upgrade. Version 0.1.15 seals Jellyfin provider identity in each published generation as
+MediaInterlock 0.1.17 is the current immutable public
+[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.17).
+Version 0.1.16 remains preserved as its immutable predecessor.
+Version 0.1.17 lets Fence adopt an exact external stopped magnet whose Queue
+size is still zero by accounting the positive release size sealed in Arr
+History. Version 0.1.16 repairs that identity and an unobserved catalog path
+binding for already-pending generations after a deployment upgrade. Version
+0.1.15 seals Jellyfin provider identity in each published generation as
 a read-only NFO sidecar. Version 0.1.14 made Fence durably retry completed acquisitions to Publisher
 until the exact custody receipt is accepted. Version 0.1.13 lets an exactly
 correlated, pre-admitted stopped magnet fetch

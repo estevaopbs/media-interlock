@@ -312,12 +312,17 @@ class ArrHistoryAdapter:
                 and item.get("protocol") == "torrent"
                 and isinstance(item.get("size"), int)
                 and not isinstance(item.get("size"), bool)
-                and item["size"] > 0
+                and item["size"] >= 0
             ]
             if len(queue_matches) != 1:
                 return None
+            expected_bytes = queue_matches[0]["size"]
+            if expected_bytes == 0:
+                expected_bytes = _history_release_size(record)
+                if expected_bytes is None:
+                    return None
             seen_downloads.add(torrent_hash)
-            grabs.append(ArrExternalGrab(entity_id, download_id, torrent_hash, queue_matches[0]["size"], history_id))
+            grabs.append(ArrExternalGrab(entity_id, download_id, torrent_hash, expected_bytes, history_id))
         return ArrExternalObservation(max(record["id"] for record in later), tuple(grabs))
 
     def sealed_external_grab(self, entity_id: str, torrent_hash: str, *, category: str, download_client_id: int) -> ArrExternalGrab | None:
@@ -531,6 +536,19 @@ def _public_id(value: object) -> str | None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return None
     return str(value)
+
+
+def _history_release_size(record: object) -> int | None:
+    data = record.get("data") if isinstance(record, dict) else None
+    value = data.get("size") if isinstance(data, dict) else None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and value.isdecimal():
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    return None
 
 
 def _canonical_arr_path(value: object) -> PurePosixPath | None:

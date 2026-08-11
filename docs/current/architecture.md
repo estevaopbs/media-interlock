@@ -63,8 +63,10 @@ Arr's real download ID for the terminal contract and derives one matching
 canonical lowercase torrent hash solely for qBittorrent observation, tagging,
 pause, and resume. It observes that stopped hash, source-specific category and
 qBittorrent save path before it tags or resumes it. A magnet may still report
-zero bytes before metadata arrives; only an exact pre-admitted grab can use the
-positive Arr release size already reserved to enter metadata download. Terminal
+zero bytes before metadata arrives. An exact pre-admitted grab uses its reserved
+positive release size; an exact post-watermark external grab uses the positive
+release size sealed in its Arr History event. Either path retains that size
+before metadata download begins. Terminal
 observation contains the real Arr download ID and stable operation correlation
 identities, not an authoritative external path.
 

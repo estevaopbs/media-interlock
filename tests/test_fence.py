@@ -587,6 +587,41 @@ class FenceServiceTests(unittest.TestCase):
         self.assertEqual(8, state.watermark("radarr"))
         self.assertEqual([f"tag:{HASH}", f"resume:{HASH}"], [event for event in events if event.startswith(("tag:", "resume:"))])
 
+    def test_external_observer_resumes_metadata_pending_magnet_under_arr_history_size(self) -> None:
+        class Store:
+            def save(self, _: FenceState) -> None: pass
+
+        class Qbittorrent:
+            active = False
+            def ready(self) -> bool: return True
+            def observe_existing_stopped(self, *_: object, **__: object) -> QbittorrentObservation: return QbittorrentObservation("metadata_pending")
+            def apply_reservation_tag(self, *_: object) -> bool: return True
+            def observe_tagged_stopped(self, *_: object, **__: object) -> QbittorrentObservation: return QbittorrentObservation("metadata_pending")
+            def resume(self, *_: object) -> bool: self.active = True; return True
+            def observe_active(self, *_: object, **__: object) -> QbittorrentActivityObservation: return QbittorrentActivityObservation("observed", self.active)
+
+        grab = ArrExternalGrab("42", HASH.upper(), HASH, 400, 8)
+
+        class Observer:
+            def external_grabs_after(self, watermark: int, **_: object) -> ArrExternalObservation:
+                return ArrExternalObservation(7, ()) if watermark == 0 else ArrExternalObservation(8, (grab,))
+
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        service = FenceService(
+            state,
+            Store(),
+            Qbittorrent(),
+            prowlarr=None,
+            sources={"sonarr": FenceSource(CATEGORY, Path("/downloads/sonarr"), 7)},
+            observers={"sonarr": Observer()},
+        )
+
+        self.assertTrue(service.poll_external(publisher_ready=True))
+        self.assertTrue(service.poll_external(publisher_ready=True))
+        reservation = state.records()[0]
+        self.assertEqual(400, reservation["bytes_reserved"])
+        self.assertEqual(ReservationState.QBITTORRENT_ACTIVE.value, reservation["state"])
+
     def test_external_adoption_failure_keeps_watermark_and_reobserves_the_durable_intent(self) -> None:
         events: list[str] = []
 

@@ -17,6 +17,9 @@ under observed, durable capacity and concurrency constraints.
 - Permit an exact pre-admitted stopped magnet with pending metadata to start
   only after accounting its positive Arr release-size reservation and applying
   the owner tag; a generic zero-size torrent remains unknown.
+- Permit an exact post-watermark external stopped magnet with pending metadata
+  to start only after accounting the positive release size sealed in its exact
+  Arr History event.
 - Poll bounded public Arr History and Queue pages to adopt a post-watermark,
   externally initiated stopped torrent only after its configured download-client
   identity, entity, hash, size, category, and save path agree. The durable

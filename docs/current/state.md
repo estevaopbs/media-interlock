@@ -1,15 +1,23 @@
 # Current state
 
-MediaInterlock 0.1.16 is the immutable public downstream-consumption release.
-Publisher now repairs a missing catalog identity sidecar and rebinds an
-unobserved pending catalog path after a deployment mount change.
+MediaInterlock 0.1.17 is the immutable public downstream-consumption release.
+Fence now adopts an exact post-watermark external stopped magnet whose Queue
+size is still zero by accounting the positive release size sealed in Arr
+History. Version 0.1.16 remains preserved as its immutable predecessor.
 Its annotated tag
-[`v0.1.16`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.16)
+[`v0.1.17`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.17)
 resolves to its immutable source commit. The release publishes one wheel and
 three public OCI manifests, each executing Python 3.14.7. Its canonical
 artifact manifest binds all identities to one source revision and version.
 
-Version 0.1.13 remains preserved as the preceding immutable release. Its annotated tag
+Version 0.1.16 remains preserved as the preceding immutable release. Its
+annotated tag
+[`v0.1.16`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.16)
+resolves to its immutable source commit. Publisher repairs a missing catalog
+identity sidecar and rebinds an unobserved pending catalog path after a
+deployment mount change.
+
+Version 0.1.13 remains preserved as an earlier immutable release. Its annotated tag
 [`v0.1.13`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.13)
 resolves to its immutable source commit. It lets an exactly correlated,
 pre-admitted stopped magnet fetch its metadata while retaining the positive Arr

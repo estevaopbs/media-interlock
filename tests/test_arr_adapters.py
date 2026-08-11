@@ -312,6 +312,70 @@ class ArrCorrelationTests(unittest.TestCase):
             observation.grabs[0].history_id,
         ))
 
+    def test_external_stopped_magnet_uses_positive_arr_history_size_until_metadata_arrives(self) -> None:
+        adapter = self.adapter(SonarrAdapter)
+        self.download_clients = [{
+            "id": 7,
+            "name": "media-interlock-sonarr",
+            "enable": True,
+            "protocol": "torrent",
+            "implementation": "QBittorrent",
+            "fields": [{"name": "initialState", "value": 2}, {"name": "tvCategory", "value": "media-interlock-sonarr"}],
+        }]
+        download_id = "b" * 40
+        self.payload = {"records": [{
+            "id": 8,
+            "eventType": "grabbed",
+            "episodeId": 42,
+            "downloadId": download_id.upper(),
+            "data": {"size": "1503238553"},
+        }], "totalRecords": 1}
+        self.queue_payload = {"records": [{
+            "id": 9,
+            "episodeId": 42,
+            "downloadId": download_id.upper(),
+            "downloadClient": "media-interlock-sonarr",
+            "protocol": "torrent",
+            "size": 0,
+        }], "totalRecords": 1}
+
+        observation = adapter.external_grabs_after(7, category="media-interlock-sonarr", download_client_id=7)
+
+        self.assertIsNotNone(observation)
+        assert observation is not None
+        self.assertEqual(1503238553, observation.grabs[0].expected_bytes)
+
+    def test_external_stopped_magnet_rejects_missing_or_invalid_history_size(self) -> None:
+        adapter = self.adapter(SonarrAdapter)
+        self.download_clients = [{
+            "id": 7,
+            "name": "media-interlock-sonarr",
+            "enable": True,
+            "protocol": "torrent",
+            "implementation": "QBittorrent",
+            "fields": [{"name": "initialState", "value": 2}, {"name": "tvCategory", "value": "media-interlock-sonarr"}],
+        }]
+        download_id = "b" * 40
+        self.queue_payload = {"records": [{
+            "id": 9,
+            "episodeId": 42,
+            "downloadId": download_id.upper(),
+            "downloadClient": "media-interlock-sonarr",
+            "protocol": "torrent",
+            "size": 0,
+        }], "totalRecords": 1}
+        for invalid_size in (None, "", "0", "+400", " 400", True, 0, -1):
+            with self.subTest(size=invalid_size):
+                self.payload = {"records": [{
+                    "id": 8,
+                    "eventType": "grabbed",
+                    "episodeId": 42,
+                    "downloadId": download_id.upper(),
+                    "data": {} if invalid_size is None else {"size": invalid_size},
+                }], "totalRecords": 1}
+
+                self.assertIsNone(adapter.external_grabs_after(7, category="media-interlock-sonarr", download_client_id=7))
+
     def test_external_grabs_fail_closed_on_missing_queue_or_ambiguous_client_attribution(self) -> None:
         adapter = self.adapter(RadarrAdapter)
         self.download_clients = [{
