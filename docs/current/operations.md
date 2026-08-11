@@ -1,6 +1,6 @@
 # Operations
 
-The current public 0.1.18 release contains one wheel plus Reconciler, Fence, and
+The current public 0.1.19 release contains one wheel plus Reconciler, Fence, and
 Publisher OCI images.
 This page is not an installation guide and no live deployment has been tested.
 
@@ -129,6 +129,12 @@ relative path below the source-specific `staging_root`. Radarr and Sonarr may
 therefore both report `/data/library/...` while Publisher uses distinct movie
 and episode staging roots. Paths outside or equal to the prefix, traversal,
 ambiguous history, and symlink-based authority remain pending.
+The immutable generation and asset pointer stay below Publisher's private
+canonical metadata tree. Only verified media and matching sidecars are exposed
+below the configured namespace, at that same Arr-derived relative path. An
+unobserved pending publication from 0.1.18 is converted idempotently on restart;
+the former top-level asset-slot route is removed only after the exact relative
+route exists.
 
 To recover a Publisher result after any timeout, send one canonical JSON frame
 to the configured Publisher socket using the public wheel's

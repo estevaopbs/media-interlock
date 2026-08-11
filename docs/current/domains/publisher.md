@@ -39,13 +39,19 @@ last known-good generation until a newer one is fully committed.
   be released.
 - Retain and garbage-collect generations without deleting the last known-good
   copy merely because staging or an upstream service is unavailable.
+- Keep immutable generations and stable asset pointers private, and atomically
+  expose each verified media file and matching sidecars at its exact
+  Arr-derived relative path below the configured public namespace.
 - Deliver committed catalog changes through durable, idempotent adapter outboxes
   and confirm observed bindings before releasing related retention holds.
 
-Each Arr-derived asset binds to a stable logical slot, an immutable bundle
-generation, and an asset-local predecessor. First publication must not replace
-an existing slot; later publication atomically exchanges only that asset's
-bundle. A notification acknowledgement is submission only. Delivery requires
+Each Arr-derived asset binds to a private stable logical slot, an immutable
+bundle generation, an asset-local predecessor, and its public relative route.
+First publication must not replace an existing route; later publication
+atomically exchanges only that asset's routed files. Recovery may replace the
+pre-0.1.19 public asset-slot route only for the same unobserved pending
+generation after its exact Arr-relative route exists. A notification
+acknowledgement is submission only. Delivery requires
 exactly one catalog item matching the configured library, translated logical
 path, type, provider identity, source identity and size, followed by full static
 direct-play hash verification. Lost effects and conflicts retain both candidate

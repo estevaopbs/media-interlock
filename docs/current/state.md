@@ -1,14 +1,23 @@
 # Current state
 
-MediaInterlock 0.1.18 is the immutable public downstream-consumption release.
-Fence now baselines a newly observed Arr source from its highest public History
-ID without trying to correlate historical grabs with the current Queue.
-Version 0.1.17 remains preserved as its immutable predecessor.
+MediaInterlock 0.1.19 is the immutable public downstream-consumption release.
+Publisher keeps immutable generations and stable asset pointers private while
+exposing their media and sidecars at the exact Arr-derived relative path. This
+preserves the native movie and series hierarchy consumed by Jellyfin and
+recovers an unobserved pending generation from the preceding asset-slot layout.
+Version 0.1.18 remains preserved as its immutable predecessor.
 Its annotated tag
-[`v0.1.18`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.18)
+[`v0.1.19`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.19)
 resolves to its immutable source commit. The release publishes one wheel and
 three public OCI manifests, each executing Python 3.14.7. Its canonical
 artifact manifest binds all identities to one source revision and version.
+
+Version 0.1.18 remains preserved as the preceding immutable release. Fence
+baselines a newly observed Arr source from its highest public History ID
+without trying to correlate historical grabs with the current Queue. Its
+annotated tag
+[`v0.1.18`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.18)
+resolves to its immutable source commit.
 
 Version 0.1.17 remains preserved as the preceding immutable release. It lets
 Fence adopt an exact post-watermark external stopped magnet whose Queue size is

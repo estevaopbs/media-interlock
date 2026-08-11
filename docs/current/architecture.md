@@ -158,8 +158,9 @@ missing, prefer an upstream contribution. A Jellyfin plugin or private API is
 not part of the initial architecture and requires a new design decision.
 
 Publisher derives an asset identity from Arr public APIs, publishes an immutable
-bundle to that asset's stable logical slot, and retains an asset-local
-last-known-good predecessor. Jellyfin notification is only a submitted effect:
+bundle to a private stable logical slot, exposes it at the exact Arr-derived
+relative media path, and retains an asset-local last-known-good predecessor.
+Jellyfin notification is only a submitted effect:
 the Publisher observes one exact library item and media source and hashes a full
 static direct-play response before it records delivery. Recovery observes a
 possibly consumed effect before changing any filesystem state; it does not

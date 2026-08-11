@@ -27,7 +27,7 @@ from media_interlock.publisher.filesystem import CandidateVerifier
 class PublisherVerticalIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.requests: list[tuple[str, str, str | None]] = []
-        self.catalog_path = "/jellyfin/library/radarr-tmdb-42/payload.mkv"
+        self.catalog_path = "/jellyfin/library/movie.mkv"
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -142,7 +142,7 @@ class PublisherVerticalIntegrationTests(unittest.TestCase):
                 self.assertEqual("radarr:tmdb-42", public_receipt.body["asset_slot"])
                 self.assertEqual("jellyfin-item", public_receipt.body["item_id"])
                 self.assertEqual("source-id", public_receipt.body["media_source_id"])
-                self.assertEqual("/jellyfin/library/radarr-tmdb-42/payload.mkv", public_receipt.body["expected_catalog_path"])
+                self.assertEqual("/jellyfin/library/movie.mkv", public_receipt.body["expected_catalog_path"])
                 writer.close()
                 await writer.wait_closed()
             finally:
@@ -153,7 +153,7 @@ class PublisherVerticalIntegrationTests(unittest.TestCase):
         asyncio.run(terminal_over_unix_socket())
 
         self.assertEqual(PublicationState.DELIVERED, store.load().publication(operation_id).state)
-        self.assertEqual(b"synthetic-media", (self.canonical / "library" / "radarr-tmdb-42" / "payload.mkv").read_bytes())
+        self.assertEqual(b"synthetic-media", (self.canonical / "library" / "movie.mkv").read_bytes())
         self.assertEqual(
             ["GET", "GET", "POST", "GET", "GET"],
             [request[0] for request in self.requests],
@@ -206,7 +206,7 @@ class PublisherVerticalIntegrationTests(unittest.TestCase):
                 writer.close()
                 await writer.wait_closed()
 
-                self.catalog_path = "/jellyfin/library/radarr-tmdb-42/payload.mkv"
+                self.catalog_path = "/jellyfin/library/movie.mkv"
                 daemon.retry_once()
                 reader, writer = await asyncio.open_unix_connection(socket_path)
                 writer.write(publisher_operation_query(operation_id).encode())

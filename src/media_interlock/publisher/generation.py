@@ -236,7 +236,10 @@ class AssetGenerationPublisher:
             self._seal_bundle_modes(payload.parent)
             os.chmod(payload.parent, 0o755)
             GenerationPublisher._fsync_directory(payload.parent)
-            return payload
+            self._ensure_private_pointer(asset_slot, generation_id)
+            route = self._expose_relative_routes(asset_slot, generation_id, candidate, payload)
+            self._remove_legacy_slot(asset_slot, generation_id)
+            return route
         if visible_before != previous_generation_id:
             raise CandidateSafetyError("asset slot changed after durable generation intent")
         private_root = self._canonical_root / ".publisher" / "assets" / slot
@@ -264,9 +267,11 @@ class AssetGenerationPublisher:
         expected_payload = candidate.payload if isinstance(candidate, VerifiedBundle) else candidate
         if CandidateVerifier(payload.parent).verify(payload.name) != VerifiedCandidate(payload.name, expected_payload.bytes_verified, expected_payload.sha256):
             raise CandidateSafetyError("asset generation payload differs")
-        slot_path = visible_root / slot
-        target = Path("..") / ".publisher" / "assets" / slot / "generations" / generation_id
-        temporary = visible_root / f".{slot}.{uuid.uuid4().hex}.pending"
+        pointer_root = self._canonical_root / ".publisher" / "visible" / self._namespace
+        self._safe_directory(pointer_root, mode=0o755)
+        slot_path = pointer_root / slot
+        target = Path("..") / ".." / "assets" / slot / "generations" / generation_id
+        temporary = pointer_root / f".{slot}.{uuid.uuid4().hex}.pending"
         try:
             os.symlink(target, temporary)
             try:
@@ -284,13 +289,15 @@ class AssetGenerationPublisher:
                 # The exchanged pending name contains the prior logical slot;
                 # immutable generation directories retain the predecessor.
                 temporary.unlink()
-            GenerationPublisher._fsync_directory(visible_root)
+            GenerationPublisher._fsync_directory(pointer_root)
         finally:
             try:
                 temporary.unlink()
             except FileNotFoundError:
                 pass
-        return slot_path / payload.name
+        route = self._expose_relative_routes(asset_slot, generation_id, candidate, payload)
+        self._remove_legacy_slot(asset_slot, generation_id)
+        return route
 
     def ensure_catalog_identity(
         self,
@@ -298,13 +305,21 @@ class AssetGenerationPublisher:
         generation_id: str,
         item_type: str,
         provider_ids: Mapping[str, str],
+        *,
+        candidate_relative_path: str | None = None,
     ) -> Path:
         payload = self.generation_payload(asset_slot, generation_id)
         self._ensure_catalog_nfo(payload, item_type, provider_ids)
         self._seal_bundle_modes(payload.parent)
         os.chmod(payload.parent, 0o755)
         GenerationPublisher._fsync_directory(payload.parent)
-        return payload
+        if candidate_relative_path is None:
+            return payload
+        candidate = VerifiedCandidate(candidate_relative_path, payload.stat().st_size, CandidateVerifier(payload.parent).verify(payload.name).sha256)
+        self._ensure_private_pointer(asset_slot, generation_id)
+        route = self._expose_relative_routes(asset_slot, generation_id, candidate, payload)
+        self._remove_legacy_slot(asset_slot, generation_id)
+        return route
 
     @staticmethod
     def _ensure_catalog_nfo(
@@ -417,17 +432,124 @@ class AssetGenerationPublisher:
                 raise CandidateSafetyError("asset generation bundle is unsafe")
             os.chmod(member, 0o444)
 
+    def _ensure_private_pointer(self, asset_slot: str, generation_id: str) -> None:
+        slot = self._slot_name(asset_slot)
+        pointer_root = self._canonical_root / ".publisher" / "visible" / self._namespace
+        self._safe_directory(pointer_root, mode=0o755)
+        pointer = pointer_root / slot
+        expected = Path("..") / ".." / "assets" / slot / "generations" / generation_id
+        try:
+            metadata = pointer.lstat()
+        except FileNotFoundError:
+            temporary = pointer_root / f".{slot}.{uuid.uuid4().hex}.pending"
+            try:
+                os.symlink(expected, temporary)
+                self._rename_no_replace(temporary, pointer)
+                GenerationPublisher._fsync_directory(pointer_root)
+            finally:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+            return
+        if not stat.S_ISLNK(metadata.st_mode) or os.readlink(pointer) != str(expected):
+            raise CandidateSafetyError("asset slot is unsafe")
+
+    def _expose_relative_routes(
+        self,
+        asset_slot: str,
+        generation_id: str,
+        candidate: VerifiedCandidate | VerifiedBundle,
+        payload: Path,
+    ) -> Path:
+        relative_path = candidate.payload.relative_path if isinstance(candidate, VerifiedBundle) else candidate.relative_path
+        relative = PurePath(relative_path)
+        if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+            raise CandidateSafetyError("candidate path is unsafe")
+        if not re.fullmatch(r"\.[a-z0-9]{1,16}", relative.suffix.lower()):
+            raise CandidateSafetyError("candidate has no safe media extension")
+        visible_root = self._canonical_root / self._namespace
+        self._safe_directory(visible_root, mode=0o755)
+        public_payload: Path | None = None
+        for member in sorted(payload.parent.glob("payload.*")):
+            metadata = member.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise CandidateSafetyError("asset generation bundle is unsafe")
+            suffix = member.name.removeprefix("payload")
+            destination = visible_root / relative.parent / (relative.stem + suffix)
+            self._safe_directory(destination.parent, mode=0o755)
+            target = Path(os.path.relpath(member, destination.parent))
+            temporary = destination.parent / f".{destination.name}.{uuid.uuid4().hex}.pending"
+            try:
+                os.symlink(target, temporary)
+                try:
+                    current = destination.lstat()
+                except FileNotFoundError:
+                    self._rename_no_replace(temporary, destination)
+                else:
+                    if not stat.S_ISLNK(current.st_mode):
+                        raise CandidateSafetyError("canonical relative route conflicts")
+                    current_target = os.readlink(destination)
+                    current_path = Path(os.path.normpath(destination.parent / current_target))
+                    allowed_root = self._canonical_root / ".publisher" / "assets" / self._slot_name(asset_slot) / "generations"
+                    try:
+                        routed_generation = current_path.relative_to(allowed_root).parts[0]
+                    except (ValueError, IndexError):
+                        raise CandidateSafetyError("canonical relative route is unsafe")
+                    if not GenerationPublisher._valid_generation_id(routed_generation):
+                        raise CandidateSafetyError("canonical relative route is unsafe")
+                    if current_target == str(target):
+                        temporary.unlink()
+                    else:
+                        self._rename_exchange(destination, temporary)
+                        temporary.unlink()
+                GenerationPublisher._fsync_directory(destination.parent)
+            finally:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+            if member == payload:
+                public_payload = destination
+        if public_payload is None:
+            raise CandidateSafetyError("asset generation payload is unavailable")
+        return public_payload
+
+    def _remove_legacy_slot(self, asset_slot: str, generation_id: str) -> None:
+        slot = self._slot_name(asset_slot)
+        legacy = self._canonical_root / self._namespace / slot
+        try:
+            metadata = legacy.lstat()
+        except FileNotFoundError:
+            return
+        expected = f"../.publisher/assets/{slot}/generations/{generation_id}"
+        if not stat.S_ISLNK(metadata.st_mode) or os.readlink(legacy) != expected:
+            raise CandidateSafetyError("legacy asset slot is unsafe")
+        legacy.unlink()
+        GenerationPublisher._fsync_directory(legacy.parent)
+
     def visible_generation(self, asset_slot: str) -> str | None:
         slot = self._slot_name(asset_slot)
-        path = self._canonical_root / self._namespace / slot
+        private = self._canonical_root / ".publisher" / "visible" / self._namespace / slot
+        legacy = self._canonical_root / self._namespace / slot
         try:
-            metadata = path.lstat()
+            metadata = private.lstat()
         except FileNotFoundError:
-            return None
+            path = legacy
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError:
+                return None
+        else:
+            path = private
         if not stat.S_ISLNK(metadata.st_mode):
             raise CandidateSafetyError("asset slot is unsafe")
         target = os.readlink(path)
-        expected = f"../.publisher/assets/{slot}/generations/"
+        expected = (
+            f"../../assets/{slot}/generations/"
+            if path == private
+            else f"../.publisher/assets/{slot}/generations/"
+        )
         if not target.startswith(expected):
             raise CandidateSafetyError("asset slot is unsafe")
         generation_id = target.removeprefix(expected)

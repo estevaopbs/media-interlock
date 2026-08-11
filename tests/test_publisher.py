@@ -199,7 +199,7 @@ class PublisherCustodyTests(unittest.TestCase):
         ))
         receipt = service.operation_response(OPERATION_ID)
         self.assertEqual("publisher_operation_receipt", receipt.kind)
-        self.assertEqual("/jellyfin/library/radarr-tmdb-42/payload.mkv", receipt.body["expected_catalog_path"])
+        self.assertEqual("/jellyfin/library/movie.mkv", receipt.body["expected_catalog_path"])
 
     def test_v012_catalog_observation_without_binding_is_not_catalog_confirmed(self) -> None:
         state = PublisherState()
@@ -372,7 +372,7 @@ class PublisherCustodyTests(unittest.TestCase):
             def publish(self, _asset: str, _generation: str, _candidate: object, **kwargs: object) -> Path:
                 self.hardlink_frozen = kwargs["hardlink_frozen"]
                 return Path("/canonical/library/radarr-tmdb-42/payload.mkv")
-            def ensure_catalog_identity(self, *_: object) -> Path:
+            def ensure_catalog_identity(self, *_: object, **__: object) -> Path:
                 return Path("/canonical/library/radarr-tmdb-42/payload.mkv")
             def garbage_collect(self, *_: object) -> None: pass
 
@@ -452,7 +452,7 @@ class PublisherCustodyTests(unittest.TestCase):
             library_id="2f9e0f39-70de-4502-85ce-7ed03cd2f01f",
         ))
         self.assertEqual(PublicationState.DELIVERED, state.publication(OPERATION_ID).state)
-        self.assertEqual(("/jellyfin/library/radarr-tmdb-42/payload.mkv", "created"), catalog.submitted)
+        self.assertEqual(("/jellyfin/library/movie.mkv", "created"), catalog.submitted)
         self.assertEqual("2f9e0f39-70de-4502-85ce-7ed03cd2f01f", catalog.expected.library_id)
 
     def test_recovery_after_uncertain_notification_observes_without_filesystem_rollback(self) -> None:
@@ -771,7 +771,7 @@ class CandidateFilesystemTests(unittest.TestCase):
             payload = AssetGenerationPublisher(staging, canonical, namespace="library").publish("radarr:movie-a", OPERATION_ID, bundle)
 
             self.assertEqual(b"video", payload.read_bytes())
-            self.assertEqual(b"subtitle", (payload.parent / "payload.en.srt").read_bytes())
+            self.assertEqual(b"subtitle", payload.with_name("movie.en.srt").read_bytes())
             self.assertNotEqual((staging / "movie.mkv").stat().st_ino, payload.stat().st_ino)
 
     def test_asset_publisher_seals_provider_identity_as_jellyfin_nfo(self) -> None:
@@ -815,14 +815,54 @@ class CandidateFilesystemTests(unittest.TestCase):
             )
             self.assertFalse(payload.with_suffix(".nfo").exists())
 
-            publisher.ensure_catalog_identity(
+            payload = publisher.ensure_catalog_identity(
                 "radarr:tmdb-45745",
                 OPERATION_ID,
                 "Movie",
                 {"Tmdb": "45745"},
+                candidate_relative_path="movie.mkv",
             )
 
             self.assertIn(b">45745</uniqueid>", payload.with_suffix(".nfo").read_bytes())
+
+    def test_catalog_pending_recovery_replaces_a_legacy_slot_with_the_arr_relative_route(self) -> None:
+        from media_interlock.publisher.generation import AssetGenerationPublisher
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            canonical = Path(directory) / "canonical"
+            candidate_path = "Show (2021)/Season 03/Show - S03E06.mkv"
+            source = staging / candidate_path
+            source.parent.mkdir(parents=True)
+            canonical.mkdir()
+            source.write_bytes(b"episode")
+            publisher = AssetGenerationPublisher(staging, canonical, namespace="library")
+            publisher.publish(
+                "sonarr:tvdb-11872046",
+                OPERATION_ID,
+                CandidateVerifier(staging).verify(candidate_path),
+            )
+
+            (canonical / "library" / candidate_path).unlink()
+            (canonical / ".publisher" / "visible" / "library" / "sonarr-tvdb-11872046").unlink()
+            legacy = canonical / "library" / "sonarr-tvdb-11872046"
+            legacy.symlink_to(
+                Path("..") / ".publisher" / "assets" / "sonarr-tvdb-11872046" / "generations" / OPERATION_ID
+            )
+
+            recovered = publisher.ensure_catalog_identity(
+                "sonarr:tvdb-11872046",
+                OPERATION_ID,
+                "Episode",
+                {"Tvdb": "11872046"},
+                candidate_relative_path=candidate_path,
+            )
+
+            self.assertEqual(canonical / "library" / candidate_path, recovered)
+            self.assertEqual(b"episode", recovered.read_bytes())
+            self.assertIn(b">11872046</uniqueid>", recovered.with_suffix(".nfo").read_bytes())
+            self.assertFalse(legacy.exists())
+            self.assertEqual(OPERATION_ID, publisher.visible_generation("sonarr:tvdb-11872046"))
 
     def test_asset_slots_keep_unrelated_assets_visible_across_updates(self) -> None:
         from media_interlock.publisher.generation import AssetGenerationPublisher
@@ -843,8 +883,8 @@ class CandidateFilesystemTests(unittest.TestCase):
             movie_a.write_bytes(b"a-v2")
             publisher.publish("radarr:movie-a", "12345678-1234-4678-9234-567812345680", CandidateVerifier(staging).verify("a.mkv"), previous_generation_id=OPERATION_ID)
 
-            self.assertEqual(b"a-v2", (canonical / "library" / "radarr-movie-a" / "payload.mkv").read_bytes())
-            self.assertEqual(b"b-v1", (canonical / "library" / "radarr-movie-b" / "payload.mkv").read_bytes())
+            self.assertEqual(b"a-v2", (canonical / "library" / "a.mkv").read_bytes())
+            self.assertEqual(b"b-v1", (canonical / "library" / "b.mkv").read_bytes())
 
     def test_each_asset_retains_its_own_last_known_good_bundle(self) -> None:
         from media_interlock.publisher.generation import AssetGenerationPublisher
@@ -947,7 +987,8 @@ class CandidateFilesystemTests(unittest.TestCase):
 
             recovered = publisher.publish("radarr:movie-a", OPERATION_ID, verified)
             self.assertEqual(0o444, recovered.stat().st_mode & 0o777)
-            self.assertEqual(0o755, recovered.parent.stat().st_mode & 0o777)
+            private_payload = publisher.generation_payload("radarr:movie-a", OPERATION_ID)
+            self.assertEqual(0o755, private_payload.parent.stat().st_mode & 0o777)
     def test_canonical_writer_lock_excludes_a_second_publisher(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "canonical"

@@ -69,7 +69,7 @@ class AssetGenerationControl(Protocol):
 
     def publish(self, asset_slot: str, generation_id: str, candidate: VerifiedCandidate | VerifiedBundle, *, previous_generation_id: str | None = None, hardlink_frozen: bool = False, item_type: str | None = None, provider_ids: Mapping[str, str] | None = None) -> Path: ...
 
-    def ensure_catalog_identity(self, asset_slot: str, generation_id: str, item_type: str, provider_ids: Mapping[str, str]) -> Path: ...
+    def ensure_catalog_identity(self, asset_slot: str, generation_id: str, item_type: str, provider_ids: Mapping[str, str], *, candidate_relative_path: str | None = None) -> Path: ...
 
     def garbage_collect(self, asset_slot: str, retained_generation_ids: set[str]) -> None: ...
 
@@ -99,10 +99,12 @@ class PathTranslation:
         return self._jellyfin_prefix + "/" + "/".join(relative.parts)
 
     def logical_payload(self, asset_slot: str, candidate_relative_path: str) -> Path:
-        suffix = PurePath(candidate_relative_path).suffix.lower()
-        if not re.fullmatch(r"\.[a-z0-9]{1,16}", suffix):
+        relative = PurePath(candidate_relative_path)
+        if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+            raise ValueError("candidate path is unsafe")
+        if not re.fullmatch(r"\.[a-z0-9]{1,16}", relative.suffix.lower()):
             raise ValueError("candidate has no safe media extension")
-        return self._logical_root / asset_slot.replace(":", "-") / ("payload" + suffix)
+        return self._logical_root / relative
 
 
 class PublisherService:
@@ -478,6 +480,7 @@ class AssetPublisherWorkProcessor:
                     publication.generation_id,
                     publication.item_type,
                     dict(publication.provider_ids),
+                    candidate_relative_path=publication.candidate_relative_path,
                 )
                 if self._service.observe_and_deliver_asset(operation_id, self._catalog, self._translation, library_id=self._library_id):
                     self._service.garbage_collect_assets(self._generations)

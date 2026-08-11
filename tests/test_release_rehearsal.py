@@ -147,14 +147,14 @@ class ReleaseRehearsalTests(unittest.TestCase):
                 elif parsed.path == "/api/system/status": self._json({"data": {"bazarr_version": "1.6.0"}})
                 elif parsed.path == "/api/v1/settings/main": self._json({"applicationTitle": "fixture"})
                 elif parsed.path == "/Items":
-                    movie_path = "/jellyfin/library/radarr-tmdb-42/payload.mkv"
-                    episode_path = "/jellyfin/series/sonarr-tvdb-84/payload.mkv"
+                    movie_path = "/jellyfin/library/movie.mkv"
+                    episode_path = "/jellyfin/series/episode.mkv"
                     items = [] if not catalog_visible[0] else [
                         {"Id": "item-42", "Path": movie_path, "Type": "Movie", "ProviderIds": {"Tmdb": "42"}, "MediaSources": [{"Id": "source-42", "Path": movie_path, "Size": len(media)}]},
                         {"Id": "item-84", "Path": episode_path, "Type": "Episode", "ProviderIds": {"Tvdb": "84"}, "MediaSources": [{"Id": "source-84", "Path": episode_path, "Size": len(episode_media)}]},
                     ]
                     if assisted_visible[0]:
-                        assisted_path = "/jellyfin/library/radarr-tmdb-43/payload.mkv"
+                        assisted_path = "/jellyfin/library/assisted/feature.mkv"
                         items.append({"Id": "item-43", "Path": assisted_path, "Type": "Movie", "ProviderIds": {"Tmdb": "43"}, "MediaSources": [{"Id": "source-43", "Path": assisted_path, "Size": len(b"assisted-media")}]})
                     self._json({"Items": items, "TotalRecordCount": len(items)})
                 elif parsed.path == "/Videos/item-42/stream": self.send_response(200); self.end_headers(); self.wfile.write(media)
@@ -298,7 +298,7 @@ class ReleaseRehearsalTests(unittest.TestCase):
                 self.assertEqual("visible-confirmed", public_receipt.body["state"])
                 self.assertEqual(operation_id, public_receipt.body["generation_id"])
                 self.assertEqual("radarr:tmdb-42", public_receipt.body["asset_slot"])
-                self.assertEqual("/jellyfin/library/radarr-tmdb-42/payload.mkv", public_receipt.body["expected_catalog_path"])
+                self.assertEqual("/jellyfin/library/movie.mkv", public_receipt.body["expected_catalog_path"])
                 self.assertEqual(public_receipt, exchange(runtime / "publisher.sock", publisher_operation_query(operation_id)))
                 self.assertEqual(0, reconciler_cli.main(["--config", str(config_path), "--source", "sonarr", "--entity", "84", "--checkpoint", "fixture", "--json"]))
                 reconciler_store = ReconcilerStore.open(root / "reconciler-state")
@@ -329,7 +329,7 @@ class ReleaseRehearsalTests(unittest.TestCase):
                         "subtitle_languages": list(assisted_bundle.inspection.subtitle_languages),
                         "container_evidence": list(assisted_bundle.inspection.container_evidence),
                     },
-                    "expected_catalog_path": "/jellyfin/library/radarr-tmdb-43/payload.mkv",
+                    "expected_catalog_path": "/jellyfin/library/assisted/feature.mkv",
                 }
                 assisted_complete = publisher_assisted_complete(operation_id=assisted_operation_id, manifest=assisted_manifest)
                 assisted_intent = publisher_assisted_intent(
@@ -371,13 +371,13 @@ class ReleaseRehearsalTests(unittest.TestCase):
             fence_store.close()
             self.assertEqual(PublicationState.DELIVERED, publisher_state.publication(operation_id).state)
             self.assertEqual("released", fence_state.reservation(operation_id).state)
-            self.assertEqual(media, (canonical / "library" / "radarr-tmdb-42" / "payload.mkv").read_bytes())
+            self.assertEqual(media, (canonical / "library" / "movie.mkv").read_bytes())
             self.assertEqual(PublicationState.DELIVERED, publisher_state.publication(sonarr_operation_id).state)
             self.assertEqual("released", fence_state.reservation(sonarr_operation_id).state)
-            self.assertEqual(episode_media, (sonarr_canonical / "series" / "sonarr-tvdb-84" / "payload.mkv").read_bytes())
+            self.assertEqual(episode_media, (sonarr_canonical / "series" / "episode.mkv").read_bytes())
             self.assertEqual(PublicationState.DELIVERED, publisher_state.publication(assisted_operation_id).state)
-            self.assertEqual(b"assisted-media", (canonical / "library" / "radarr-tmdb-43" / "payload.mkv").read_bytes())
-            self.assertEqual(b"subtitle", (canonical / "library" / "radarr-tmdb-43" / "payload.en.srt").read_bytes())
+            self.assertEqual(b"assisted-media", (canonical / "library" / "assisted" / "feature.mkv").read_bytes())
+            self.assertEqual(b"subtitle", (canonical / "library" / "assisted" / "feature.en.srt").read_bytes())
             self.assertEqual(foreign_before, foreign_torrent)
         self.assertEqual(
             ["arr-post:radarr", "tag:radarr", "resume:radarr", "catalog-submit:radarr",
