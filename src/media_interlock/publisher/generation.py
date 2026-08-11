@@ -265,7 +265,7 @@ class AssetGenerationPublisher:
         os.chmod(payload.parent, 0o755)
         GenerationPublisher._fsync_directory(payload.parent)
         expected_payload = candidate.payload if isinstance(candidate, VerifiedBundle) else candidate
-        if CandidateVerifier(payload.parent).verify(payload.name) != VerifiedCandidate(payload.name, expected_payload.bytes_verified, expected_payload.sha256):
+        if CandidateVerifier(payload.parent).verify(payload.name, allow_hardlinks=True) != VerifiedCandidate(payload.name, expected_payload.bytes_verified, expected_payload.sha256):
             raise CandidateSafetyError("asset generation payload differs")
         pointer_root = self._canonical_root / ".publisher" / "visible" / self._namespace
         self._safe_directory(pointer_root, mode=0o755)
@@ -315,7 +315,7 @@ class AssetGenerationPublisher:
         GenerationPublisher._fsync_directory(payload.parent)
         if candidate_relative_path is None:
             return payload
-        candidate = VerifiedCandidate(candidate_relative_path, payload.stat().st_size, CandidateVerifier(payload.parent).verify(payload.name).sha256)
+        candidate = VerifiedCandidate(candidate_relative_path, payload.stat().st_size, CandidateVerifier(payload.parent).verify(payload.name, allow_hardlinks=True).sha256)
         self._ensure_private_pointer(asset_slot, generation_id)
         route = self._expose_relative_routes(asset_slot, generation_id, candidate, payload)
         self._remove_legacy_slot(asset_slot, generation_id)
@@ -478,27 +478,33 @@ class AssetGenerationPublisher:
             suffix = member.name.removeprefix("payload")
             destination = visible_root / relative.parent / (relative.stem + suffix)
             self._safe_directory(destination.parent, mode=0o755)
-            target = Path(os.path.relpath(member, destination.parent))
             temporary = destination.parent / f".{destination.name}.{uuid.uuid4().hex}.pending"
             try:
-                os.symlink(target, temporary)
+                os.link(member, temporary, follow_symlinks=False)
                 try:
                     current = destination.lstat()
                 except FileNotFoundError:
                     self._rename_no_replace(temporary, destination)
                 else:
-                    if not stat.S_ISLNK(current.st_mode):
-                        raise CandidateSafetyError("canonical relative route conflicts")
-                    current_target = os.readlink(destination)
-                    current_path = Path(os.path.normpath(destination.parent / current_target))
                     allowed_root = self._canonical_root / ".publisher" / "assets" / self._slot_name(asset_slot) / "generations"
-                    try:
-                        routed_generation = current_path.relative_to(allowed_root).parts[0]
-                    except (ValueError, IndexError):
-                        raise CandidateSafetyError("canonical relative route is unsafe")
-                    if not GenerationPublisher._valid_generation_id(routed_generation):
-                        raise CandidateSafetyError("canonical relative route is unsafe")
-                    if current_target == str(target):
+                    if stat.S_ISLNK(current.st_mode):
+                        current_path = Path(os.path.normpath(destination.parent / os.readlink(destination)))
+                        try:
+                            routed = current_path.relative_to(allowed_root).parts
+                        except ValueError:
+                            routed = ()
+                        owned = (
+                            len(routed) == 2
+                            and GenerationPublisher._valid_generation_id(routed[0])
+                            and routed[1] == member.name
+                        )
+                    elif stat.S_ISREG(current.st_mode):
+                        owned = self._route_is_owned(current, allowed_root, member.name)
+                    else:
+                        owned = False
+                    if not owned:
+                        raise CandidateSafetyError("canonical relative route conflicts")
+                    if stat.S_ISREG(current.st_mode) and os.path.samestat(current, metadata):
                         temporary.unlink()
                     else:
                         self._rename_exchange(destination, temporary)
@@ -514,6 +520,31 @@ class AssetGenerationPublisher:
         if public_payload is None:
             raise CandidateSafetyError("asset generation payload is unavailable")
         return public_payload
+
+    @staticmethod
+    def _route_is_owned(route: os.stat_result, generations: Path, member_name: str) -> bool:
+        try:
+            candidates = tuple(generations.iterdir())
+        except FileNotFoundError:
+            return False
+        for generation in candidates:
+            try:
+                generation_metadata = generation.lstat()
+            except FileNotFoundError:
+                continue
+            if (
+                not stat.S_ISDIR(generation_metadata.st_mode)
+                or stat.S_ISLNK(generation_metadata.st_mode)
+                or not GenerationPublisher._valid_generation_id(generation.name)
+            ):
+                raise CandidateSafetyError("asset generation directory is unsafe")
+            try:
+                candidate = (generation / member_name).lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISREG(candidate.st_mode) and not stat.S_ISLNK(candidate.st_mode) and os.path.samestat(route, candidate):
+                return True
+        return False
 
     def _remove_legacy_slot(self, asset_slot: str, generation_id: str) -> None:
         slot = self._slot_name(asset_slot)

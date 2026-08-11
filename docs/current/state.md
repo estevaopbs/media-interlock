@@ -1,16 +1,23 @@
 # Current state
 
-MediaInterlock 0.1.19 is the immutable public downstream-consumption release.
+MediaInterlock 0.1.20 is the immutable public downstream-consumption release.
 Publisher keeps immutable generations and stable asset pointers private while
-exposing their media and sidecars at the exact Arr-derived relative path. This
-preserves the native movie and series hierarchy consumed by Jellyfin and
-recovers an unobserved pending generation from the preceding asset-slot layout.
-Version 0.1.18 remains preserved as its immutable predecessor.
+exposing their media and sidecars as regular hardlinks at the exact Arr-derived
+relative path. This preserves the native movie and series hierarchy consumed
+by scanners that ignore file symlinks, including Jellyfin, and recovers an
+unobserved pending generation from either preceding public layout.
+Version 0.1.19 remains preserved as its immutable predecessor.
 Its annotated tag
-[`v0.1.19`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.19)
+[`v0.1.20`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.20)
 resolves to its immutable source commit. The release publishes one wheel and
 three public OCI manifests, each executing Python 3.14.7. Its canonical
 artifact manifest binds all identities to one source revision and version.
+
+Version 0.1.19 remains preserved as the preceding immutable release. It
+introduced exact Arr-relative public routes, but exposed file symlinks that
+Jellyfin does not catalog. Its annotated tag
+[`v0.1.19`](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.19)
+resolves to its immutable source commit.
 
 Version 0.1.18 remains preserved as the preceding immutable release. Fence
 baselines a newly observed Arr source from its highest public History ID

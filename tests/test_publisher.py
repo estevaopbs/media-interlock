@@ -861,6 +861,11 @@ class CandidateFilesystemTests(unittest.TestCase):
             self.assertEqual(canonical / "library" / candidate_path, recovered)
             self.assertEqual(b"episode", recovered.read_bytes())
             self.assertIn(b">11872046</uniqueid>", recovered.with_suffix(".nfo").read_bytes())
+            self.assertFalse(recovered.is_symlink())
+            self.assertEqual(
+                publisher.generation_payload("sonarr:tvdb-11872046", OPERATION_ID).stat().st_ino,
+                recovered.stat().st_ino,
+            )
             self.assertFalse(legacy.exists())
             self.assertEqual(OPERATION_ID, publisher.visible_generation("sonarr:tvdb-11872046"))
 

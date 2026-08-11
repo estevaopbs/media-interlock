@@ -18,12 +18,13 @@ active only when configured.
 
 ## Project status
 
-MediaInterlock 0.1.19 is the current immutable public
-[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.19).
-Version 0.1.18 remains preserved as its immutable predecessor.
-Version 0.1.19 exposes each private immutable generation at the exact relative
-path reported by Arr, so Jellyfin sees the native movie or series hierarchy
-instead of a MediaInterlock asset-slot directory. Version 0.1.18 baselines a
+MediaInterlock 0.1.20 is the current immutable public
+[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.20).
+Version 0.1.19 remains preserved as its immutable predecessor.
+Version 0.1.20 exposes each private immutable generation as regular hardlinks
+at the exact relative path reported by Arr, so Jellyfin scans the native movie
+or series hierarchy. Version 0.1.19 introduced the canonical relative route but
+used file symlinks, which Jellyfin does not catalog. Version 0.1.18 baselines a
 newly observed Arr source from its highest public History ID without trying to
 correlate historical grabs with the current Queue.
 Version 0.1.17 lets Fence adopt an exact external stopped magnet whose Queue
