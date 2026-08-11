@@ -15,6 +15,7 @@ from ..adapters.qbittorrent import QbittorrentAdapter
 from ..adapters.radarr import RadarrAdapter
 from ..adapters.sonarr import SonarrAdapter
 from .._infra.advisory_lease import AdvisoryLease
+from .._infra.daemon_runtime import run_until_shutdown
 from ..cli import render_result
 from ..config import ConfigError, ProductConfig, load_config
 from ..contracts import Envelope, StatusCode, status_response
@@ -122,9 +123,7 @@ async def _serve(socket_path: Path, daemon: FenceDaemon) -> None:
             await asyncio.sleep(5)
 
     async with server:
-        async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(server.serve_forever())
-            tasks.create_task(poll())
+        await run_until_shutdown(server.serve_forever(), poll())
 
 
 def main(argv: list[str] | None = None) -> int:

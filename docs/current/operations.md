@@ -1,6 +1,6 @@
 # Operations
 
-The current public 0.1.8 release contains one wheel plus Reconciler, Fence, and
+The current public 0.1.9 release contains one wheel plus Reconciler, Fence, and
 Publisher OCI images.
 This page is not an installation guide and no live deployment has been tested.
 
@@ -25,6 +25,10 @@ Publisher and fence run independently and expose health, metrics, and versioned
 Unix socket endpoints. `media-interlock-publisher --config FILE --status` and
 the corresponding Fence command query only their local daemon status. They do
 not start, stop, or reconfigure one another.
+
+Fence and Publisher handle SIGINT and SIGTERM explicitly. On shutdown they
+stop accepting socket work, cancel and await their daemon workers, then close
+their private stores and owned leases or writer locks before exiting.
 
 Each process has a separate least-privilege identity, state directory, runtime
 socket, and configured filesystem/network access. Containers receive only the

@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 from .. import __version__
+from .._infra.daemon_runtime import run_until_shutdown
 from ..cli import render_result
 from ..config import ConfigError, ProductConfig, load_config
 from ..contracts import Envelope, StatusCode, status_response
@@ -211,9 +212,7 @@ async def _serve(socket_path: Path, daemon: PublisherDaemon) -> None:
             raise OSError("Publisher socket is already active")
     server = await asyncio.start_unix_server(daemon.handle, path=socket_path)
     async with server:
-        async with asyncio.TaskGroup() as group:
-            group.create_task(server.serve_forever())
-            group.create_task(daemon.retry_loop())
+        await run_until_shutdown(server.serve_forever(), daemon.retry_loop())
 
 
 def main(argv: list[str] | None = None) -> int:

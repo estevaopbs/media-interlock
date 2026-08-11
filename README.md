@@ -18,10 +18,13 @@ active only when configured.
 
 ## Project status
 
-MediaInterlock 0.1.8 is the current immutable public
-[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.8).
-Version 0.1.7 remains preserved as its immutable predecessor.
-Version 0.1.8 adds explicit historical activation: only an
+MediaInterlock 0.1.9 is the current immutable public
+[GitHub release](https://github.com/estevaopbs/media-interlock/releases/tag/v0.1.9).
+Version 0.1.8 remains preserved as its immutable predecessor.
+Version 0.1.9 makes the Fence and Publisher daemons handle process termination
+explicitly so OCI runtimes can stop them promptly and release their sockets,
+stores, leases, and writer locks cleanly. Version 0.1.8 added explicit
+historical activation: only an
 already sealed `post_pnr_historical_adoption` may be durably started and
 managed by Fence, while retaining its reservation and capacity accounting.
 Release 0.1.1 remains preserved but its OCI images use Python 3.14.6 rather than
