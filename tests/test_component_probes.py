@@ -11,6 +11,7 @@ import _source_tree  # noqa: F401
 
 from media_interlock import __version__
 from media_interlock import cli
+from media_interlock.runtime import RuntimeState
 
 
 class ComponentProbeTests(unittest.TestCase):
@@ -39,8 +40,24 @@ class ComponentProbeTests(unittest.TestCase):
 
     def test_status_is_a_short_local_probe_not_a_daemon(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory) / "state"
             configuration = Path(directory) / "media-interlock.toml"
-            configuration.write_text(f'[media_interlock]\nstate_dir = "{Path(directory) / "state"}"\n', encoding="utf-8")
+            configuration.write_text(f'[media_interlock]\nstate_dir = "{state_dir}"\n', encoding="utf-8")
+            runtime_state = RuntimeState.open(state_dir)
+            runtime_state.close()
             with contextlib.redirect_stdout(io.StringIO()) as rendered:
                 self.assertEqual(0, cli.main(["--config", str(configuration), "--status", "--json"]))
             self.assertIn('"status":"ok"', rendered.getvalue())
+
+    def test_status_reads_an_active_runtime_store_without_competing_for_writer_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory) / "state"
+            configuration = Path(directory) / "media-interlock.toml"
+            configuration.write_text(f'[media_interlock]\nstate_dir = "{state_dir}"\n', encoding="utf-8")
+            runtime_state = RuntimeState.open(state_dir)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()) as rendered:
+                    self.assertEqual(0, cli.main(["--config", str(configuration), "--status", "--json"]))
+                self.assertIn('"status":"ok"', rendered.getvalue())
+            finally:
+                runtime_state.close()
