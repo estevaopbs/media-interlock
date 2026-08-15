@@ -7,17 +7,20 @@ publishes verified bundles for Jellyfin.
 
 ## Project status
 
-MediaInterlock 0.1.25 is the current immutable public release. It is one OCI
+MediaInterlock 0.1.26 is the current immutable public release. It is one OCI
 image, one container, one process, and one SQLite state database. Fence,
 Publisher, and Reconciler are internal modules that communicate in memory;
 there are no component images, daemon sockets, units, or recurring downstream
 scripts. A deployment consumes a public digest, never this checkout.
 
-The release adds bounded Arr-import reconciliation for pre-existing staging
-imports, explicit release-response limits and technical retries, generation
-based exponential cooldowns, fair series scheduling, and exact video-candidate
-health recovery. It does not manage Lidarr, music torrents, stack lifecycle,
-backups, or one-off data migration.
+The release also verifies the typed Publisher import-reconciliation policy
+during runtime construction, so a configuration accepted by `--check-config`
+cannot fail later when the persistent process starts. It retains bounded
+Arr-import reconciliation for pre-existing staging imports, explicit
+release-response limits and technical retries, generation based exponential
+cooldowns, fair series scheduling, and exact video-candidate health recovery.
+It does not manage Lidarr, music torrents, stack lifecycle, backups, or one-off
+data migration.
 
 ## Principles
 

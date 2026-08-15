@@ -240,6 +240,14 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(-(2**31), config.reconciler.movie.minimum_score_gain)
         self.assertEqual("env", config.adapters["prowlarr"].secrets["api_key"].source)
         self.assertEqual(3, config.fence.video_candidate_health.minimum_failure_observations)
+        self.assertEqual(
+            300,
+            config.publisher.import_reconciliation.poll_interval_seconds,
+        )
+        self.assertEqual(
+            8,
+            config.publisher.import_reconciliation.max_imports_per_poll,
+        )
         self.assertNotIn("PROWLARR_API_KEY", repr(config.redacted()))
         self.assertEqual("env:<redacted>", config.redacted()["adapters"]["prowlarr"]["api_key"])
 
