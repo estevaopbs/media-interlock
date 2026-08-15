@@ -477,6 +477,9 @@ class AssetPublisherWorkProcessor:
             if publication.state is PublicationState.CANDIDATE_VERIFIED:
                 self._service.commit_asset_generation(operation_id, self._generations)
             publication = self._service._state.publication(operation_id)
+            if publication.state is PublicationState.GENERATION_INTENT:
+                self._service._finish_asset_generation(operation_id, self._generations)
+            publication = self._service._state.publication(operation_id)
             if publication.state is PublicationState.CATALOG_PENDING:
                 assert publication.asset_slot and publication.generation_id and publication.item_type and publication.provider_ids is not None
                 self._generations.ensure_catalog_identity(

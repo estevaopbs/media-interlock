@@ -444,6 +444,43 @@ class PublisherCustodyTests(unittest.TestCase):
             self.assertTrue(state.publication(OPERATION_ID).hardlink_frozen)
             self.assertEqual(PublicationState.CATALOG_PENDING, state.publication(OPERATION_ID).state)
 
+    def test_worker_resumes_a_durable_generation_intent_after_restart(self) -> None:
+        from media_interlock.publisher.service import AssetPublisherWorkProcessor, PathTranslation
+
+        class Store:
+            def save(self, _: PublisherState) -> None: pass
+
+        class Generations:
+            def visible_generation(self, _: str) -> None: return None
+            def publish(self, asset_slot: str, generation_id: str, _: VerifiedCandidate, **__: object) -> Path:
+                self.published = (asset_slot, generation_id)
+                return Path("/canonical/library/radarr-tmdb-42/payload.mkv")
+            def ensure_catalog_identity(self, *_: object, **__: object) -> Path:
+                return Path("/canonical/library/radarr-tmdb-42/payload.mkv")
+            def garbage_collect(self, *_: object) -> None: pass
+
+        class Catalog:
+            def submit_update(self, *_: object):
+                return type("Submission", (), {"accepted": False})()
+            def observe_catalog(self, *_: object): return None
+            def direct_play_matches(self, *_: object, **__: object) -> bool: return False
+
+        state = PublisherState()
+        state.adopt_terminal(self.terminal())
+        state.mark_candidate_verified(OPERATION_ID, "movie.mkv", 5, "a" * 64)
+        state.bind_asset_identity(OPERATION_ID, "radarr:tmdb-42", "Movie", {"Tmdb": "42"})
+        state.record_generation_intent(OPERATION_ID, None)
+        generations = Generations()
+        processor = AssetPublisherWorkProcessor(
+            PublisherService(state, Store()), {}, object(), generations, Catalog(),
+            PathTranslation(Path("/canonical"), "library", "/jellyfin/library"),
+            library_id="2f9e0f39-70de-4502-85ce-7ed03cd2f01f",
+        )
+
+        self.assertTrue(processor(OPERATION_ID))
+        self.assertEqual(("radarr:tmdb-42", OPERATION_ID), generations.published)
+        self.assertEqual(PublicationState.CATALOG_PENDING, state.publication(OPERATION_ID).state)
+
     def test_exact_catalog_delivery_requires_observation_and_direct_play(self) -> None:
         from media_interlock.adapters.arr import ArrCandidate
         from media_interlock.adapters.jellyfin import CatalogObservation, CatalogSubmission
