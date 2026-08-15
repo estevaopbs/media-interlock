@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -286,9 +287,17 @@ class MediaInterlockRuntime:
                 """
                 cursors = state.publisher.load_import_cursors()
                 for source, profile in config.publisher.sources.items():
+                    cursor = cursors.get(source)
+                    not_before = None
+                    if cursor is None:
+                        not_before = (
+                            datetime.now(timezone.utc)
+                            - timedelta(days=config.publisher.import_reconciliation.initial_history_lookback_days)
+                        ).isoformat()
                     observation = correlations[source].imported_after(
-                        cursors.get(source, 0),
+                        0 if cursor is None else cursor,
                         maximum=config.publisher.import_reconciliation.max_imports_per_poll,
+                        not_before=not_before,
                     )
                     if observation is None:
                         continue
@@ -318,7 +327,7 @@ class MediaInterlockRuntime:
                             manifest_digest=manifest_digest,
                         )
                         process(operation_id)
-                    if next_cursor > cursors.get(source, 0):
+                    if next_cursor > (0 if cursor is None else cursor):
                         state.publisher.save_import_cursor(source, next_cursor)
 
             def intake(envelope: Envelope) -> bool:

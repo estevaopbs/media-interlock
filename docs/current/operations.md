@@ -15,7 +15,11 @@ The configuration has one `[media_interlock] state_dir` and typed `[fence]`,
 `[publisher]`, and `[reconciler]` sections. Each video reconciliation policy
 sets its policy revision, release timeout and response cap, completed-search
 cooldown, technical retry, budgets, quality filters, and cutoff requirements.
-`[publisher.import_reconciliation]` controls bounded Arr history intake.
+`[publisher.import_reconciliation]` controls bounded Arr history intake. On a
+source's first cursor, `initial_history_lookback_days` limits intake to imports
+dated within that many days; older records advance the cursor without becoming
+publication candidates. A value of `0` creates a forward-only baseline. Later
+polls are incremental by durable history ID.
 `[fence.video_candidate_health]` separately controls video metadata/progress
 deadlines and replacement backoff; it does not grant any music authority.
 

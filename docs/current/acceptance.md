@@ -9,7 +9,7 @@ The release contract includes one `media-interlock` console entrypoint and one
 OCI final image. Tests cover unified state adoption, no component socket or
 subprocess in the runtime path, isolated periodic task failures, release
 response bounds and technical retry, stable completed-search cooldowns, fair
-series scheduling, bounded pre-existing Arr import reconciliation, and exact
+series scheduling, bounded initial Arr import reconciliation with a durable cursor, and exact
 video-candidate health invalidation.
 
 Downstream acceptance is separate. It validates a public immutable digest,

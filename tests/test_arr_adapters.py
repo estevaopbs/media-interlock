@@ -151,6 +151,23 @@ class ArrCorrelationTests(unittest.TestCase):
             (item.history_id, item.download_id, item.media_id, item.relative_path) for item in imports
         ))
 
+    def test_initial_import_lookback_skips_old_events_but_advances_the_cursor(self) -> None:
+        self.payload = {"records": [
+            {"id": 7, "eventType": "downloadFolderImported", "date": "2026-08-01T00:00:00Z", "downloadId": "grab-7", "movieId": 42, "data": {"importedPath": "/data/library/old.mkv"}},
+            {"id": 8, "eventType": "downloadFolderImported", "date": "2026-08-10T00:00:00Z", "downloadId": "grab-8", "movieId": 43, "data": {"importedPath": "/data/library/recent.mkv"}},
+        ], "totalRecords": 2}
+
+        cursor, imports = self.adapter(RadarrAdapter).imported_after(
+            0,
+            maximum=8,
+            not_before="2026-08-08T00:00:00Z",
+        )
+
+        self.assertEqual(8, cursor)
+        self.assertEqual(((8, "grab-8", "43", "recent.mkv"),), tuple(
+            (item.history_id, item.download_id, item.media_id, item.relative_path) for item in imports
+        ))
+
     def test_shared_arr_prefix_maps_nested_files_to_distinct_publisher_stagings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -695,7 +695,13 @@ class ArrHistoryAdapter:
             candidates.append((str(relative), entity_id))
         return candidates[0] if len(candidates) == 1 else None
 
-    def imported_after(self, cursor: int, *, maximum: int) -> tuple[int, tuple[ArrImportedEvent, ...]] | None:
+    def imported_after(
+        self,
+        cursor: int,
+        *,
+        maximum: int,
+        not_before: str | None = None,
+    ) -> tuple[int, tuple[ArrImportedEvent, ...]] | None:
         """Read bounded, validated Arr imports after one durable cursor.
 
         The cursor advances only across a syntactically complete history page.
@@ -703,6 +709,9 @@ class ArrHistoryAdapter:
         consumed: it is not an authority to enumerate or publish files.
         """
         if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0 or isinstance(maximum, bool) or not isinstance(maximum, int) or maximum <= 0:
+            return None
+        minimum_timestamp = _utc_timestamp(not_before) if not_before is not None else None
+        if not_before is not None and minimum_timestamp is None:
             return None
         history = self._paged("history")
         if history is None:
@@ -717,6 +726,13 @@ class ArrHistoryAdapter:
             history_id = record["id"]
             if history_id <= cursor:
                 continue
+            if minimum_timestamp is not None:
+                recorded_at = _utc_timestamp(record.get("date"))
+                if recorded_at is None:
+                    return None
+                if recorded_at < minimum_timestamp:
+                    next_cursor = history_id
+                    continue
             if record.get("eventType") != "downloadFolderImported":
                 next_cursor = history_id
                 continue
