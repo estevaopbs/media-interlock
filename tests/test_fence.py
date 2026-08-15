@@ -57,6 +57,25 @@ class FenceStateTests(unittest.TestCase):
             video_candidates=state.video_candidate_records(),
         )
         self.assertEqual(candidate, restored.video_candidate(OPERATION_ID))
+
+    def test_completed_candidate_is_discarded_and_legacy_terminal_snapshot_recovers(self) -> None:
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        bound(state)
+        state.ensure_video_candidate(OPERATION_ID, now=100)
+        state.record_video_candidate_metadata(OPERATION_ID, downloaded_bytes=400, now=200)
+        legacy_candidates = state.video_candidate_records()
+
+        state.complete(OPERATION_ID)
+
+        self.assertEqual((), state.video_candidate_records())
+        restored = FenceState.from_snapshot(
+            FencePolicy(capacity_bytes=1_000, max_inflight=1),
+            state.records(),
+            {},
+            video_candidates=legacy_candidates,
+        )
+        self.assertEqual((), restored.video_candidate_records())
+
     def test_managed_historical_reservations_keep_bytes_but_free_all_inflight_slots(self) -> None:
         state = FenceState(FencePolicy(capacity_bytes=100_000, max_inflight=13))
         operation_ids = [str(uuid.uuid4()) for _ in range(13)]

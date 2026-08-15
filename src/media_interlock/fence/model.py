@@ -507,6 +507,7 @@ class FenceState:
         if reservation.state is not ReservationState.QBITTORRENT_ACTIVE:
             raise ContractError("terminal acquisition transition is invalid")
         reservation.state = ReservationState.TERMINAL
+        self._video_candidates.pop(operation_id, None)
         return self.terminal_observation(operation_id)
 
     def terminal_observation(self, operation_id: str) -> Envelope:
@@ -781,7 +782,6 @@ class FenceState:
                 raise ContractError("durable video candidate is invalid") from exc
             valid = (
                 reservation.source in {"radarr", "sonarr"}
-                and reservation.state in {ReservationState.QBITTORRENT_ACTIVE, ReservationState.INVALIDATED}
                 and isinstance(candidate.probe_started_at, int)
                 and not isinstance(candidate.probe_started_at, bool)
                 and candidate.probe_started_at >= 0
@@ -801,6 +801,10 @@ class FenceState:
                 and candidate.operation_id not in result._video_candidates
             )
             if not valid:
+                raise ContractError("durable video candidate is invalid")
+            if reservation.state in {ReservationState.TERMINAL, ReservationState.QBITTORRENT_FROZEN, ReservationState.RELEASED}:
+                continue
+            if reservation.state not in {ReservationState.QBITTORRENT_ACTIVE, ReservationState.INVALIDATED}:
                 raise ContractError("durable video candidate is invalid")
             result._video_candidates[candidate.operation_id] = candidate
         return result
