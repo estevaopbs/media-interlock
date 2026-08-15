@@ -448,8 +448,13 @@ class MediaInterlockRuntime:
             if receipt.kind == "custody_receipt":
                 self.fence.accept_custody(receipt)
 
+    def _recover_fence_on_start(self) -> None:
+        """Finish a prior close, then reopen owned video work for this start."""
+        self.fence.recover()
+        self.fence.reopen()
+
     async def run(self) -> None:
-        await asyncio.to_thread(self.fence.recover)
+        await asyncio.to_thread(self._recover_fence_on_start)
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         for signal_name in ("SIGINT", "SIGTERM"):
