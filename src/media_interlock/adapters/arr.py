@@ -37,8 +37,30 @@ class ArrRelease:
 class ArrReleaseSearch:
     """A completed interactive search, including a valid empty result."""
 
-    available: bool
+    outcome: str
     release: ArrRelease | None = None
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.outcome not in {"completed", "transient_failure"}:
+            raise ValueError("release search outcome is invalid")
+        if self.outcome == "completed" and self.reason is not None:
+            raise ValueError("completed release search cannot carry a failure reason")
+        if self.outcome == "transient_failure" and (not isinstance(self.reason, str) or not self.reason):
+            raise ValueError("transient release failure requires a reason")
+
+    @property
+    def available(self) -> bool:
+        """Compatibility spelling for a completed, validated Arr response."""
+        return self.outcome == "completed"
+
+    @classmethod
+    def completed(cls, release: ArrRelease | None = None) -> "ArrReleaseSearch":
+        return cls("completed", release)
+
+    @classmethod
+    def transient_failure(cls, reason: str) -> "ArrReleaseSearch":
+        return cls("transient_failure", None, reason)
 
 
 @dataclass(frozen=True)
@@ -48,6 +70,7 @@ class ArrGrabObservation:
     kind: str
     download_id: str | None = None
     torrent_hash: str | None = None
+    history_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -78,6 +101,16 @@ class ArrExternalObservation:
 
     watermark: int
     grabs: tuple[ArrExternalGrab, ...]
+
+
+@dataclass(frozen=True)
+class ArrImportedEvent:
+    """One exact Arr import eligible for Publisher reconciliation."""
+
+    history_id: int
+    download_id: str
+    media_id: str
+    relative_path: str
 
 
 def _utc_timestamp(value: object) -> int | None:
@@ -167,13 +200,23 @@ class ArrHistoryAdapter:
             raise RuntimeError("unexpected Arr status")
         return json.loads(body.decode("utf-8"))
 
-    def _release_resources(self, entity_id: str) -> tuple[bool, list[dict[str, object]]]:
+    def _release_resources(
+        self,
+        entity_id: str,
+        *,
+        timeout_seconds: float | None = None,
+        max_response_bytes: int | None = None,
+    ) -> tuple[bool, list[dict[str, object]]]:
         public_id = _public_id(int(entity_id)) if entity_id.isdecimal() else None
         if public_id != entity_id or not self.release_entity_key:
             return False, []
         request = Request(f"{self._base_url}/api/v3/release?{urlencode({self.release_entity_key: entity_id})}", headers={"X-Api-Key": self._resolve(self._api_key)})
         try:
-            status, body = request_bytes(request, timeout=self._timeout)
+            status, body = request_bytes(
+                request,
+                timeout=self._timeout if timeout_seconds is None else timeout_seconds,
+                max_response_bytes=1_048_576 if max_response_bytes is None else max_response_bytes,
+            )
             releases = json.loads(body.decode("utf-8"))
         except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
             return False, []
@@ -211,20 +254,24 @@ class ArrHistoryAdapter:
         *,
         current_score: int,
     ) -> ArrReleaseSearch:
-        available, releases = self._release_resources(entity_id)
+        available, releases = self._release_resources(
+            entity_id,
+            timeout_seconds=policy.release_timeout_seconds,
+            max_response_bytes=policy.max_release_response_bytes,
+        )
         if not available:
-            return ArrReleaseSearch(False)
+            return ArrReleaseSearch.transient_failure("release response was unavailable or invalid")
         for resource in releases:
             if resource.get("approved") is not True:
                 continue
             raw_score = resource.get("customFormatScore", 0)
             raw_formats = resource.get("customFormats", [])
             if isinstance(raw_score, bool) or not isinstance(raw_score, int) or not isinstance(raw_formats, list):
-                return ArrReleaseSearch(False)
+                return ArrReleaseSearch.transient_failure("release custom format metadata was invalid")
             names: list[str] = []
             for item in raw_formats:
                 if not isinstance(item, dict) or not isinstance(item.get("name"), str):
-                    return ArrReleaseSearch(False)
+                    return ArrReleaseSearch.transient_failure("release custom format metadata was invalid")
                 names.append(item["name"])
             selected = set(names)
             if raw_score < policy.minimum_candidate_score or raw_score - current_score < policy.minimum_score_gain:
@@ -235,9 +282,9 @@ class ArrHistoryAdapter:
                 continue
             release = self._materialize_release(resource)
             if release is None:
-                return ArrReleaseSearch(False)
-            return ArrReleaseSearch(True, release)
-        return ArrReleaseSearch(True)
+                return ArrReleaseSearch.transient_failure("approved release metadata was invalid")
+            return ArrReleaseSearch.completed(release)
+        return ArrReleaseSearch.completed()
 
     def _cutoff_entity(self, record: dict[str, object]) -> UpgradeEntity | None:
         raise NotImplementedError
@@ -269,6 +316,16 @@ class ArrHistoryAdapter:
         if hashlib.sha256(body).hexdigest() != release.selector_fingerprint:
             return False
         request = Request(f"{self._base_url}/api/v3/release", data=body, headers={"X-Api-Key": self._resolve(self._api_key), "Content-Type": "application/json"}, method="POST")
+        try:
+            status, _ = request_bytes(request, timeout=self._timeout)
+        except (HTTPError, URLError, OSError, RuntimeError):
+            return False
+        return status == 200
+
+    def mark_history_failed(self, history_id: int) -> bool:
+        if isinstance(history_id, bool) or not isinstance(history_id, int) or history_id <= 0:
+            return False
+        request = Request(f"{self._base_url}/api/v3/history/failed/{history_id}", data=b"", headers={"X-Api-Key": self._resolve(self._api_key)}, method="POST")
         try:
             status, _ = request_bytes(request, timeout=self._timeout)
         except (HTTPError, URLError, OSError, RuntimeError):
@@ -317,14 +374,14 @@ class ArrHistoryAdapter:
         history = self._paged("history")
         if history is None:
             return ArrGrabObservation("unknown")
-        matches: list[str] = []
+        matches: list[tuple[str, int]] = []
         for record in history:
             record_id, download_id = record.get("id"), record.get("downloadId")
             if record.get("eventType") != "grabbed" or _public_id(record.get(self.release_entity_key)) != entity_id or record.get("sourceTitle") != title:
                 continue
             if isinstance(record_id, bool) or not isinstance(record_id, int) or record_id <= watermark or not isinstance(download_id, str) or not download_id:
                 return ArrGrabObservation("unknown")
-            matches.append(download_id)
+            matches.append((download_id, record_id))
         if not matches:
             return ArrGrabObservation("absent")
         if len(matches) != 1:
@@ -332,7 +389,7 @@ class ArrHistoryAdapter:
         queue = self._paged("queue")
         if queue is None:
             return ArrGrabObservation("unknown")
-        download_id = matches[0]
+        download_id, history_id = matches[0]
         queue_matches = [
             record for record in queue
             if _public_id(record.get(self.release_entity_key)) == entity_id
@@ -347,7 +404,7 @@ class ArrHistoryAdapter:
             torrent_hash = download_id.lower()
             if len(torrent_hash) != 40 or any(character not in "0123456789abcdef" for character in torrent_hash):
                 return ArrGrabObservation("unknown")
-            return ArrGrabObservation("observed", download_id, torrent_hash)
+            return ArrGrabObservation("observed", download_id, torrent_hash, history_id)
         if not queue_matches:
             return ArrGrabObservation("absent")
         return ArrGrabObservation("ambiguous")
@@ -637,6 +694,53 @@ class ArrHistoryAdapter:
                 return None
             candidates.append((str(relative), entity_id))
         return candidates[0] if len(candidates) == 1 else None
+
+    def imported_after(self, cursor: int, *, maximum: int) -> tuple[int, tuple[ArrImportedEvent, ...]] | None:
+        """Read bounded, validated Arr imports after one durable cursor.
+
+        The cursor advances only across a syntactically complete history page.
+        A path outside the configured staging root is ignored but still
+        consumed: it is not an authority to enumerate or publish files.
+        """
+        if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0 or isinstance(maximum, bool) or not isinstance(maximum, int) or maximum <= 0:
+            return None
+        history = self._paged("history")
+        if history is None:
+            return None
+        records = sorted(history, key=lambda record: record.get("id", -1))
+        ids = [record.get("id") for record in records]
+        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in ids) or len(set(ids)) != len(ids):
+            return None
+        events: list[ArrImportedEvent] = []
+        next_cursor = cursor
+        for record in records:
+            history_id = record["id"]
+            if history_id <= cursor:
+                continue
+            if record.get("eventType") != "downloadFolderImported":
+                next_cursor = history_id
+                continue
+            download_id = record.get("downloadId")
+            media_id = _public_id(record.get(self.release_entity_key))
+            data = record.get("data")
+            imported = data.get("importedPath") if isinstance(data, dict) else None
+            if not isinstance(download_id, str) or not download_id or media_id is None or not isinstance(imported, str):
+                return None
+            imported_path = _canonical_arr_path(imported)
+            if imported_path is None or self._arr_import_path_prefix is None:
+                return None
+            try:
+                relative = imported_path.relative_to(self._arr_import_path_prefix)
+            except ValueError:
+                next_cursor = history_id
+                continue
+            if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+                return None
+            events.append(ArrImportedEvent(history_id, download_id, media_id, str(relative)))
+            next_cursor = history_id
+            if len(events) >= maximum:
+                break
+        return next_cursor, tuple(events)
 
     def candidate_relative_path(self, download_id: str, media_id: str) -> str | None:
         matched = self._matched_import(download_id, media_id)

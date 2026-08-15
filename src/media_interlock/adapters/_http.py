@@ -14,11 +14,18 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def request_bytes(request: Request, *, timeout: float) -> tuple[int, bytes]:
+def request_bytes(
+    request: Request,
+    *,
+    timeout: float,
+    max_response_bytes: int = MAX_RESPONSE_BYTES,
+) -> tuple[int, bytes]:
+    if isinstance(max_response_bytes, bool) or not isinstance(max_response_bytes, int) or max_response_bytes <= 0:
+        raise ValueError("response bound is invalid")
     try:
         with open_response(request, timeout=timeout) as response:
-            body = response.read(MAX_RESPONSE_BYTES + 1)
-            if len(body) > MAX_RESPONSE_BYTES:
+            body = response.read(max_response_bytes + 1)
+            if len(body) > max_response_bytes:
                 raise RuntimeError("upstream response exceeds bound")
             return response.status, body
     except HTTPError as exc:

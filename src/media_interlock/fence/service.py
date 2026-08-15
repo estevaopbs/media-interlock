@@ -11,9 +11,10 @@ from typing import Callable, Mapping, Protocol
 import uuid
 
 from ..adapters.arr import ArrExternalGrab
+from ..config import VideoCandidateHealthConfig
 from ..contracts import Envelope, post_pnr_adoption_receipt, post_pnr_historical_activation_receipt, post_pnr_historical_adoption_receipt
 from .headroom import PhysicalHeadroom
-from .model import AdmissionDecision, ExternalAdoptionIntent, FenceState, PostPnrAdoptionIntent, PostPnrHistoricalActivationIntent, PostPnrHistoricalAdoptionIntent, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentObservation, ReservationState
+from .model import AdmissionDecision, ExternalAdoptionIntent, FenceState, PostPnrAdoptionIntent, PostPnrHistoricalActivationIntent, PostPnrHistoricalAdoptionIntent, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentHealthObservation, QbittorrentObservation, ReservationState
 
 
 class ReservationStore(Protocol):
@@ -37,6 +38,10 @@ class QbittorrentControl(Protocol):
 
     def terminal_observed(self, torrent_hash: str, reservation_id: str, category: str, *, save_path: Path) -> QbittorrentActivityObservation: ...
 
+    def observe_candidate_health(self, torrent_hash: str, reservation_id: str, category: str, *, save_path: Path) -> QbittorrentHealthObservation: ...
+
+    def delete_owned_incomplete(self, torrent_hash: str, reservation_id: str, category: str, *, save_path: Path, delete_files: bool) -> bool: ...
+
 
 class ProwlarrReadiness(Protocol):
     def ready(self) -> bool: ...
@@ -55,6 +60,8 @@ class ArrExternalObserver(Protocol):
 
     def sealed_historical_external_grab(self, entity_ids: tuple[str, ...], torrent_hash: str, *, category: str, download_client_id: int): ...
 
+    def mark_history_failed(self, history_id: int) -> bool: ...
+
 
 @dataclass(frozen=True)
 class FenceSource:
@@ -67,7 +74,7 @@ class FenceSource:
 
 
 class FenceService:
-    def __init__(self, state: FenceState, store: ReservationStore, qbittorrent: QbittorrentControl, prowlarr: ProwlarrReadiness | None, *, sources: Mapping[str, FenceSource], observers: Mapping[str, ArrExternalObserver] | None = None, headroom: PhysicalHeadroom | None = None, lease: MutationLease | None = None, resume_ready: Callable[[], bool] | None = None) -> None:
+    def __init__(self, state: FenceState, store: ReservationStore, qbittorrent: QbittorrentControl, prowlarr: ProwlarrReadiness | None, *, sources: Mapping[str, FenceSource], observers: Mapping[str, ArrExternalObserver] | None = None, headroom: PhysicalHeadroom | None = None, lease: MutationLease | None = None, resume_ready: Callable[[], bool] | None = None, video_candidate_health: VideoCandidateHealthConfig | None = None) -> None:
         self._state = state
         self._store = store
         self._qbittorrent = qbittorrent
@@ -77,6 +84,72 @@ class FenceService:
         self._headroom = headroom
         self._lease = lease
         self._resume_ready = resume_ready
+        self._video_candidate_health = video_candidate_health
+
+    def poll_video_candidate_health(self, *, now: int) -> tuple[tuple[str, str, int], ...]:
+        """Invalidate only stalled exact video custody, then emit replacement work."""
+        policy = self._video_candidate_health
+        if policy is None or isinstance(now, bool) or not isinstance(now, int) or now < 0:
+            return ()
+        replacements: list[tuple[str, str, int]] = []
+        for record in self._state.records():
+            if record["source"] not in {"radarr", "sonarr"} or record["state"] not in {ReservationState.QBITTORRENT_ACTIVE.value, ReservationState.INVALIDATED.value}:
+                continue
+            operation_id = record["operation_id"]
+            if not isinstance(operation_id, str):
+                continue
+            try:
+                reservation = self._state.reservation(operation_id)
+                source = self._sources[reservation.source]
+                candidate = self._state.clone()
+                if reservation.state is ReservationState.QBITTORRENT_ACTIVE:
+                    candidate.ensure_video_candidate(operation_id, now=now)
+                    self._persist(candidate)
+                    candidate_state = self._state.video_candidate(operation_id)
+                    health = self._qbittorrent.observe_candidate_health(reservation.torrent_hash or "", reservation.reservation_id, source.category, save_path=source.qbittorrent_save_path)
+                    if health.kind != "observed":
+                        continue
+                    candidate = self._state.clone()
+                    if health.metadata_known:
+                        previous = candidate.video_candidate(operation_id)
+                        had_metadata = previous["metadata_observed_at"] is not None
+                        previous_downloaded = previous["last_downloaded_bytes"]
+                        candidate.record_video_candidate_metadata(operation_id, downloaded_bytes=health.downloaded_bytes or 0, now=now)
+                        candidate_state = candidate.video_candidate(operation_id)
+                        stalled = had_metadata and health.downloaded_bytes == previous_downloaded and health.availability == 0 and health.peers == 0
+                        if stalled:
+                            candidate.record_video_candidate_failure(operation_id, now=now)
+                            candidate_state = candidate.video_candidate(operation_id)
+                            invalid = now - int(candidate_state["last_progress_at"]) >= policy.no_progress_timeout_seconds and int(candidate_state["failure_observations"]) >= policy.minimum_failure_observations
+                            reason = "no_progress_timeout"
+                        else:
+                            invalid = False
+                            reason = ""
+                    else:
+                        candidate.record_video_candidate_failure(operation_id, now=now)
+                        candidate_state = candidate.video_candidate(operation_id)
+                        invalid = now - int(candidate_state["probe_started_at"]) >= policy.metadata_timeout_seconds and int(candidate_state["failure_observations"]) >= policy.minimum_failure_observations
+                        reason = "metadata_timeout"
+                    if invalid:
+                        candidate.invalidate_video_candidate(operation_id, reason=reason, now=now)
+                    self._persist(candidate)
+                candidate_state = self._state.video_candidate(operation_id)
+                if candidate_state["status"] != "invalidated" or reservation.state is ReservationState.INVALIDATED or reservation.external_history_id is None:
+                    continue
+                with self._hold_mutation_lease():
+                    self._qbittorrent.pause(reservation.torrent_hash or "")
+                    if not self._observers[reservation.source].mark_history_failed(reservation.external_history_id):
+                        continue
+                    delete_files = candidate_state["metadata_observed_at"] is not None
+                    if not self._qbittorrent.delete_owned_incomplete(reservation.torrent_hash or "", reservation.reservation_id, source.category, save_path=source.qbittorrent_save_path, delete_files=delete_files):
+                        continue
+                    candidate = self._state.clone()
+                    candidate.release_invalidated_video_candidate(operation_id)
+                    self._persist(candidate)
+                    replacements.append((reservation.source, reservation.media_id, policy.replacement_initial_delay_seconds))
+            except (ContractError, KeyError, OSError, RuntimeError, ValueError):
+                continue
+        return tuple(replacements)
 
     def _hold_mutation_lease(self):
         return nullcontext() if self._lease is None else self._lease.acquire()
@@ -461,7 +534,7 @@ class FenceService:
         self._persist(candidate)
         return True
 
-    def bind_grab(self, operation_id: str, download_id: str, torrent_hash: str) -> bool:
+    def bind_grab(self, operation_id: str, download_id: str, torrent_hash: str, history_id: int | None = None) -> bool:
         """Bind the Arr identity while operating qBittorrent by its canonical hash."""
         try:
             reservation = self._state.reservation(operation_id)
@@ -496,7 +569,7 @@ class FenceService:
             return False
         candidate = self._state.clone()
         try:
-            candidate.bind_observed_grab(operation_id, download_id=download_id, torrent_hash=torrent_hash)
+            candidate.bind_observed_grab(operation_id, download_id=download_id, torrent_hash=torrent_hash, history_id=history_id)
         except Exception:
             return False
         self._persist(candidate)

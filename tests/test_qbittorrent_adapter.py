@@ -11,6 +11,7 @@ import _source_tree  # noqa: F401
 
 from media_interlock.adapters.qbittorrent import QbittorrentAdapter
 from media_interlock.config import SecretReference
+from media_interlock.fence.model import QbittorrentHealthObservation
 
 
 class QbittorrentAdapterTests(unittest.TestCase):
@@ -156,6 +157,27 @@ class QbittorrentAdapterTests(unittest.TestCase):
         self.assertEqual("observed", observation.kind)
         self.assertTrue(observation.active)
         self.assertIsNone(observation.observed_bytes)
+
+    def test_owned_active_candidate_health_requires_exact_video_ownership(self) -> None:
+        adapter = self.adapter()
+        adapter._login = lambda: True  # type: ignore[method-assign]
+        reservation_id = "fence:12345678-1234-4678-9234-567812345678"
+        torrent = {
+            "tags": reservation_id, "category": "media-interlock-radarr", "save_path": "/downloads/radarr",
+            "hash": "a" * 40, "size": 0, "total_size": -1, "downloaded": 0,
+            "availability": 0, "num_seeds": 0, "num_leechs": 0, "state": "queuedDL",
+        }
+        adapter._get_json = lambda _: [torrent]  # type: ignore[method-assign]
+
+        observed = adapter.observe_candidate_health(
+            "a" * 40, reservation_id, "media-interlock-radarr", save_path=Path("/downloads/radarr")
+        )
+
+        self.assertEqual(QbittorrentHealthObservation("observed", metadata_known=False, downloaded_bytes=0, availability=0.0, peers=0), observed)
+        self.assertEqual(
+            "unknown",
+            adapter.observe_candidate_health("a" * 40, reservation_id, "music", save_path=Path("/downloads/radarr")).kind,
+        )
 
     def test_observation_compares_the_profile_save_path_not_a_staging_root(self) -> None:
         adapter = self.adapter()

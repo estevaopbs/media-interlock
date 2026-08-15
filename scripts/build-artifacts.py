@@ -113,14 +113,14 @@ def main(argv: list[str] | None = None) -> int:
     if len(wheels) != 1:
         raise RuntimeError("artifact build did not produce exactly one wheel")
     images: list[dict[str, str]] = []
-    for component in ("reconciler", "fence", "publisher"):
-        tag = f"media-interlock-{component}:local"
+    for component in ("media-interlock",):
+        tag = f"{component}:local"
         _run([
             arguments.oci_engine, "build",
             "--build-arg", f"SOURCE_DATE_EPOCH={arguments.source_date_epoch}",
             "--build-arg", f"SOURCE_REVISION={revision}",
             "--build-arg", f"PACKAGE_VERSION={version}",
-            "--target", component, "--tag", tag, "--file", "Containerfile", ".",
+            "--target", component.replace("-", "_"), "--tag", tag, "--file", "Containerfile", ".",
         ], cwd=root)
         _validated_runtime_python_version(arguments.oci_engine, tag, root)
         archive = output / f"media-interlock-{component}.oci.tar"

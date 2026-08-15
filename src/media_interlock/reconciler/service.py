@@ -25,7 +25,7 @@ class ArrReleaseControl(Protocol):
 
 class FencePreAdmission(Protocol):
     def pre_admit(self, intent: PreAdmissionIntent) -> AdmissionDecision: ...
-    def bind_grab(self, operation_id: str, download_id: str, torrent_hash: str) -> bool: ...
+    def bind_grab(self, operation_id: str, download_id: str, torrent_hash: str, history_id: int | None = None) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -91,7 +91,11 @@ class ReconcilerService:
         if observation.kind != "observed" or observation.download_id is None or observation.torrent_hash is None:
             return "pending"
         try:
-            bound = self._fence.bind_grab(intent.operation_id, observation.download_id, observation.torrent_hash)
+            bound = (
+                self._fence.bind_grab(intent.operation_id, observation.download_id, observation.torrent_hash, observation.history_id)
+                if observation.history_id is not None
+                else self._fence.bind_grab(intent.operation_id, observation.download_id, observation.torrent_hash)
+            )
         except Exception:
             return "unavailable"
         if not bound:
@@ -164,7 +168,11 @@ class ReconcilerService:
         if observation.kind != "observed" or observation.download_id is None or observation.torrent_hash is None:
             return "pending"
         try:
-            bound = self._fence.bind_grab(intent.operation_id, observation.download_id, observation.torrent_hash)
+            bound = (
+                self._fence.bind_grab(intent.operation_id, observation.download_id, observation.torrent_hash, observation.history_id)
+                if observation.history_id is not None
+                else self._fence.bind_grab(intent.operation_id, observation.download_id, observation.torrent_hash)
+            )
         except Exception:
             return "unavailable"
         if not bound:
