@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import os
 import sqlite3
+import threading
 import uuid
 from pathlib import Path
 
@@ -22,6 +23,7 @@ class SqliteStore:
         self._connection = connection
         self._lock_descriptor = lock_descriptor
         self._closed = False
+        self._connection_lock = threading.RLock()
 
     @classmethod
     def open(cls, state_dir: Path, owner: str) -> "SqliteStore":
@@ -46,7 +48,7 @@ class SqliteStore:
                 raise StoreOwnershipError("state directory belongs to a different component identity")
             if not database_path.exists():
                 cls._initialize_database(state_dir, database_path, owner)
-            connection = sqlite3.connect(database_path, isolation_level=None)
+            connection = sqlite3.connect(database_path, isolation_level=None, check_same_thread=False)
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
             if "metadata" not in tables or "values_store" not in tables:
                 raise StoreOwnershipError("state directory has an unrecognized existing store")
@@ -147,32 +149,43 @@ class SqliteStore:
             raise
 
     def put(self, key: str, value: str) -> None:
-        if self._closed:
-            raise RuntimeError("store is closed")
-        begun = False
-        try:
-            self._connection.execute("BEGIN IMMEDIATE")
-            begun = True
-            self._connection.execute("INSERT OR REPLACE INTO values_store(key, value) VALUES (?, ?)", (key, value))
-            self._connection.execute("COMMIT")
-        except BaseException:
-            if begun:
-                self._connection.execute("ROLLBACK")
-            raise
+        self.put_many({key: value})
+
+    def put_many(self, values: dict[str, str]) -> None:
+        with self._connection_lock:
+            if self._closed:
+                raise RuntimeError("store is closed")
+            if not values or any(not isinstance(key, str) or not key or not isinstance(value, str) for key, value in values.items()):
+                raise ValueError("store values must have non-empty string keys and string values")
+            begun = False
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                begun = True
+                self._connection.executemany(
+                    "INSERT OR REPLACE INTO values_store(key, value) VALUES (?, ?)",
+                    tuple(values.items()),
+                )
+                self._connection.execute("COMMIT")
+            except BaseException:
+                if begun:
+                    self._connection.execute("ROLLBACK")
+                raise
 
     def get(self, key: str) -> str | None:
-        if self._closed:
-            raise RuntimeError("store is closed")
-        result = self._connection.execute("SELECT value FROM values_store WHERE key = ?", (key,)).fetchone()
-        return None if result is None else str(result[0])
+        with self._connection_lock:
+            if self._closed:
+                raise RuntimeError("store is closed")
+            result = self._connection.execute("SELECT value FROM values_store WHERE key = ?", (key,)).fetchone()
+            return None if result is None else str(result[0])
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._connection.close()
-        fcntl.flock(self._lock_descriptor, fcntl.LOCK_UN)
-        os.close(self._lock_descriptor)
-        self._closed = True
+        with self._connection_lock:
+            if self._closed:
+                return
+            self._connection.close()
+            fcntl.flock(self._lock_descriptor, fcntl.LOCK_UN)
+            os.close(self._lock_descriptor)
+            self._closed = True
 
     def __enter__(self) -> "SqliteStore":
         return self

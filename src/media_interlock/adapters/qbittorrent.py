@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 from ..config import SecretReference
-from ..fence.model import QbittorrentActivityObservation, QbittorrentObservation
+from ..fence.model import QbittorrentActivityObservation, QbittorrentHealthObservation, QbittorrentObservation
 from ._http import MAX_RESPONSE_BYTES, _NoRedirect
 
 
@@ -230,6 +230,29 @@ class QbittorrentAdapter:
         if state.startswith("paused") or state.startswith("stopped"):
             return QbittorrentActivityObservation("observed", False, size or None)
         return QbittorrentActivityObservation("unknown")
+
+    def observe_candidate_health(self, torrent_hash: str, reservation_id: str, category: str, *, save_path: Path) -> QbittorrentHealthObservation:
+        expected_save_path = str(save_path) if isinstance(save_path, Path) else ""
+        if not self._login() or not _torrent_hash(torrent_hash) or not isinstance(reservation_id, str) or not reservation_id or not isinstance(category, str) or not category or not expected_save_path:
+            return QbittorrentHealthObservation("unknown")
+        try:
+            torrents = self._get_json(f"/api/v2/torrents/info?{urlencode({'hashes': torrent_hash})}")
+        except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
+            return QbittorrentHealthObservation("unknown")
+        if not isinstance(torrents, list):
+            return QbittorrentHealthObservation("unknown")
+        if not torrents:
+            return QbittorrentHealthObservation("absent")
+        if len(torrents) != 1 or not isinstance(torrents[0], dict):
+            return QbittorrentHealthObservation("ambiguous")
+        torrent = torrents[0]
+        if torrent.get("hash") != torrent_hash or torrent.get("category") != category or torrent.get("save_path") != expected_save_path or _fence_tags(torrent.get("tags")) != {reservation_id}:
+            return QbittorrentHealthObservation("unknown")
+        size, total_size, downloaded = torrent.get("size"), torrent.get("total_size"), torrent.get("downloaded")
+        availability, seeds, leeches = torrent.get("availability"), torrent.get("num_seeds"), torrent.get("num_leechs")
+        if any(isinstance(value, bool) for value in (size, total_size, downloaded, availability, seeds, leeches)) or not isinstance(size, int) or not isinstance(total_size, int) or not isinstance(downloaded, int) or downloaded < 0 or not isinstance(availability, (int, float)) or availability < 0 or not isinstance(seeds, int) or not isinstance(leeches, int) or seeds < 0 or leeches < 0:
+            return QbittorrentHealthObservation("unknown")
+        return QbittorrentHealthObservation("observed", metadata_known=size > 0 and total_size > 0, downloaded_bytes=downloaded, availability=float(availability), peers=seeds + leeches)
 
     def terminal_observed(self, torrent_hash: str, reservation_id: str, category: str, *, save_path: Path) -> QbittorrentActivityObservation:
         """Accept only an exact, fully downloaded fenced torrent as terminal."""

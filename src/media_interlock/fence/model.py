@@ -161,6 +161,28 @@ class QbittorrentActivityObservation:
             raise ValueError("qBittorrent activity observation value is invalid")
 
 
+@dataclass(frozen=True)
+class QbittorrentHealthObservation:
+    """Exact owned-candidate liveness evidence; never inferred from absence."""
+
+    kind: str
+    metadata_known: bool | None = None
+    downloaded_bytes: int | None = None
+    availability: float | None = None
+    peers: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"absent", "unknown", "ambiguous", "observed"}:
+            raise ValueError("qBittorrent health observation kind is invalid")
+        values_present = (self.metadata_known, self.downloaded_bytes, self.availability, self.peers)
+        if self.kind != "observed":
+            if any(value is not None for value in values_present):
+                raise ValueError("unknown qBittorrent health must not carry values")
+            return
+        if not isinstance(self.metadata_known, bool) or isinstance(self.downloaded_bytes, bool) or not isinstance(self.downloaded_bytes, int) or self.downloaded_bytes < 0 or isinstance(self.availability, bool) or not isinstance(self.availability, (int, float)) or self.availability < 0 or isinstance(self.peers, bool) or not isinstance(self.peers, int) or self.peers < 0:
+            raise ValueError("qBittorrent health evidence is invalid")
+
+
 class FenceState:
     """Single-writer state model; callers persist every transition before effects."""
 

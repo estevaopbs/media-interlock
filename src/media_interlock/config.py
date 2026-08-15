@@ -60,15 +60,13 @@ class SecretReference:
 
 
 @dataclass(frozen=True)
-class SharedConfig:
-    runtime_dir: Path
+class RuntimeConfig:
+    state_dir: Path
 
 
 @dataclass(frozen=True)
 class ComponentConfig:
     name: str
-    state_dir: Path
-    socket_path: Path
 
 
 @dataclass(frozen=True)
@@ -123,6 +121,13 @@ class PublisherSourceProfile:
 
 
 @dataclass(frozen=True)
+class ImportReconciliationConfig:
+    poll_interval_seconds: int
+    initial_history_lookback_days: int
+    max_imports_per_poll: int
+
+
+@dataclass(frozen=True)
 class ReconcilerSourceProfile:
     name: str
     kind: str
@@ -157,6 +162,7 @@ class SourceProfile:
 @dataclass(frozen=True)
 class PublisherConfig(ComponentConfig):
     sources: Mapping[str, PublisherSourceProfile]
+    import_reconciliation: ImportReconciliationConfig
 
 
 @dataclass(frozen=True)
@@ -177,6 +183,12 @@ class ReconciliationPolicy:
     minimum_score_gain: int
     required_candidate_formats: tuple[str, ...]
     forbidden_candidate_formats: tuple[str, ...]
+    schedule_policy_revision: str = "legacy"
+    release_timeout_seconds: int = 90
+    max_release_response_bytes: int = 1_048_576
+    transient_retry_seconds: int = 1_800
+    transient_retry_multiplier: float = 2.0
+    maximum_transient_retry_seconds: int = 21_600
 
 
 @dataclass(frozen=True)
@@ -196,7 +208,7 @@ class AdapterConfig:
 
 @dataclass(frozen=True)
 class ProductConfig:
-    shared: SharedConfig
+    runtime: RuntimeConfig
     fence: FenceConfig | None
     publisher: PublisherConfig | None
     reconciler: ReconcilerConfig | None
@@ -211,10 +223,10 @@ class ProductConfig:
                 "base_url": adapter.base_url,
                 **{key: reference.redacted() for key, reference in adapter.secrets.items()},
             }
-        return {"shared": {"runtime_dir": str(self.shared.runtime_dir)}, "adapters": adapters}
+        return {"media_interlock": {"state_dir": str(self.runtime.state_dir)}, "adapters": adapters}
 
 
-_TOP_LEVEL = {"shared", "fence", "publisher", "reconciler", "adapters", "sources", "capacity_pools"}
+_TOP_LEVEL = {"media_interlock", "fence", "publisher", "reconciler", "adapters", "sources", "capacity_pools"}
 _ADAPTERS = {"jellyfin", "radarr", "sonarr", "qbittorrent", "bazarr", "seerr", "prowlarr"}
 _SOURCE_KINDS = {"radarr": "movie", "sonarr": "episode"}
 _MUTATION_LOCK_VERSION = "shared-qbittorrent-mutation/v1"
@@ -299,6 +311,22 @@ def _optional_multiplier(table: Mapping[str, object], name: str, location: str, 
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 1.0 <= float(value) <= 100.0:
         raise ConfigError(f"{location}.{name} must be a bounded multiplier")
     return float(value)
+
+
+def _required_multiplier(table: Mapping[str, object], name: str, location: str) -> float:
+    if name not in table:
+        raise ConfigError(f"missing required key: {location}.{name}")
+    return _optional_multiplier(table, name, location, default=1.0)
+
+
+def _required_revision(table: Mapping[str, object], name: str, location: str) -> str:
+    try:
+        value = table[name]
+    except KeyError as exc:
+        raise ConfigError(f"missing required key: {location}.{name}") from exc
+    if not isinstance(value, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", value) is None:
+        raise ConfigError(f"{location}.{name} must be a safe non-empty revision")
+    return value
 
 
 def _optional_format_names(table: Mapping[str, object], name: str, location: str) -> tuple[str, ...]:
@@ -425,12 +453,14 @@ def _reconciliation_policy(table: Mapping[str, object], location: str) -> Reconc
         "max_searches_per_hour", "max_searches_per_day", "max_grabs_per_run",
         "minimum_candidate_score", "minimum_score_gain",
         "required_candidate_formats", "forbidden_candidate_formats",
+        "schedule_policy_revision", "release_timeout_seconds", "max_release_response_bytes",
+        "transient_retry_seconds", "transient_retry_multiplier", "maximum_transient_retry_seconds",
     }, location)
     minimum_age_days = _required_nonnegative(table, "minimum_age_days", location, 36_500)
     terminal_horizon_days = _required_positive(table, "terminal_horizon_days", location, 36_500)
     if terminal_horizon_days < minimum_age_days:
         raise ConfigError(f"{location}.terminal_horizon_days must not precede minimum_age_days")
-    return ReconciliationPolicy(
+    policy = ReconciliationPolicy(
         minimum_age_days,
         terminal_horizon_days,
         _required_nonnegative(table, "cooldown_seconds", location, 31_536_000),
@@ -447,14 +477,22 @@ def _reconciliation_policy(table: Mapping[str, object], location: str) -> Reconc
         _optional_integer(table, "minimum_score_gain", location, -(2**31), 2**31 - 1, default=-(2**31)),
         _optional_format_names(table, "required_candidate_formats", location),
         _optional_format_names(table, "forbidden_candidate_formats", location),
+        _required_revision(table, "schedule_policy_revision", location),
+        _required_positive(table, "release_timeout_seconds", location, 3_600),
+        _required_positive(table, "max_release_response_bytes", location, 64 * 1024 * 1024),
+        _required_positive(table, "transient_retry_seconds", location, 31_536_000),
+        _required_multiplier(table, "transient_retry_multiplier", location),
+        _required_positive(table, "maximum_transient_retry_seconds", location, 31_536_000),
     )
+    if policy.maximum_transient_retry_seconds < policy.transient_retry_seconds:
+        raise ConfigError(f"{location}.maximum_transient_retry_seconds must not be less than transient_retry_seconds")
+    return policy
 
 
-def _component(table: Mapping[str, object], name: str, runtime_dir: Path) -> ComponentConfig:
-    socket_path = _required_path(table, "socket_path", name)
-    if socket_path.parent != runtime_dir:
-        raise ConfigError(f"{name}.socket_path must be directly under shared.runtime_dir")
-    return ComponentConfig(name, _required_path(table, "state_dir", name), socket_path)
+def _component(table: Mapping[str, object], name: str) -> ComponentConfig:
+    if not table:
+        return ComponentConfig(name)
+    return ComponentConfig(name)
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -520,6 +558,20 @@ def _capacity_pools(value: object) -> dict[str, CapacityPool]:
             _required_nonnegative(pool, "safety_margin_bytes", f"capacity_pools.{name}", 2**63 - 1),
         )
     return pools
+
+
+def _import_reconciliation(value: object) -> ImportReconciliationConfig:
+    table = _table(value, "publisher.import_reconciliation")
+    _require_keys(
+        table,
+        {"poll_interval_seconds", "initial_history_lookback_days", "max_imports_per_poll"},
+        "publisher.import_reconciliation",
+    )
+    return ImportReconciliationConfig(
+        _required_positive(table, "poll_interval_seconds", "publisher.import_reconciliation", 86_400),
+        _required_nonnegative(table, "initial_history_lookback_days", "publisher.import_reconciliation", 36_500),
+        _required_positive(table, "max_imports_per_poll", "publisher.import_reconciliation", 256),
+    )
 
 
 def _sources(value: object, pools: Mapping[str, CapacityPool]) -> dict[str, SourceProfile]:
@@ -609,9 +661,9 @@ def load_config(path: Path) -> ProductConfig:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError("configuration cannot be read as TOML") from exc
     _require_keys(document, _TOP_LEVEL, "root")
-    shared_table = _table(document.get("shared"), "shared")
-    _require_keys(shared_table, {"runtime_dir"}, "shared")
-    shared = SharedConfig(_required_path(shared_table, "runtime_dir", "shared"))
+    runtime_table = _table(document.get("media_interlock"), "media_interlock")
+    _require_keys(runtime_table, {"state_dir"}, "media_interlock")
+    runtime = RuntimeConfig(_required_path(runtime_table, "state_dir", "media_interlock"))
 
     has_component = any(name in document for name in ("fence", "publisher", "reconciler"))
     if has_component and ("sources" not in document or "capacity_pools" not in document):
@@ -623,11 +675,11 @@ def load_config(path: Path) -> ProductConfig:
     components: dict[str, ComponentConfig | None] = {name: None for name in ("fence", "publisher", "reconciler")}
     for name in components:
         if name in document:
-            components[name] = _component(_table(document[name], name), name, shared.runtime_dir)
+            components[name] = _component(_table(document[name], name), name)
     fence: FenceConfig | None = None
     if components["fence"] is not None:
         table = _table(document["fence"], "fence")
-        _require_keys(table, {"state_dir", "socket_path", "capacity_bytes", "max_inflight", "mutation_lock_path", "mutation_lock_version", "mutation_lock_timeout_ms"}, "fence")
+        _require_keys(table, {"capacity_bytes", "max_inflight", "mutation_lock_path", "mutation_lock_version", "mutation_lock_timeout_ms"}, "fence")
         base = components["fence"]
         assert base is not None
         version = table.get("mutation_lock_version")
@@ -635,8 +687,6 @@ def load_config(path: Path) -> ProductConfig:
             raise ConfigError(f"fence.mutation_lock_version must be {_MUTATION_LOCK_VERSION}")
         fence = FenceConfig(
             base.name,
-            base.state_dir,
-            base.socket_path,
             _required_positive(table, "capacity_bytes", "fence", 2**63 - 1),
             _required_positive(table, "max_inflight", "fence", 100_000),
             MutationLockConfig(
@@ -652,37 +702,29 @@ def load_config(path: Path) -> ProductConfig:
     publisher: PublisherConfig | None = None
     if components["publisher"] is not None:
         table = _table(document["publisher"], "publisher")
-        _require_keys(table, {"state_dir", "socket_path"}, "publisher")
+        _require_keys(table, {"import_reconciliation"}, "publisher")
         base = components["publisher"]
         assert base is not None
         publisher = PublisherConfig(
             base.name,
-            base.state_dir,
-            base.socket_path,
             {
                 name: PublisherSourceProfile(name, source.arr_import_path_prefix, source.staging_root, source.canonical_root, source.namespace, source.jellyfin_library_id, source.jellyfin_path_prefix, source.bundle_settle_seconds, source.bundle_sidecar_extensions, source.bundle_required_languages, source.bundle_required_subtitle_languages, source.bundle_language_aliases, source.bundle_required_container_evidence)
                 for name, source in sources.items()
             },
+            _import_reconciliation(_table(table.get("import_reconciliation"), "publisher.import_reconciliation")),
         )
     reconciler = components["reconciler"]
     if reconciler is not None:
         table = _table(document["reconciler"], "reconciler")
-        _require_keys(table, {"state_dir", "socket_path", "poll_interval_seconds", "movie", "episode"}, "reconciler")
+        _require_keys(table, {"poll_interval_seconds", "movie", "episode"}, "reconciler")
         reconciler = ReconcilerConfig(
             reconciler.name,
-            reconciler.state_dir,
-            reconciler.socket_path,
             _optional_positive(table, "poll_interval_seconds", "reconciler", 86_400, default=300),
             _reconciliation_policy(_table(table.get("movie"), "reconciler.movie"), "reconciler.movie"),
             _reconciliation_policy(_table(table.get("episode"), "reconciler.episode"), "reconciler.episode"),
             {name: ReconcilerSourceProfile(name, source.kind, source.category, source.download_client_id) for name, source in sources.items()},
         )
 
-    configured = [component for component in (fence, publisher, reconciler) if component is not None]
-    if len({component.state_dir for component in configured}) != len(configured):
-        raise ConfigError("component state_dir values must be unique")
-    if len({component.socket_path for component in configured}) != len(configured):
-        raise ConfigError("component socket_path values must be unique")
     writable_roots: list[tuple[str, Path]] = []
     for source in sources.values():
         writable_roots.extend(((f"sources.{source.name}.qbittorrent_save_path", source.qbittorrent_save_path), (f"sources.{source.name}.staging_root", source.staging_root), (f"sources.{source.name}.canonical_root", source.canonical_root)))
@@ -692,12 +734,9 @@ def load_config(path: Path) -> ProductConfig:
     for index, (left_name, left_root) in enumerate(writable_roots):
         for right_name, right_root in writable_roots[index + 1:]:
             _validate_disjoint(left_root, right_root, left_name, right_name)
-    for component in configured:
-        for root_name, root in writable_roots:
-            _validate_disjoint(component.state_dir, root, f"{component.name}.state_dir", root_name)
     for root_name, root in writable_roots:
-        _validate_disjoint(shared.runtime_dir, root, "shared.runtime_dir", root_name)
+        _validate_disjoint(runtime.state_dir, root, "media_interlock.state_dir", root_name)
     adapters_table = _table(document.get("adapters", {}), "adapters")
     _require_keys(adapters_table, _ADAPTERS, "adapters")
     adapters = {name: _adapter(name, _table(table, f"adapters.{name}")) for name, table in adapters_table.items()}
-    return ProductConfig(shared, fence, publisher, reconciler, adapters, sources, capacity_pools)
+    return ProductConfig(runtime, fence, publisher, reconciler, adapters, sources, capacity_pools)

@@ -20,11 +20,5 @@ RUN python -m pip install --no-cache-dir /tmp/*.whl \
  && rm -f /tmp/*.whl
 USER 65532:65532
 
-FROM runtime AS reconciler
-ENTRYPOINT ["media-interlock-reconciler"]
-
-FROM runtime AS fence
-ENTRYPOINT ["media-interlock-fence"]
-
-FROM runtime AS publisher
-ENTRYPOINT ["media-interlock-publisher"]
+FROM runtime AS media_interlock
+ENTRYPOINT ["media-interlock"]

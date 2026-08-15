@@ -23,7 +23,11 @@ class SonarrAdapter(ArrHistoryAdapter):
         score = file.get("customFormatScore", 0)
         if isinstance(score, bool) or not isinstance(score, int):
             return None
-        return UpgradeEntity("sonarr", entity_id, released_at, file_id, score)
+        # ``wanted/cutoff`` on some supported Sonarr versions does not return
+        # its parent series. Keep that inventory usable; the full periodic
+        # inventory below supplies the series scope and therefore fairness.
+        series_id = _public_id(record.get("seriesId")) or entity_id
+        return UpgradeEntity("sonarr", entity_id, released_at, file_id, score, series_id)
 
     def upgrade_entities(self) -> tuple[UpgradeEntity, ...] | None:
         try:
@@ -65,7 +69,9 @@ class SonarrAdapter(ArrHistoryAdapter):
                     return None
                 if not needs_upgrade:
                     continue
-                entity = self._cutoff_entity(episode)
+                scoped_episode = dict(episode)
+                scoped_episode.setdefault("seriesId", series_id)
+                entity = self._cutoff_entity(scoped_episode)
                 if entity is None:
                     return None
                 entities.append(entity)

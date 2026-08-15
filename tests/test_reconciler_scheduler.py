@@ -13,7 +13,7 @@ from media_interlock.reconciler.scheduler import (
     ScheduleState,
     UpgradeScheduler,
     UpgradeEntity,
-    cooldown_for_age,
+    cooldown_for_completed_searches,
 )
 
 
@@ -44,22 +44,21 @@ def policy(**overrides: object) -> ReconciliationPolicy:
 
 
 class ReconcilerSchedulerTests(unittest.TestCase):
-    def test_cooldown_scales_by_configured_age_steps_and_can_be_capped(self) -> None:
+    def test_cooldown_scales_after_successful_searches_and_can_be_capped(self) -> None:
         configured = policy()
 
-        self.assertEqual(6 * 3_600, cooldown_for_age(configured, 0))
-        self.assertEqual(6 * 3_600, cooldown_for_age(configured, 6 * DAY))
-        self.assertEqual(12 * 3_600, cooldown_for_age(configured, 7 * DAY))
-        self.assertEqual(24 * 3_600, cooldown_for_age(configured, 14 * DAY))
+        self.assertEqual(6 * 3_600, cooldown_for_completed_searches(configured, 1))
+        self.assertEqual(12 * 3_600, cooldown_for_completed_searches(configured, 2))
+        self.assertEqual(24 * 3_600, cooldown_for_completed_searches(configured, 3))
         self.assertEqual(
             18 * 3_600,
-            cooldown_for_age(
+            cooldown_for_completed_searches(
                 policy(maximum_cooldown_seconds=18 * 3_600),
-                21 * DAY,
+                4,
             ),
         )
         self.assertGreater(
-            cooldown_for_age(policy(cooldown_step_days=1, cooldown_multiplier=100.0), 36_500 * DAY),
+            cooldown_for_completed_searches(policy(cooldown_multiplier=100.0), 10),
             182 * DAY,
         )
 
@@ -69,11 +68,38 @@ class ReconcilerSchedulerTests(unittest.TestCase):
         configured = policy()
 
         self.assertEqual(14 * DAY, state.next_search_at(entity, configured, 14 * DAY))
-        state.record_completed(entity, now=14 * DAY, terminal=False)
+        state.record_completed(entity, configured, now=14 * DAY, terminal=False)
 
-        self.assertEqual(15 * DAY, state.next_search_at(entity, configured, 14 * DAY))
-        self.assertFalse(state.due(entity, configured, 14 * DAY + 23 * 3_600))
-        self.assertTrue(state.due(entity, configured, 15 * DAY))
+        self.assertEqual(14 * DAY + 6 * 3_600, state.next_search_at(entity, configured, 14 * DAY))
+        self.assertFalse(state.due(entity, configured, 14 * DAY + 5 * 3_600))
+        self.assertTrue(state.due(entity, configured, 14 * DAY + 6 * 3_600))
+
+    def test_elapsed_age_does_not_stretch_the_first_cooldown(self) -> None:
+        state = ScheduleState()
+        configured = policy()
+        entity = UpgradeEntity("sonarr", "42", 0, "file-7", 4_000)
+
+        state.record_completed(entity, configured, now=90 * DAY, terminal=False)
+
+        self.assertEqual(90 * DAY + 6 * 3_600, state.next_search_at(entity, configured, 90 * DAY))
+
+    def test_transient_release_failure_has_independent_retry_and_no_attempt(self) -> None:
+        state = ScheduleState()
+        configured = policy(transient_retry_seconds=600, transient_retry_multiplier=2.0)
+        entity = UpgradeEntity("sonarr", "42", 0, "file-7", 4_000)
+
+        state.record_transient_failure(entity, configured, now=100)
+
+        self.assertEqual(700, state.next_search_at(entity, configured, 100))
+        self.assertTrue(state.due(entity, configured, 700))
+        self.assertEqual([], state.record()["checkpoints"])
+
+    def test_policy_revision_makes_old_schedule_due_under_current_policy(self) -> None:
+        state = ScheduleState()
+        entity = UpgradeEntity("sonarr", "42", 0, "file-7", 4_000)
+        state.record_completed(entity, policy(schedule_policy_revision="old"), now=100, terminal=False)
+
+        self.assertTrue(state.due(entity, policy(schedule_policy_revision="current"), 101))
 
     def test_terminal_search_runs_once_and_new_generation_gets_one_final_search(self) -> None:
         state = ScheduleState()
@@ -82,19 +108,19 @@ class ReconcilerSchedulerTests(unittest.TestCase):
         terminal_now = 26 * 7 * DAY
 
         self.assertTrue(state.due(old, configured, terminal_now))
-        state.record_completed(old, now=terminal_now, terminal=True)
+        state.record_completed(old, configured, now=terminal_now, terminal=True)
         self.assertIsNone(state.next_search_at(old, configured, terminal_now + DAY))
 
         replacement = UpgradeEntity("sonarr", "42", 0, "file-8", 8_000)
         self.assertTrue(state.due(replacement, configured, terminal_now + DAY))
-        state.record_completed(replacement, now=terminal_now + DAY, terminal=True)
+        state.record_completed(replacement, configured, now=terminal_now + DAY, terminal=True)
         self.assertIsNone(state.next_search_at(replacement, configured, terminal_now + 2 * DAY))
 
     def test_final_search_is_independent_of_intermediate_attempt_limit(self) -> None:
         state = ScheduleState()
         configured = policy(max_attempts=1, terminal_horizon_days=14)
         entity = UpgradeEntity("sonarr", "42", 0, "file-7", 4_000)
-        state.record_completed(entity, now=DAY, terminal=False)
+        state.record_completed(entity, configured, now=DAY, terminal=False)
 
         self.assertIsNone(state.next_search_at(entity, configured, 2 * DAY))
         self.assertTrue(state.due(entity, configured, 14 * DAY))
@@ -105,8 +131,8 @@ class ReconcilerSchedulerTests(unittest.TestCase):
         configured = policy(minimum_age_days=7, max_attempts=2)
 
         self.assertEqual(100 + 7 * DAY, state.next_search_at(entity, configured, 100))
-        state.record_completed(entity, now=100 + 7 * DAY, terminal=False)
-        state.record_completed(entity, now=100 + 8 * DAY, terminal=False)
+        state.record_completed(entity, configured, now=100 + 7 * DAY, terminal=False)
+        state.record_completed(entity, configured, now=100 + 8 * DAY, terminal=False)
         self.assertIsNone(state.next_search_at(entity, configured, 100 + 9 * DAY))
 
         for offset in range(4):
@@ -117,7 +143,7 @@ class ReconcilerSchedulerTests(unittest.TestCase):
     def test_state_round_trip_preserves_checkpoints_and_budget_events(self) -> None:
         state = ScheduleState()
         entity = UpgradeEntity("sonarr", "42", 0, "file-7", 4_000)
-        state.record_completed(entity, now=123, terminal=False)
+        state.record_completed(entity, policy(), now=123, terminal=False)
         state.record_budget_event(123)
 
         restored = ScheduleState.from_record(state.record())
@@ -151,7 +177,7 @@ class ReconcilerSchedulerTests(unittest.TestCase):
 
             def approved_release(self, entity_id: str, _: ReconciliationPolicy, *, current_score: int) -> ArrReleaseSearch:
                 searched.append(entity_id)
-                return ArrReleaseSearch(True, release if entity_id == "2" else None)
+                return ArrReleaseSearch.completed(release if entity_id == "2" else None)
 
         class Executor:
             def recover(self, *, now: int) -> list[str]:
@@ -182,7 +208,7 @@ class ReconcilerSchedulerTests(unittest.TestCase):
         self.assertTrue(schedule.due(entities[2], policy(), DAY))
         self.assertTrue(saves)
 
-    def test_adapter_failure_consumes_budget_without_advancing_entity_cooldown(self) -> None:
+    def test_adapter_failure_uses_technical_retry_without_consuming_search_budget(self) -> None:
         entity = UpgradeEntity("sonarr", "1", 10, "file-1", 0)
 
         class Adapter:
@@ -190,7 +216,7 @@ class ReconcilerSchedulerTests(unittest.TestCase):
                 return (entity,)
 
             def approved_release(self, entity_id: str, _: ReconciliationPolicy, *, current_score: int) -> ArrReleaseSearch:
-                return ArrReleaseSearch(False)
+                return ArrReleaseSearch.transient_failure("upstream response was invalid")
 
         class Executor:
             def recover(self, *, now: int) -> list[str]: return []
@@ -207,7 +233,8 @@ class ReconcilerSchedulerTests(unittest.TestCase):
         ).run(now=DAY)
 
         self.assertEqual(1, result.unavailable)
-        self.assertTrue(schedule.due(entity, policy(), DAY))
+        self.assertFalse(schedule.due(entity, policy(), DAY))
+        self.assertEqual([], schedule.record()["budget_events"])
 
     def test_uncertain_grab_stops_more_candidates_in_the_same_run(self) -> None:
         entities = (
@@ -235,7 +262,7 @@ class ReconcilerSchedulerTests(unittest.TestCase):
 
             def approved_release(self, entity_id: str, _: ReconciliationPolicy, *, current_score: int) -> ArrReleaseSearch:
                 searched.append(entity_id)
-                return ArrReleaseSearch(True, release)
+                return ArrReleaseSearch.completed(release)
 
         class Executor:
             def recover(self, *, now: int) -> list[str]: return []
@@ -286,6 +313,35 @@ class ReconcilerSchedulerTests(unittest.TestCase):
         ).run(now=DAY)
 
         self.assertEqual(0, result.searched)
+
+    def test_sonarr_searches_are_fair_between_series(self) -> None:
+        entities = (
+            UpgradeEntity("sonarr", "1", 0, "file-1", 0, "10"),
+            UpgradeEntity("sonarr", "2", 0, "file-2", 0, "10"),
+            UpgradeEntity("sonarr", "3", 0, "file-3", 0, "20"),
+        )
+        searched: list[str] = []
+
+        class Adapter:
+            def upgrade_entities(self) -> tuple[UpgradeEntity, ...]: return entities
+            def approved_release(self, entity_id: str, *_: object, **__: object) -> ArrReleaseSearch:
+                searched.append(entity_id)
+                return ArrReleaseSearch.completed()
+
+        class Executor:
+            def recover(self, *, now: int) -> list[str]: return []
+            def execute_selected(self, *_: object, **__: object) -> str: raise AssertionError
+
+        UpgradeScheduler(
+            ScheduleState(),
+            ReconciliationState(),
+            lambda _: None,
+            {"sonarr": Adapter()},
+            {"sonarr": policy(max_searches_per_run=2)},
+            Executor(),
+        ).run(now=DAY)
+
+        self.assertEqual(["1", "3"], searched)
 
 
 if __name__ == "__main__":

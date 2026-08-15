@@ -137,6 +137,20 @@ class ArrCorrelationTests(unittest.TestCase):
                 self.assertIn("downloadId=grab-42", self.request[0])
                 self.assertEqual("fixture-key", self.request[1])
 
+    def test_incremental_import_history_uses_history_id_and_does_not_escape_staging(self) -> None:
+        self.payload = {"records": [
+            {"id": 7, "eventType": "downloadFolderImported", "downloadId": "grab-7", "movieId": 42, "data": {"importedPath": "/data/library/movie.mkv"}},
+            {"id": 8, "eventType": "downloadFolderImported", "downloadId": "grab-8", "movieId": 43, "data": {"importedPath": "/outside/ignored.mkv"}},
+            {"id": 9, "eventType": "other", "data": {}},
+        ], "totalRecords": 3}
+
+        cursor, imports = self.adapter(RadarrAdapter).imported_after(0, maximum=8)
+
+        self.assertEqual(9, cursor)
+        self.assertEqual(((7, "grab-7", "42", "movie.mkv"),), tuple(
+            (item.history_id, item.download_id, item.media_id, item.relative_path) for item in imports
+        ))
+
     def test_shared_arr_prefix_maps_nested_files_to_distinct_publisher_stagings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -21,6 +21,14 @@ class ReconcilerStore:
     def open(cls, state_dir: Path) -> ReconcilerStore:
         return cls(SqliteStore.open(state_dir, "reconciler"))
 
+    @classmethod
+    def from_store(cls, store: SqliteStore) -> ReconcilerStore:
+        return cls(store)
+
+    @property
+    def store(self) -> SqliteStore:
+        return self._store
+
     def load(self) -> ReconciliationState:
         raw = self._store.get(self._KEY)
         if raw is None:

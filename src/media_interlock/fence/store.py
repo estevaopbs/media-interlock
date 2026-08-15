@@ -21,6 +21,14 @@ class FenceStore:
     def open(cls, state_dir: Path) -> "FenceStore":
         return cls(SqliteStore.open(state_dir, "fence"))
 
+    @classmethod
+    def from_store(cls, store: SqliteStore) -> "FenceStore":
+        return cls(store)
+
+    @property
+    def store(self) -> SqliteStore:
+        return self._store
+
     def load(self, policy: FencePolicy) -> FenceState:
         raw = self._store.get(self._KEY)
         if raw is None:

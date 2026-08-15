@@ -71,7 +71,7 @@ class ArtifactDefinitionTests(unittest.TestCase):
                 builder._validated_runtime_python_version("podman", "fixture:local", ROOT),
             )
 
-    def test_oci_targets_are_arbitrary_uid_safe_and_execute_only_declared_components(self) -> None:
+    def test_oci_image_is_arbitrary_uid_safe_and_executes_the_unified_runtime(self) -> None:
         containerfile = (ROOT / "Containerfile").read_text(encoding="utf-8")
 
         self.assertEqual(
@@ -82,9 +82,10 @@ class ArtifactDefinitionTests(unittest.TestCase):
             ),
         )
         self.assertIn("--require-hashes --no-deps --requirement build-requirements.txt", containerfile)
-        self.assertIn("FROM runtime AS reconciler", containerfile)
-        self.assertIn("FROM runtime AS fence", containerfile)
-        self.assertIn("FROM runtime AS publisher", containerfile)
+        self.assertIn("FROM runtime AS media_interlock", containerfile)
+        self.assertNotIn("FROM runtime AS reconciler", containerfile)
+        self.assertNotIn("FROM runtime AS fence", containerfile)
+        self.assertNotIn("FROM runtime AS publisher", containerfile)
         self.assertIn("USER 65532:65532", containerfile)
         self.assertNotIn("useradd", containerfile)
         for label in (
@@ -94,9 +95,10 @@ class ArtifactDefinitionTests(unittest.TestCase):
             "org.opencontainers.image.licenses",
         ):
             self.assertIn(label, containerfile)
-        self.assertIn('ENTRYPOINT ["media-interlock-reconciler"]', containerfile)
-        self.assertIn('ENTRYPOINT ["media-interlock-fence"]', containerfile)
-        self.assertIn('ENTRYPOINT ["media-interlock-publisher"]', containerfile)
+        self.assertIn('ENTRYPOINT ["media-interlock"]', containerfile)
+        self.assertNotIn('ENTRYPOINT ["media-interlock-reconciler"]', containerfile)
+        self.assertNotIn('ENTRYPOINT ["media-interlock-fence"]', containerfile)
+        self.assertNotIn('ENTRYPOINT ["media-interlock-publisher"]', containerfile)
 
     def test_local_artifact_builder_exposes_only_local_oci_targets(self) -> None:
         result = subprocess.run(
@@ -120,7 +122,7 @@ class ArtifactDefinitionTests(unittest.TestCase):
         self.assertIn('"--require-hashes", "--no-deps"', builder)
         self.assertIn('"--wheel", "--no-isolation"', builder)
         self.assertNotIn('"--sdist"', builder)
-        self.assertIn('("reconciler", "fence", "publisher")', builder)
+        self.assertIn('("media-interlock",)', builder)
         self.assertIn('"media-interlock.artifacts/v1"', builder)
         self.assertIn('"runtime_python_version"', builder)
         self.assertIn('"artifacts.json"', builder)

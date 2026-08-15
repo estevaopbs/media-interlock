@@ -43,6 +43,12 @@ terminal_horizon_days = 365
 cooldown_seconds = 86400
 max_attempts = 3
 max_searches_per_run = 5
+schedule_policy_revision = "video-upgrade-v2"
+release_timeout_seconds = 150
+max_release_response_bytes = 8388608
+transient_retry_seconds = 1800
+transient_retry_multiplier = 2.0
+maximum_transient_retry_seconds = 21600
 
 [reconciler.episode]
 minimum_age_days = 7
@@ -50,6 +56,12 @@ terminal_horizon_days = 180
 cooldown_seconds = 3600
 max_attempts = 2
 max_searches_per_run = 10
+schedule_policy_revision = "video-upgrade-v2"
+release_timeout_seconds = 150
+max_release_response_bytes = 8388608
+transient_retry_seconds = 1800
+transient_retry_multiplier = 2.0
+maximum_transient_retry_seconds = 21600
 
 [adapters.prowlarr]
 base_url = "https://prowlarr.example.invalid"
@@ -74,6 +86,11 @@ mutation_lock_timeout_ms = 500
 state_dir = "/var/lib/media-interlock/publisher"
 socket_path = "/run/media-interlock/publisher.sock"
 
+[publisher.import_reconciliation]
+poll_interval_seconds = 300
+initial_history_lookback_days = 0
+max_imports_per_poll = 8
+
 [reconciler]
 state_dir = "/var/lib/media-interlock/reconciler"
 socket_path = "/run/media-interlock/reconciler.sock"
@@ -84,6 +101,12 @@ terminal_horizon_days = 365
 cooldown_seconds = 86400
 max_attempts = 3
 max_searches_per_run = 5
+schedule_policy_revision = "video-upgrade-v2"
+release_timeout_seconds = 150
+max_release_response_bytes = 8388608
+transient_retry_seconds = 1800
+transient_retry_multiplier = 2.0
+maximum_transient_retry_seconds = 21600
 
 [reconciler.episode]
 minimum_age_days = 7
@@ -91,6 +114,12 @@ terminal_horizon_days = 180
 cooldown_seconds = 3600
 max_attempts = 2
 max_searches_per_run = 10
+schedule_policy_revision = "video-upgrade-v2"
+release_timeout_seconds = 150
+max_release_response_bytes = 8388608
+transient_retry_seconds = 1800
+transient_retry_multiplier = 2.0
+maximum_transient_retry_seconds = 21600
 
 [capacity_pools.download]
 probe_path = "/srv/downloads"
@@ -142,9 +171,44 @@ base_url = "https://prowlarr.example.invalid"
 api_key = "env:PROWLARR_API_KEY"
 """
 
-# Every configuration test uses the replacement schema; the old singular
-# Fence/Publisher roots are intentionally not a compatibility surface.
-VALID_CONFIG = SOURCE_PROFILE_CONFIG
+LEGACY_COMPONENT_CONFIG = SOURCE_PROFILE_CONFIG
+
+UNIFIED_CONFIG = LEGACY_COMPONENT_CONFIG.replace(
+    '''[shared]
+runtime_dir = "/run/media-interlock"
+
+''',
+    '''[media_interlock]
+state_dir = "/var/lib/media-interlock"
+
+''',
+).replace(
+    '''[fence]
+state_dir = "/var/lib/media-interlock/fence"
+socket_path = "/run/media-interlock/fence.sock"
+''',
+    '''[fence]
+''',
+).replace(
+    '''[publisher]
+state_dir = "/var/lib/media-interlock/publisher"
+socket_path = "/run/media-interlock/publisher.sock"
+''',
+    '''[publisher]
+''',
+).replace(
+    '''[reconciler]
+state_dir = "/var/lib/media-interlock/reconciler"
+socket_path = "/run/media-interlock/reconciler.sock"
+''',
+    '''[reconciler]
+''',
+)
+
+# Every configuration test uses the unified runtime schema. The three component
+# state directories and sockets are deliberately not a compatibility surface.
+SOURCE_PROFILE_CONFIG = UNIFIED_CONFIG
+VALID_CONFIG = UNIFIED_CONFIG
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -168,6 +232,13 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual("env", config.adapters["prowlarr"].secrets["api_key"].source)
         self.assertNotIn("PROWLARR_API_KEY", repr(config.redacted()))
         self.assertEqual("env:<redacted>", config.redacted()["adapters"]["prowlarr"]["api_key"])
+
+    def test_unified_runtime_requires_one_state_dir_and_rejects_component_topology(self) -> None:
+        config = load_config(self.write(UNIFIED_CONFIG))
+
+        self.assertEqual(Path("/var/lib/media-interlock"), config.runtime.state_dir)
+        with self.assertRaisesRegex(ConfigError, "unknown key"):
+            load_config(self.write(LEGACY_COMPONENT_CONFIG))
 
     def test_reconciliation_schedule_parameters_are_typed_and_configurable(self) -> None:
         configured = VALID_CONFIG.replace(
@@ -199,6 +270,16 @@ forbidden_candidate_formats = [\"AI upscale\"]""",
         self.assertEqual(1, policy.minimum_score_gain)
         self.assertEqual(("Original",), policy.required_candidate_formats)
         self.assertEqual(("AI upscale",), policy.forbidden_candidate_formats)
+
+    def test_release_search_and_transient_retry_parameters_are_explicit(self) -> None:
+        policy = load_config(self.write(VALID_CONFIG)).reconciler.movie
+
+        self.assertEqual("video-upgrade-v2", policy.schedule_policy_revision)
+        self.assertEqual(150, policy.release_timeout_seconds)
+        self.assertEqual(8_388_608, policy.max_release_response_bytes)
+        self.assertEqual(1_800, policy.transient_retry_seconds)
+        self.assertEqual(2.0, policy.transient_retry_multiplier)
+        self.assertEqual(21_600, policy.maximum_transient_retry_seconds)
 
     def test_projects_exact_radarr_and_sonarr_source_profiles(self) -> None:
         config = load_config(self.write(SOURCE_PROFILE_CONFIG))
@@ -349,7 +430,7 @@ forbidden_candidate_formats = [\"AI upscale\"]""",
                 load_config(self.write(content))
 
     def test_rejects_private_or_runtime_roots_under_an_acquisition_root(self) -> None:
-        content = VALID_CONFIG.replace('state_dir = "/var/lib/media-interlock/fence"', 'state_dir = "/srv/staging/movies/.state"')
+        content = VALID_CONFIG.replace('state_dir = "/var/lib/media-interlock"', 'state_dir = "/srv/staging/movies/.state"')
         with self.assertRaisesRegex(ConfigError, "must be disjoint"):
             load_config(self.write(content))
 
