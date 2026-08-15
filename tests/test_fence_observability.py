@@ -36,7 +36,9 @@ class FenceObservabilityTests(unittest.TestCase):
         state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=2))
 
         class Service:
-            calls: list[bool] = []
+            calls: list[object] = []
+            def recover(self) -> None:
+                self.calls.append("recover")
             def poll_external(self, *, publisher_ready: bool) -> bool:
                 self.calls.append(publisher_ready)
                 return True
@@ -45,7 +47,7 @@ class FenceObservabilityTests(unittest.TestCase):
         daemon = FenceDaemon(service, FenceObservability(state), readiness=lambda: (False, False, True))  # type: ignore[arg-type]
 
         self.assertTrue(daemon.tick())
-        self.assertEqual([True], service.calls)
+        self.assertEqual(["recover", True], service.calls)
 
 
 class FenceUnixDaemonTests(unittest.IsolatedAsyncioTestCase):
