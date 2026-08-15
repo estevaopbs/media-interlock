@@ -1,6 +1,6 @@
 # Current state
 
-MediaInterlock 0.1.26 is the immutable public downstream-consumption release.
+MediaInterlock 0.1.27 is the immutable public downstream-consumption release.
 It publishes one wheel and one OCI image with the `media-interlock` entrypoint.
 Fence, Publisher, and Reconciler are internal roles in that one process and
 share one namespaced SQLite state database.

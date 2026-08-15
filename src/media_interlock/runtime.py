@@ -115,6 +115,26 @@ class RuntimeState:
     def close(self) -> None:
         self._store.close()
 
+    @classmethod
+    def probe(cls, state_dir: Path) -> None:
+        """Verify the owned runtime database without contending for its writer lock."""
+        if SqliteStore._read_owner_marker(state_dir) != "media-interlock":
+            raise RuntimeError("runtime state directory has an unexpected owner")
+        database = state_dir / "state.sqlite3"
+        try:
+            connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+            try:
+                tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+                if not {"metadata", "values_store"}.issubset(tables):
+                    raise RuntimeError("runtime state database has an unexpected schema")
+                owner = connection.execute("SELECT value FROM metadata WHERE key = 'owner'").fetchone()
+                if owner is None or owner[0] != "media-interlock":
+                    raise RuntimeError("runtime state database has an unexpected owner")
+            finally:
+                connection.close()
+        except sqlite3.Error as exc:
+            raise RuntimeError("runtime state database cannot be read") from exc
+
 
 @dataclass
 class MediaInterlockRuntime:

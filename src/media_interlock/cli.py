@@ -50,8 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if arguments.status:
         try:
-            runtime_state = RuntimeState.open(config.runtime.state_dir)
-            runtime_state.close()
+            RuntimeState.probe(config.runtime.state_dir)
         except (OSError, RuntimeError):
             print(render_result("unavailable", "state is unavailable", as_json=arguments.json))
             return 1
