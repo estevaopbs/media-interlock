@@ -113,8 +113,9 @@ class FenceDaemon:
         return self._service.quiesce(enabled=False)
 
     def tick(self) -> bool:
-        """Run one bounded observer pass without extending the socket contract."""
+        """Retry durable effects before one bounded observer pass."""
         try:
+            self._service.recover()
             _, _, publisher_ready = self._readiness()
             return self._service.poll_external(publisher_ready=publisher_ready)
         except Exception:

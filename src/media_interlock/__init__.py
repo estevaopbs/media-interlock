@@ -1,3 +1,3 @@
 """Provider-neutral safety mechanisms for MediaInterlock."""
 
-__version__ = "0.1.28"
+__version__ = "0.1.29"
