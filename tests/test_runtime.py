@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 import _source_tree  # noqa: F401
 
@@ -13,6 +14,15 @@ from media_interlock.runtime import MediaInterlockRuntime, RuntimeState
 
 
 class RuntimeStateTests(unittest.TestCase):
+    def test_startup_recovers_then_reopens_a_persisted_quiescent_fence(self) -> None:
+        runtime = MediaInterlockRuntime.__new__(MediaInterlockRuntime)
+        runtime.fence = Mock()
+
+        runtime._recover_fence_on_start()
+
+        runtime.fence.recover.assert_called_once_with()
+        runtime.fence.reopen.assert_called_once_with()
+
     def test_runtime_requires_all_three_video_roles_before_opening_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             configuration = Path(directory) / "media-interlock.toml"

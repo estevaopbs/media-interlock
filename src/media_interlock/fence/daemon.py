@@ -108,6 +108,10 @@ class FenceDaemon:
     def recover(self) -> None:
         self._service.recover()
 
+    def reopen(self) -> bool:
+        """Reopen owned work when the one runtime is started for its domain."""
+        return self._service.quiesce(enabled=False)
+
     def tick(self) -> bool:
         """Run one bounded observer pass without extending the socket contract."""
         try:
