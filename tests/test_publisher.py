@@ -282,8 +282,9 @@ class PublisherCustodyTests(unittest.TestCase):
             bundle = BundleVerifier(staging, settle_seconds=0).verify("movie.mkv", allow_hardlinks=True)
             state = PublisherState()
             service = PublisherService(state, Store())
+            bootstrap_operation = str(uuid.uuid5(uuid.NAMESPACE_URL, "media-interlock/import/radarr/42"))
             service.bootstrap_bundle(
-                operation_id=OPERATION_ID,
+                operation_id=bootstrap_operation,
                 source="radarr",
                 upstream_id="bootstrap-import-42",
                 media_id="42",
@@ -295,7 +296,7 @@ class PublisherCustodyTests(unittest.TestCase):
             )
 
             published = service.commit_asset_generation(
-                OPERATION_ID,
+                bootstrap_operation,
                 AssetGenerationPublisher(staging, canonical, namespace="movies"),
             )
 

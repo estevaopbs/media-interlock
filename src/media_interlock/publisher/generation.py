@@ -133,7 +133,9 @@ class GenerationPublisher:
             parsed = uuid.UUID(value)
         except ValueError:
             return False
-        return str(parsed) == value and parsed.version == 4
+        # Fence operations use UUIDv4, while bounded Arr-history bootstrap
+        # operations use a deterministic UUIDv5 derived from the history ID.
+        return str(parsed) == value and parsed.version in {4, 5}
 
     @classmethod
     def _temporary_generation_name(cls, value: str) -> bool:
