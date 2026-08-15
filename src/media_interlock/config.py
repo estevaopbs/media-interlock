@@ -579,6 +579,11 @@ def _import_reconciliation(value: object) -> ImportReconciliationConfig:
         {"poll_interval_seconds", "initial_history_lookback_days", "max_imports_per_poll"},
         "publisher.import_reconciliation",
     )
+    return ImportReconciliationConfig(
+        _required_positive(table, "poll_interval_seconds", "publisher.import_reconciliation", 86_400),
+        _required_nonnegative(table, "initial_history_lookback_days", "publisher.import_reconciliation", 36_500),
+        _required_positive(table, "max_imports_per_poll", "publisher.import_reconciliation", 256),
+    )
 
 
 def _video_candidate_health(value: object) -> VideoCandidateHealthConfig:
@@ -596,11 +601,6 @@ def _video_candidate_health(value: object) -> VideoCandidateHealthConfig:
     if policy.replacement_max_delay_seconds < policy.replacement_initial_delay_seconds:
         raise ConfigError("fence.video_candidate_health.replacement_max_delay_seconds must not be less than replacement_initial_delay_seconds")
     return policy
-    return ImportReconciliationConfig(
-        _required_positive(table, "poll_interval_seconds", "publisher.import_reconciliation", 86_400),
-        _required_nonnegative(table, "initial_history_lookback_days", "publisher.import_reconciliation", 36_500),
-        _required_positive(table, "max_imports_per_poll", "publisher.import_reconciliation", 256),
-    )
 
 
 def _sources(value: object, pools: Mapping[str, CapacityPool]) -> dict[str, SourceProfile]:
