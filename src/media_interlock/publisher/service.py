@@ -306,7 +306,11 @@ class PublisherService:
                 publication.generation_id,
                 candidate,
                 previous_generation_id=publication.previous_generation_id,
-                hardlink_frozen=publication.hardlink_frozen,
+                # A historical bootstrap is sealed from an Arr-imported
+                # staging file.  Such files are normally hardlinks to an
+                # already-complete torrent, so its double-observed bundle is
+                # copied as an independent generation without Fence custody.
+                hardlink_frozen=(publication.hardlink_frozen or publication.provenance == "bootstrap"),
                 item_type=publication.item_type,
                 provider_ids=dict(publication.provider_ids or ()),
             )

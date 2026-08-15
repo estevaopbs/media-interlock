@@ -7,7 +7,7 @@ publishes verified bundles for Jellyfin.
 
 ## Project status
 
-MediaInterlock 0.1.31 is the current immutable public release. It is one OCI
+MediaInterlock 0.1.32 is the current immutable public release. It is one OCI
 image, one container, one process, and one SQLite state database. Fence,
 Publisher, and Reconciler are internal modules that communicate in memory;
 there are no component images, daemon sockets, units, or recurring downstream
@@ -25,7 +25,9 @@ considers only the configured initial history lookback, then advances durably
 to incremental intake. It does not enumerate a media tree. A completed video
 candidate is removed from health tracking; a legacy terminal health record is
 discarded safely on restore instead of preventing the sole runtime from starting.
-It also retains explicit
+Its bounded initial Arr-import recovery can seal a completed Arr hardlink into
+an independent canonical copy; one rejected historical item cannot stall later
+imports in the same bounded page. It also retains explicit
 release-response limits and technical retries, generation based exponential
 cooldowns, fair series scheduling, and exact video-candidate health recovery.
 It does not manage Lidarr, music torrents, stack lifecycle, backups, or one-off

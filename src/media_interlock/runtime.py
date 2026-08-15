@@ -303,30 +303,36 @@ class MediaInterlockRuntime:
                         continue
                     next_cursor, imports = observation
                     for imported in imports:
-                        operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"media-interlock/import/{source}/{imported.history_id}"))
-                        bundle = processors[source]._inspection.verify(imported.relative_path)
-                        identity = correlations[source].candidate_identity(imported.download_id, imported.media_id)
-                        if identity is None or identity.relative_path != imported.relative_path:
+                        try:
+                            identity = correlations[source].candidate_identity(imported.download_id, imported.media_id)
+                            if identity is None or identity.relative_path != imported.relative_path:
+                                continue
+                            operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"media-interlock/import/{source}/{imported.history_id}"))
+                            bundle = processors[source]._inspection.verify(imported.relative_path, allow_hardlinks=True)
+                            manifest_digest = hashlib.sha256(
+                                json.dumps(
+                                    {"source": source, "history_id": imported.history_id, "download_id": imported.download_id, "media_id": imported.media_id},
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                ).encode("utf-8")
+                            ).hexdigest()
+                            publisher_service.bootstrap_bundle(
+                                operation_id=operation_id,
+                                source=source,
+                                upstream_id=imported.download_id,
+                                media_id=imported.media_id,
+                                asset_slot=identity.asset_slot,
+                                item_type=identity.item_type,
+                                provider_ids=identity.provider_ids,
+                                bundle=bundle,
+                                manifest_digest=manifest_digest,
+                            )
+                            process(operation_id)
+                        except (ContractError, KeyError, OSError, RuntimeError, ValueError):
+                            # A malformed or vanished historical import is not
+                            # allowed to stall later independently identified
+                            # imports in this bounded bootstrap window.
                             continue
-                        manifest_digest = hashlib.sha256(
-                            json.dumps(
-                                {"source": source, "history_id": imported.history_id, "download_id": imported.download_id, "media_id": imported.media_id},
-                                sort_keys=True,
-                                separators=(",", ":"),
-                            ).encode("utf-8")
-                        ).hexdigest()
-                        publisher_service.bootstrap_bundle(
-                            operation_id=operation_id,
-                            source=source,
-                            upstream_id=imported.download_id,
-                            media_id=imported.media_id,
-                            asset_slot=identity.asset_slot,
-                            item_type=identity.item_type,
-                            provider_ids=identity.provider_ids,
-                            bundle=bundle,
-                            manifest_digest=manifest_digest,
-                        )
-                        process(operation_id)
                     if next_cursor > (0 if cursor is None else cursor):
                         state.publisher.save_import_cursor(source, next_cursor)
 

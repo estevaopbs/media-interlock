@@ -265,6 +265,45 @@ class PublisherCustodyTests(unittest.TestCase):
             service.bootstrap_bundle(**(arguments | {"operation_id": absent_operation, "provider_ids": {}, "manifest_digest": "c" * 64}))
             self.assertEqual((), state.publication(absent_operation).provider_ids)
 
+    def test_verified_bootstrap_hardlink_copies_without_fence_custody(self) -> None:
+        from media_interlock.publisher.filesystem import BundleVerifier
+        from media_interlock.publisher.generation import AssetGenerationPublisher
+
+        class Store:
+            def save(self, _: PublisherState) -> None: pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            canonical = Path(directory) / "canonical"
+            staging.mkdir()
+            canonical.mkdir()
+            (staging / "source.mkv").write_bytes(b"video")
+            os.link(staging / "source.mkv", staging / "movie.mkv")
+            bundle = BundleVerifier(staging, settle_seconds=0).verify("movie.mkv", allow_hardlinks=True)
+            state = PublisherState()
+            service = PublisherService(state, Store())
+            service.bootstrap_bundle(
+                operation_id=OPERATION_ID,
+                source="radarr",
+                upstream_id="bootstrap-import-42",
+                media_id="42",
+                asset_slot="radarr:tmdb-42",
+                item_type="Movie",
+                provider_ids={"Tmdb": "42"},
+                bundle=bundle,
+                manifest_digest="b" * 64,
+            )
+
+            published = service.commit_asset_generation(
+                OPERATION_ID,
+                AssetGenerationPublisher(staging, canonical, namespace="movies"),
+            )
+
+            self.assertIsNotNone(published)
+            assert published is not None
+            self.assertEqual(b"video", published.read_bytes())
+            self.assertNotEqual((staging / "movie.mkv").stat().st_ino, published.stat().st_ino)
+
     def test_assisted_intent_cannot_fabricate_fence_custody_and_requires_its_manifest(self) -> None:
         from media_interlock.publisher.filesystem import BundleVerifier
 
