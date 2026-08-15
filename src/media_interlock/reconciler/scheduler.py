@@ -64,6 +64,17 @@ class TransientRetry:
     policy_revision: str
 
 
+@dataclass(frozen=True)
+class ReplacementEvent:
+    source: str
+    entity_id: str
+    failures: int
+    retry_at: int
+    initial_delay_seconds: int
+    multiplier: float
+    maximum_delay_seconds: int
+
+
 def cooldown_for_completed_searches(policy: ReconciliationPolicy, completed_searches: int) -> int:
     """Return the configured cooldown after a validated search count."""
     if isinstance(completed_searches, bool) or not isinstance(completed_searches, int) or completed_searches <= 0:
@@ -89,12 +100,14 @@ class ScheduleState:
         budget_events: tuple[int, ...] = (),
         recorded_operations: tuple[str, ...] = (),
         transient_retries: Mapping[tuple[str, str], TransientRetry] | None = None,
+        replacements: Mapping[tuple[str, str], ReplacementEvent] | None = None,
         fairness_cursor: int = 0,
     ) -> None:
         self._checkpoints = dict(checkpoints or {})
         self._budget_events = list(budget_events)
         self._recorded_operations = set(recorded_operations)
         self._transient_retries = dict(transient_retries or {})
+        self._replacements = dict(replacements or {})
         self._fairness_cursor = fairness_cursor
 
     def next_search_at(
@@ -109,6 +122,9 @@ class ScheduleState:
         if now < minimum_at:
             return minimum_at
         key = (entity.source, entity.entity_id)
+        replacement = self._replacements.get(key)
+        if replacement is not None:
+            return replacement.retry_at
         checkpoint = self._checkpoints.get(key)
         same_generation = checkpoint is not None and checkpoint.generation == entity.generation
         retry = self._transient_retries.get(key)
@@ -155,11 +171,15 @@ class ScheduleState:
             policy.schedule_policy_revision,
         )
         self._transient_retries.pop(key, None)
+        self._replacements.pop(key, None)
         if operation_id is not None:
             self._recorded_operations.add(operation_id)
 
     def record_transient_failure(self, entity: UpgradeEntity, policy: ReconciliationPolicy, *, now: int) -> None:
         key = (entity.source, entity.entity_id)
+        if key in self._replacements:
+            self.record_replacement_failure(entity, now=now)
+            return
         previous = self._transient_retries.get(key)
         failures = previous.failures + 1 if previous is not None and previous.generation == entity.generation and previous.policy_revision == policy.schedule_policy_revision else 1
         try:
@@ -172,6 +192,29 @@ class ScheduleState:
             now + min(delay, policy.maximum_transient_retry_seconds),
             policy.schedule_policy_revision,
         )
+
+    def record_candidate_invalidated(self, source: str, entity_id: str, *, now: int, initial_delay_seconds: int, multiplier: float, maximum_delay_seconds: int) -> None:
+        entity = UpgradeEntity(source, entity_id, 0, "replacement", 0)
+        if isinstance(now, bool) or not isinstance(now, int) or now < 0 or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in (initial_delay_seconds, maximum_delay_seconds)) or not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool) or multiplier < 1 or maximum_delay_seconds < initial_delay_seconds:
+            raise ValueError("candidate replacement event is invalid")
+        key = (entity.source, entity.entity_id)
+        if key not in self._replacements:
+            self._replacements[key] = ReplacementEvent(source, entity_id, 0, now + initial_delay_seconds, initial_delay_seconds, float(multiplier), maximum_delay_seconds)
+
+    def replacement_pending(self, entity: UpgradeEntity) -> bool:
+        return (entity.source, entity.entity_id) in self._replacements
+
+    def record_replacement_failure(self, entity: UpgradeEntity, *, now: int) -> None:
+        key = (entity.source, entity.entity_id)
+        prior = self._replacements.get(key)
+        if prior is None:
+            return
+        failures = prior.failures + 1
+        delay = min(math.ceil(prior.initial_delay_seconds * (prior.multiplier ** failures)), prior.maximum_delay_seconds)
+        self._replacements[key] = ReplacementEvent(prior.source, prior.entity_id, failures, now + delay, prior.initial_delay_seconds, prior.multiplier, prior.maximum_delay_seconds)
+
+    def resolve_replacement(self, entity: UpgradeEntity) -> None:
+        self._replacements.pop((entity.source, entity.entity_id), None)
 
     def record_fairness_choice(self, entity: UpgradeEntity) -> None:
         # Persisting an opaque cursor keeps a restart from permanently favoring
@@ -239,6 +282,14 @@ class ScheduleState:
                 for (source, entity_id), retry in sorted(self._transient_retries.items())
             ],
             "fairness_cursor": self._fairness_cursor,
+            "replacements": [
+                {
+                    "source": item.source, "entity_id": item.entity_id, "failures": item.failures,
+                    "retry_at": item.retry_at, "initial_delay_seconds": item.initial_delay_seconds,
+                    "multiplier": item.multiplier, "maximum_delay_seconds": item.maximum_delay_seconds,
+                }
+                for _, item in sorted(self._replacements.items())
+            ],
         }
 
     @classmethod
@@ -246,12 +297,14 @@ class ScheduleState:
         if not isinstance(record, dict) or set(record) not in (
             {"checkpoints", "budget_events", "recorded_operations"},
             {"checkpoints", "budget_events", "recorded_operations", "transient_retries", "fairness_cursor"},
+            {"checkpoints", "budget_events", "recorded_operations", "transient_retries", "fairness_cursor", "replacements"},
         ):
             raise ValueError("schedule state is invalid")
         raw_checkpoints, raw_events, raw_operations = record["checkpoints"], record["budget_events"], record["recorded_operations"]
         raw_retries = record.get("transient_retries", [])
+        raw_replacements = record.get("replacements", [])
         fairness_cursor = record.get("fairness_cursor", 0)
-        if not isinstance(raw_checkpoints, list) or not isinstance(raw_events, list) or not isinstance(raw_operations, list) or not isinstance(raw_retries, list) or isinstance(fairness_cursor, bool) or not isinstance(fairness_cursor, int) or fairness_cursor < 0:
+        if not isinstance(raw_checkpoints, list) or not isinstance(raw_events, list) or not isinstance(raw_operations, list) or not isinstance(raw_retries, list) or not isinstance(raw_replacements, list) or isinstance(fairness_cursor, bool) or not isinstance(fairness_cursor, int) or fairness_cursor < 0:
             raise ValueError("schedule state is invalid")
         checkpoints: dict[tuple[str, str], ScheduleCheckpoint] = {}
         for item in raw_checkpoints:
@@ -288,7 +341,17 @@ class ScheduleState:
             if key in retries:
                 raise ValueError("schedule retry is duplicated")
             retries[key] = TransientRetry(entity.generation, failures, retry_at, revision)
-        return cls(checkpoints, tuple(raw_events), tuple(raw_operations), retries, fairness_cursor)
+        replacements: dict[tuple[str, str], ReplacementEvent] = {}
+        expected_replacement = {"source", "entity_id", "failures", "retry_at", "initial_delay_seconds", "multiplier", "maximum_delay_seconds"}
+        for item in raw_replacements:
+            if not isinstance(item, dict) or set(item) != expected_replacement:
+                raise ValueError("candidate replacement is invalid")
+            entity = UpgradeEntity(item["source"], item["entity_id"], 0, "replacement", 0)
+            failures, retry_at, initial, multiplier, maximum = item["failures"], item["retry_at"], item["initial_delay_seconds"], item["multiplier"], item["maximum_delay_seconds"]
+            if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (failures, retry_at)) or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in (initial, maximum)) or isinstance(multiplier, bool) or not isinstance(multiplier, (int, float)) or multiplier < 1 or maximum < initial or (entity.source, entity.entity_id) in replacements:
+                raise ValueError("candidate replacement is invalid")
+            replacements[(entity.source, entity.entity_id)] = ReplacementEvent(entity.source, entity.entity_id, failures, retry_at, initial, float(multiplier), maximum)
+        return cls(checkpoints, tuple(raw_events), tuple(raw_operations), retries, replacements, fairness_cursor)
 
 
 class SchedulerAdapter(Protocol):
@@ -366,6 +429,10 @@ class UpgradeScheduler:
             )
             self._save_schedule(self._schedule)
 
+    def record_candidate_invalidated(self, source: str, entity_id: str, *, now: int, initial_delay_seconds: int, multiplier: float, maximum_delay_seconds: int) -> None:
+        self._schedule.record_candidate_invalidated(source, entity_id, now=now, initial_delay_seconds=initial_delay_seconds, multiplier=multiplier, maximum_delay_seconds=maximum_delay_seconds)
+        self._save_schedule(self._schedule)
+
     def run(self, *, now: int) -> SchedulerRunResult:
         self._executor.recover(now=now)
         inventories: dict[str, tuple[UpgradeEntity, ...]] = {}
@@ -393,6 +460,7 @@ class UpgradeScheduler:
                 if self._schedule.due(entity, self._policies[source], now)
             ),
             key=lambda entity: (
+                0 if self._schedule.replacement_pending(entity) else 1,
                 self._schedule.next_search_at(entity, self._policies[entity.source], now) or now,
                 entity.released_at,
                 entity.source,
@@ -419,6 +487,8 @@ class UpgradeScheduler:
             searched += 1
             per_source[entity.source] += 1
             self._schedule.record_budget_event(now)
+            if self._schedule.replacement_pending(entity):
+                self._schedule.resolve_replacement(entity)
             self._save_schedule(self._schedule)
             terminal = now >= entity.released_at + policy.terminal_horizon_days * DAY
             if result.release is None:

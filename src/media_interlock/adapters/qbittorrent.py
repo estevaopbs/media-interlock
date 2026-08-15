@@ -254,6 +254,19 @@ class QbittorrentAdapter:
             return QbittorrentHealthObservation("unknown")
         return QbittorrentHealthObservation("observed", metadata_known=size > 0 and total_size > 0, downloaded_bytes=downloaded, availability=float(availability), peers=seeds + leeches)
 
+    def delete_owned_incomplete(self, torrent_hash: str, reservation_id: str, category: str, *, save_path: Path, delete_files: bool) -> bool:
+        """Delete one exact Fence-owned transfer; never operate on a path."""
+        if not isinstance(delete_files, bool):
+            return False
+        observed = self.observe_candidate_health(torrent_hash, reservation_id, category, save_path=save_path)
+        if observed.kind != "observed":
+            return False
+        try:
+            self._post("/api/v2/torrents/delete", {"hashes": torrent_hash, "deleteFiles": "true" if delete_files else "false"})
+        except (HTTPError, URLError, OSError, RuntimeError):
+            return False
+        return True
+
     def terminal_observed(self, torrent_hash: str, reservation_id: str, category: str, *, save_path: Path) -> QbittorrentActivityObservation:
         """Accept only an exact, fully downloaded fenced torrent as terminal."""
         expected_save_path = str(save_path) if isinstance(save_path, Path) else ""

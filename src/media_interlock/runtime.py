@@ -13,7 +13,7 @@ from typing import Callable
 import uuid
 
 from ._infra.state import SqliteStore
-from .config import ConfigError, ProductConfig
+from .config import ConfigError, ProductConfig, VideoCandidateHealthConfig
 from ._infra.advisory_lease import AdvisoryLease
 from .adapters.bazarr import BazarrAdapter
 from .adapters.jellyfin import JellyfinAdapter
@@ -129,6 +129,7 @@ class MediaInterlockRuntime:
     _reconciler_interval_seconds: int
     _import_interval_seconds: int
     _reconcile_imports: Callable[[], None]
+    _video_candidate_health: VideoCandidateHealthConfig
 
     @classmethod
     def from_config(cls, config: ProductConfig) -> "MediaInterlockRuntime":
@@ -188,6 +189,7 @@ class MediaInterlockRuntime:
                 headroom=PhysicalHeadroom(pools, free_bytes=statvfs_free_bytes),
                 lease=lease,
                 resume_ready=source_ready,
+                video_candidate_health=config.fence.video_candidate_health,
             )
 
             publisher_state = state.publisher.load()
@@ -398,6 +400,7 @@ class MediaInterlockRuntime:
                 config.reconciler.poll_interval_seconds,
                 config.publisher.import_reconciliation.poll_interval_seconds,
                 reconcile_imports,
+                config.fence.video_candidate_health,
             )
             return runtime
         except BaseException:
@@ -410,6 +413,16 @@ class MediaInterlockRuntime:
 
     def _fence_tick(self) -> None:
         self.fence.tick()
+        now = int(time.time())
+        for source, entity_id, initial_delay in self.fence.poll_candidate_health(now=now):
+            self.scheduler.record_candidate_invalidated(
+                source,
+                entity_id,
+                now=now,
+                initial_delay_seconds=initial_delay,
+                multiplier=self._video_candidate_health.replacement_multiplier,
+                maximum_delay_seconds=self._video_candidate_health.replacement_max_delay_seconds,
+            )
         for terminal in self.fence.pending_terminals():
             receipt = self.publisher._dispatch(terminal)
             if receipt.kind == "custody_receipt":

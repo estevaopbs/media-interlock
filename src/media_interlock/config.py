@@ -75,6 +75,18 @@ class FenceConfig(ComponentConfig):
     max_inflight: int
     mutation_lock: "MutationLockConfig"
     sources: Mapping[str, "FenceSourceProfile"]
+    video_candidate_health: "VideoCandidateHealthConfig"
+
+
+@dataclass(frozen=True)
+class VideoCandidateHealthConfig:
+    poll_interval_seconds: int
+    metadata_timeout_seconds: int
+    no_progress_timeout_seconds: int
+    minimum_failure_observations: int
+    replacement_initial_delay_seconds: int
+    replacement_multiplier: float
+    replacement_max_delay_seconds: int
 
 
 @dataclass(frozen=True)
@@ -567,6 +579,23 @@ def _import_reconciliation(value: object) -> ImportReconciliationConfig:
         {"poll_interval_seconds", "initial_history_lookback_days", "max_imports_per_poll"},
         "publisher.import_reconciliation",
     )
+
+
+def _video_candidate_health(value: object) -> VideoCandidateHealthConfig:
+    table = _table(value, "fence.video_candidate_health")
+    _require_keys(table, {"poll_interval_seconds", "metadata_timeout_seconds", "no_progress_timeout_seconds", "minimum_failure_observations", "replacement_initial_delay_seconds", "replacement_multiplier", "replacement_max_delay_seconds"}, "fence.video_candidate_health")
+    policy = VideoCandidateHealthConfig(
+        _required_positive(table, "poll_interval_seconds", "fence.video_candidate_health", 86_400),
+        _required_positive(table, "metadata_timeout_seconds", "fence.video_candidate_health", 31_536_000),
+        _required_positive(table, "no_progress_timeout_seconds", "fence.video_candidate_health", 31_536_000),
+        _required_positive(table, "minimum_failure_observations", "fence.video_candidate_health", 100),
+        _required_positive(table, "replacement_initial_delay_seconds", "fence.video_candidate_health", 31_536_000),
+        _required_multiplier(table, "replacement_multiplier", "fence.video_candidate_health"),
+        _required_positive(table, "replacement_max_delay_seconds", "fence.video_candidate_health", 31_536_000),
+    )
+    if policy.replacement_max_delay_seconds < policy.replacement_initial_delay_seconds:
+        raise ConfigError("fence.video_candidate_health.replacement_max_delay_seconds must not be less than replacement_initial_delay_seconds")
+    return policy
     return ImportReconciliationConfig(
         _required_positive(table, "poll_interval_seconds", "publisher.import_reconciliation", 86_400),
         _required_nonnegative(table, "initial_history_lookback_days", "publisher.import_reconciliation", 36_500),
@@ -679,7 +708,7 @@ def load_config(path: Path) -> ProductConfig:
     fence: FenceConfig | None = None
     if components["fence"] is not None:
         table = _table(document["fence"], "fence")
-        _require_keys(table, {"capacity_bytes", "max_inflight", "mutation_lock_path", "mutation_lock_version", "mutation_lock_timeout_ms"}, "fence")
+        _require_keys(table, {"capacity_bytes", "max_inflight", "mutation_lock_path", "mutation_lock_version", "mutation_lock_timeout_ms", "video_candidate_health"}, "fence")
         base = components["fence"]
         assert base is not None
         version = table.get("mutation_lock_version")
@@ -698,6 +727,7 @@ def load_config(path: Path) -> ProductConfig:
                 name: FenceSourceProfile(name, source.category, source.download_client_id, source.qbittorrent_save_path, source.download_pool, source.staging_pool, source.canonical_pool)
                 for name, source in sources.items()
             },
+            _video_candidate_health(_table(table.get("video_candidate_health"), "fence.video_candidate_health")),
         )
     publisher: PublisherConfig | None = None
     if components["publisher"] is not None:

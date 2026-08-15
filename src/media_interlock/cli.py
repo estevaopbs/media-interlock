@@ -10,7 +10,7 @@ from pathlib import Path
 from . import __version__
 from .config import ConfigError, load_config
 from .contracts import StatusCode
-from .runtime import MediaInterlockRuntime
+from .runtime import MediaInterlockRuntime, RuntimeState
 
 
 def render_result(status: StatusCode | str, message: str, *, as_json: bool = False) -> str:
@@ -31,6 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path)
     parser.add_argument("--daemon", action="store_true")
     parser.add_argument("--check-config", action="store_true")
+    parser.add_argument("--status", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--version", action="store_true")
     arguments = parser.parse_args(argv)
@@ -40,12 +41,21 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.config is None:
         parser.error("--config is required")
     try:
-        load_config(arguments.config)
+        config = load_config(arguments.config)
     except ConfigError as exc:
         print(render_result("invalid_contract", str(exc), as_json=arguments.json))
         return 2
     if arguments.check_config:
         print(render_result("ok", "configuration valid", as_json=arguments.json))
+        return 0
+    if arguments.status:
+        try:
+            runtime_state = RuntimeState.open(config.runtime.state_dir)
+            runtime_state.close()
+        except (OSError, RuntimeError):
+            print(render_result("unavailable", "state is unavailable", as_json=arguments.json))
+            return 1
+        print(render_result("ok", "configuration and state are readable", as_json=arguments.json))
         return 0
     if arguments.daemon:
         runtime: MediaInterlockRuntime | None = None

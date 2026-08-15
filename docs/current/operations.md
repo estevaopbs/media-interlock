@@ -1,204 +1,30 @@
 # Operations
 
-The current public 0.1.24 release contains one wheel plus Reconciler, Fence, and
-Publisher OCI images.
-This page is not an installation guide and no live deployment has been tested.
-
-## Processes
-
-The planned entrypoints are:
+The supported runtime is one immutable MediaInterlock OCI image with entrypoint
+`media-interlock`. Normal execution is:
 
 ```text
-media-interlock-reconciler
-media-interlock-publisher
-media-interlock-fence
+media-interlock --config /etc/media-interlock/config.toml --daemon
 ```
 
-All entrypoints provide `--version` without configuration or network access and
-`--config FILE --check-config` for local configuration validation without
-opening state or contacting an adapter. Fence and Publisher additionally accept
-`--config FILE --status` to query their existing local daemon. These probes do
-not supervise, start, stop, or reconfigure another process.
+`--version`, `--check-config`, and `--status` are short administrative probes.
+They do not create a daemon, supervise another process, or make upstream API
+calls. `--status` verifies local configuration and durable state readability.
 
-Reconciler accepts an explicit entity for an on-demand run, `--run-due` for one
-automatic inventory pass, or `--daemon` for its product-owned recurring loop.
-The deployment service manager supervises the daemon; no downstream recurring
-script or timer is required.
-Publisher and fence run independently and expose health, metrics, and versioned
-Unix socket endpoints. `media-interlock-publisher --config FILE --status` and
-the corresponding Fence command query only their local daemon status. They do
-not start, stop, or reconfigure one another.
+The configuration has one `[media_interlock] state_dir` and typed `[fence]`,
+`[publisher]`, and `[reconciler]` sections. Each video reconciliation policy
+sets its policy revision, release timeout and response cap, completed-search
+cooldown, technical retry, budgets, quality filters, and cutoff requirements.
+`[publisher.import_reconciliation]` controls bounded Arr history intake.
+`[fence.video_candidate_health]` separately controls video metadata/progress
+deadlines and replacement backoff; it does not grant any music authority.
 
-Fence periodically reoffers each durable terminal acquisition to Publisher's
-configured socket. Publisher may call Fence back to freeze an exact hardlinked
-payload while that exchange is pending; Fence releases its reservation only
-after it accepts Publisher's exact custody receipt.
+Deployment owns the Quadlet/systemd lifecycle, paths, mounts, networks,
+secrets, backups, and live acceptance. It pins an immutable public image digest
+and must not build from or bind mount a product checkout. MediaInterlock does
+not install units, run a one-shot migration, or scan/copy a full media library.
 
-Fence and Publisher handle SIGINT and SIGTERM explicitly. On shutdown they
-stop accepting socket work, cancel and await their daemon workers, then close
-their private stores and owned leases or writer locks before exiting.
-
-Each process has a separate least-privilege identity, state directory, runtime
-socket, and configured filesystem/network access. Containers receive only the
-mounts and sockets their component needs. A deployment may install any
-component independently, but a release is accepted only after all three are
-integrated as declared in the current release profile.
-
-The local-only artifact gate is `python scripts/build-artifacts.py --output DIR`.
-It requires a clean checkout and emits one wheel plus Reconciler, Fence, and
-Publisher OCI archives, individual manifest-digest files, and a canonical
-`artifacts.json` binding source revision, version, wheel hash, and image
-identities. It never pushes or publishes; OCI archives are local transport.
-The build fails unless every image executes the Python 3.14.7 runtime fixed by
-the compatibility profile, and records that version in `artifacts.json`.
-Downstream consumers pin the public release wheel or these immutable OCI
-digests, never a local checkout or an unversioned image tag. The release itself
-does not provide deployment manifests or grant live acceptance.
-
-## Configuration
-
-Validated TOML has one shared runtime section plus optional component and
-adapter sections; each process reads only its owned typed projection.
-Configuration files contain no secret values. Secret references use `env:` or
-`file:` forms, resolve only when an adapter first needs them, and are redacted from
-diagnostics.
-
-`reconciler.poll_interval_seconds` controls the automatic loop interval. The
-independent `[reconciler.movie]` and `[reconciler.episode]` policies configure
-minimum age, terminal horizon, base cooldown, cooldown age-step and multiplier,
-optional cooldown cap, optional final search, maximum attempts, per-run/hour/day
-search budgets, per-run grab budget, minimum candidate score and gain, and
-required or forbidden Arr custom-format names. A zero cooldown cap means no cap.
-Arr quality-profile ordering, cutoff, custom-format scores, and approval remain
-the native resolution, audio, subtitle, and release-group ranking authority;
-MediaInterlock preserves that order and may only narrow it with its configured
-candidate filters.
-
-Startup fails before side effects when configuration is unknown, ambiguous, or
-incompatible. A missing optional adapter disables only capabilities that depend
-on it; a configured but unhealthy required adapter makes the relevant boundary
-unready rather than silently degrading to unsafe behavior.
-
-Operational readiness also requires disjoint staging/canonical roots,
-publisher-only canonical write access, read-only playback mounts, paused-on-add
-behavior from each configured Arr qBittorrent client, distinct source
-categories, and a regular singly linked shared mutation-lock file. Fence
-accepts a stopped add only after it observes the exact Arr download identity
-and corresponding canonical hash, category, reservation tag, and qBittorrent
-save path. A magnet whose metadata is still pending may report zero bytes only
-when that exact stopped identity is unowned; Fence accounts either the positive
-size reserved before a Reconciler grab or the positive release size sealed in
-the exact external Arr History event, tags it, and persists resume intent
-before the resume call. Bounded polling can adopt an external Arr grab only
-after its post-watermark Queue/History
-observation is durably fingerprinted. Read-only capacity probes supply
-conservative `statvfs` headroom; they are not filesystem quotas. MediaInterlock validates
-the paths and observable upstream settings; deployment manifests, identities,
-mounts, ACLs, and credentials enforce the parts outside the process. Both are
-required, and negative probes belong to downstream acceptance.
-
-For a deployment eligibility that predates the Fence observation watermark,
-the post-PNR authority is a canonical `post_pnr_adoption` socket envelope.
-The caller must issue it only after its own PNR authorization; MediaInterlock
-does not model, store, or infer that deployment decision. It supplies the
-exact configured source, Arr download-client and entity IDs, lowercase torrent
-hash, category, and save path. Fence rejects a mismatch, zero/multiple Arr
-matches, a non-stopped or already-owned qBittorrent hash, any read-back drift,
-or a conflicting replay. A caller retries the identical envelope after a lost
-response and uses `post_pnr_adoption_query(operation_id)` to obtain the sole
-terminal `post_pnr_adoption_receipt`; it must not inspect Fence SQLite state.
-The receipt confirms only the stopped tagged claim and does not authorize a
-resume or any downstream lifecycle action.
-
-`post_pnr_historical_adoption` is the distinct recovery-safe authority for an
-already-imported historical hash. It accepts one canonical `entity_ids` set:
-one Radarr/Sonarr entity or a Sonarr pack. The caller uses
-`post_pnr_historical_adoption_query(operation_id)` after a lost response.
-Fence requires complete exact History evidence and permits Queue absence only
-for this named operation; a present Queue must agree in full. The terminal
-`post_pnr_historical_adoption_receipt` binds source, configured client, all
-canonical entity IDs, hash, category, save path, reservation, and `adopted`.
-After that receipt, `post_pnr_historical_activation(operation_id)` supplies the
-only authority to start the same sealed hash. It accepts no caller-supplied
-identity. `post_pnr_historical_activation_query(operation_id)` recovers one
-exact `managed` receipt across restart or quiescence. Managed reservations keep
-their bytes and ownership but no longer consume `max_inflight`; stopped or
-incomplete historical activation remains fail-closed and inflight.
-
-Each Publisher source profile also declares a bounded bundle settle interval,
-accepted sidecar extensions, and optional required language aliases and
-container evidence. `bundle_required_subtitle_languages` is distinct from the
-legacy general language gate: only embedded subtitle tracks and matching
-subtitle sidecars satisfy it. These narrow eligibility only: Publisher always performs
-two no-follow bundle observations and independent-inode canonical copies. If a
-profile can receive Arr hardlinks, the Publisher must be configured with the
-Fence socket; otherwise that candidate remains pending. Bootstrap and assisted
-candidate intake use the Publisher's local versioned socket with sealed
-owner-bound manifests. A downstream tool may prepare those inputs, but it owns
-the one-off selection or migration policy and must not expect a Fence receipt
-from either intake path.
-
-`arr_import_path_prefix` names the absolute path namespace exposed by Arr; it
-is not a Publisher mount path. After unique download/media/event correlation,
-Publisher removes that exact segment-boundary prefix and verifies the remaining
-relative path below the source-specific `staging_root`. Radarr and Sonarr may
-therefore both report `/data/library/...` while Publisher uses distinct movie
-and episode staging roots. Paths outside or equal to the prefix, traversal,
-ambiguous history, and symlink-based authority remain pending.
-The immutable generation and asset pointer stay below Publisher's private
-canonical metadata tree. Only verified media and matching sidecars are exposed
-as regular hardlinks below the configured namespace, at that same Arr-derived
-relative path. An unobserved pending publication from 0.1.18 or 0.1.19 is
-converted idempotently on restart; the former public route is replaced only
-after the exact relative hardlink exists.
-
-To recover a Publisher result after any timeout, send one canonical JSON frame
-to the configured Publisher socket using the public wheel's
-`publisher_operation_query(operation_id)` contract helper. The daemon returns
-`publisher_operation_status` for `accepted`, `pending`, `catalog-confirmed`,
-`conflict`, or `unavailable`. A conflict marker that commits for an existing
-operation is durable and fail-closed, so a lost response is recovered by the
-same query. It
-returns `publisher_operation_receipt` only for
-`visible-confirmed`, after exact Jellyfin binding and static direct-play digest
-verification. The receipt contains the public source/upstream/media/asset,
-generation/digest, library/item/media-source, and expected-catalog-path binding.
-Consumers retry the same query and compare the same receipt; they never inspect
-Publisher SQLite or private generation paths.
-For every known nonterminal operation, compare the response's source,
-upstream/media IDs, expected bytes, and `binding_sha256` with the original
-request. The owner-bound digest equals the manifest SHA-256. This comparison
-still identifies a conflicting replay if the store rejected a later conflict
-marker and that `unavailable` response was lost.
-
-## Observability
-
-Human CLI output explains the blocked invariant without printing private media
-metadata or secrets. JSON output has a versioned schema and stable machine
-status codes. Per-operation socket replies may contain the explicitly requested
-receipt binding, while health and metrics never do. Health distinguishes
-process liveness, configuration readiness,
-adapter readiness, and inhibited work. Metrics are bounded-cardinality and do
-not use media paths, titles, hashes, usernames, or operation IDs as values or
-labels. Fence's shared-lease metrics report bounded availability and an opened
-device/inode identity only; they do not reveal a lock path or a peer writer.
-
-The current development compatibility profile is Python 3.14.7, Jellyfin
-10.11.11, Radarr 6.3.0.10514, Sonarr 4.0.19.2979, qBittorrent 5.2.3, Bazarr
-1.6.0, Seerr 3.4.1, and Prowlarr 2.5.2.5491. Only a later adapter contract test
-qualifies a capability against its corresponding pin.
-
-## Downstream adoption
-
-A deployment repository pins an immutable MediaInterlock version or image
-digest and owns its service manager, container definitions, paths, credentials,
-reverse proxy, host hardening, backups, and live acceptance. Cross-repository
-contract changes are released here before the deployment pin changes.
-
-One-off data correction and migration utilities stay downstream and may be
-deleted after their sealed operation. They never become generic adapters merely
-because their source informed a product invariant.
-
-An operator remains responsible for backup and recovery. MediaInterlock neither
-installs nor requires restic, filesystem snapshots, or a particular upstream
-backup facility.
+The process requires source-specific Arr clients to add torrents stopped and
+configured staging/canonical roots to be disjoint. qBittorrent mutations are
+serialized by the configured shared lease and are always revalidated against
+the exact Fence tag, category, save path, and hash.

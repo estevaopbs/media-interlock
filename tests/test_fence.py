@@ -9,6 +9,7 @@ import _source_tree  # noqa: F401
 
 from media_interlock.contracts import ContractError, custody_receipt
 from media_interlock.adapters.arr import ArrExternalGrab, ArrExternalObservation
+from media_interlock.config import VideoCandidateHealthConfig
 from media_interlock.fence.model import ExternalAdoptionIntent, FencePolicy, FenceState, PostPnrAdoptionIntent, PostPnrHistoricalActivationIntent, PostPnrHistoricalAdoptionIntent, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentObservation, ReservationState
 from media_interlock.fence.headroom import HeadroomPool, PhysicalHeadroom
 from media_interlock.fence.service import FenceService, FenceSource
@@ -35,6 +36,27 @@ def bound(state: FenceState, *, size: int = 400) -> None:
 
 
 class FenceStateTests(unittest.TestCase):
+    def test_video_candidate_records_metadata_deadline_and_durable_invalidation(self) -> None:
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        bound(state)
+
+        state.ensure_video_candidate(OPERATION_ID, now=100)
+        state.record_video_candidate_failure(OPERATION_ID, now=200)
+        state.record_video_candidate_failure(OPERATION_ID, now=300)
+        self.assertTrue(state.invalidate_video_candidate(OPERATION_ID, reason="metadata_timeout", now=400))
+
+        candidate = state.video_candidate(OPERATION_ID)
+        self.assertEqual("invalidated", candidate["status"])
+        self.assertEqual("metadata_timeout", candidate["reason"])
+        self.assertEqual(400, candidate["invalidated_at"])
+
+        restored = FenceState.from_snapshot(
+            FencePolicy(capacity_bytes=1_000, max_inflight=1),
+            state.records(),
+            {},
+            video_candidates=state.video_candidate_records(),
+        )
+        self.assertEqual(candidate, restored.video_candidate(OPERATION_ID))
     def test_managed_historical_reservations_keep_bytes_but_free_all_inflight_slots(self) -> None:
         state = FenceState(FencePolicy(capacity_bytes=100_000, max_inflight=13))
         operation_ids = [str(uuid.uuid4()) for _ in range(13)]
@@ -147,6 +169,42 @@ class FenceStateTests(unittest.TestCase):
 
 
 class FenceServiceTests(unittest.TestCase):
+    def test_owned_video_candidate_without_metadata_is_invalidated_once_after_deadline(self) -> None:
+        events: list[str] = []
+
+        class Store:
+            def save(self, _: FenceState) -> None: events.append("save")
+
+        class Qbittorrent:
+            def observe_candidate_health(self, *_: object, **__: object):
+                from media_interlock.fence.model import QbittorrentHealthObservation
+                return QbittorrentHealthObservation("observed", metadata_known=False, downloaded_bytes=0, availability=0.0, peers=0)
+            def pause(self, _: str) -> bool: events.append("pause"); return True
+            def delete_owned_incomplete(self, *_: object, **__: object) -> bool: events.append("delete"); return True
+
+        class Arr:
+            def mark_history_failed(self, history_id: int) -> bool:
+                self_outer.assertEqual(12, history_id)
+                events.append("blocklist")
+                return True
+
+        self_outer = self
+        state = FenceState(FencePolicy(1_000, 1))
+        bound(state)
+        state.reservation(OPERATION_ID).external_history_id = 12
+        policy = VideoCandidateHealthConfig(60, 3_600, 43_200, 3, 1_800, 2.0, 21_600)
+        service = FenceService(
+            state, Store(), Qbittorrent(), prowlarr=None, sources={"radarr": SOURCE},
+            observers={"radarr": Arr()}, video_candidate_health=policy,
+        )
+
+        self.assertEqual((), service.poll_video_candidate_health(now=100))
+        self.assertEqual((), service.poll_video_candidate_health(now=200))
+        self.assertEqual((("radarr", "movie-42", 1_800),), service.poll_video_candidate_health(now=3_700))
+        self.assertEqual("invalidated", state.video_candidate(OPERATION_ID)["status"])
+        self.assertEqual(["pause", "blocklist", "delete"], [event for event in events if event != "save"])
+        self.assertEqual((), service.poll_video_candidate_health(now=4_000))
+
     def test_post_pnr_recovery_from_durable_intent_claims_without_resuming(self) -> None:
         events: list[str] = []
 

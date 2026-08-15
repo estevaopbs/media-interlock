@@ -70,6 +70,7 @@ class ArrGrabObservation:
     kind: str
     download_id: str | None = None
     torrent_hash: str | None = None
+    history_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -321,6 +322,16 @@ class ArrHistoryAdapter:
             return False
         return status == 200
 
+    def mark_history_failed(self, history_id: int) -> bool:
+        if isinstance(history_id, bool) or not isinstance(history_id, int) or history_id <= 0:
+            return False
+        request = Request(f"{self._base_url}/api/v3/history/failed/{history_id}", data=b"", headers={"X-Api-Key": self._resolve(self._api_key)}, method="POST")
+        try:
+            status, _ = request_bytes(request, timeout=self._timeout)
+        except (HTTPError, URLError, OSError, RuntimeError):
+            return False
+        return status == 200
+
     def _paged(self, endpoint: str) -> list[dict[str, object]] | None:
         records: list[dict[str, object]] = []
         for page in range(1, 11):
@@ -363,14 +374,14 @@ class ArrHistoryAdapter:
         history = self._paged("history")
         if history is None:
             return ArrGrabObservation("unknown")
-        matches: list[str] = []
+        matches: list[tuple[str, int]] = []
         for record in history:
             record_id, download_id = record.get("id"), record.get("downloadId")
             if record.get("eventType") != "grabbed" or _public_id(record.get(self.release_entity_key)) != entity_id or record.get("sourceTitle") != title:
                 continue
             if isinstance(record_id, bool) or not isinstance(record_id, int) or record_id <= watermark or not isinstance(download_id, str) or not download_id:
                 return ArrGrabObservation("unknown")
-            matches.append(download_id)
+            matches.append((download_id, record_id))
         if not matches:
             return ArrGrabObservation("absent")
         if len(matches) != 1:
@@ -378,7 +389,7 @@ class ArrHistoryAdapter:
         queue = self._paged("queue")
         if queue is None:
             return ArrGrabObservation("unknown")
-        download_id = matches[0]
+        download_id, history_id = matches[0]
         queue_matches = [
             record for record in queue
             if _public_id(record.get(self.release_entity_key)) == entity_id
@@ -393,7 +404,7 @@ class ArrHistoryAdapter:
             torrent_hash = download_id.lower()
             if len(torrent_hash) != 40 or any(character not in "0123456789abcdef" for character in torrent_hash):
                 return ArrGrabObservation("unknown")
-            return ArrGrabObservation("observed", download_id, torrent_hash)
+            return ArrGrabObservation("observed", download_id, torrent_hash, history_id)
         if not queue_matches:
             return ArrGrabObservation("absent")
         return ArrGrabObservation("ambiguous")

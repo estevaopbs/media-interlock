@@ -150,6 +150,16 @@ class ReconcilerSchedulerTests(unittest.TestCase):
 
         self.assertEqual(state.record(), restored.record())
 
+    def test_invalidated_candidate_persists_its_separate_replacement_backoff(self) -> None:
+        state = ScheduleState()
+        entity = UpgradeEntity("sonarr", "42", 0, "file-7", 4_000)
+
+        state.record_candidate_invalidated("sonarr", "42", now=100, initial_delay_seconds=1_800, multiplier=2.0, maximum_delay_seconds=21_600)
+        self.assertEqual(1_900, state.next_search_at(entity, policy(), 100))
+        state.record_replacement_failure(entity, now=1_900)
+        self.assertEqual(5_500, state.next_search_at(entity, policy(), 1_900))
+        self.assertEqual(state.record(), ScheduleState.from_record(state.record()).record())
+
     def test_run_due_records_empty_search_then_grabs_one_candidate_and_stops(self) -> None:
         entities = (
             UpgradeEntity("sonarr", "1", 10, "file-1", 0),

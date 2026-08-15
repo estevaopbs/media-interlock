@@ -116,6 +116,12 @@ class FenceDaemon:
         except Exception:
             return False
 
+    def poll_candidate_health(self, *, now: int) -> tuple[tuple[str, str, int], ...]:
+        try:
+            return self._service.poll_video_candidate_health(now=now)
+        except Exception:
+            return ()
+
     def pending_terminals(self) -> tuple[Envelope, ...]:
         return self._service.pending_terminals()
 

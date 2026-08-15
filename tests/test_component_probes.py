@@ -36,3 +36,11 @@ class ComponentProbeTests(unittest.TestCase):
 
         run.assert_called_once_with(runtime.run())
         runtime.close.assert_called_once_with()
+
+    def test_status_is_a_short_local_probe_not_a_daemon(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            configuration = Path(directory) / "media-interlock.toml"
+            configuration.write_text(f'[media_interlock]\nstate_dir = "{Path(directory) / "state"}"\n', encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()) as rendered:
+                self.assertEqual(0, cli.main(["--config", str(configuration), "--status", "--json"]))
+            self.assertIn('"status":"ok"', rendered.getvalue())

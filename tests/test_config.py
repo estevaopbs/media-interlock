@@ -82,6 +82,15 @@ mutation_lock_path = "/run/media-interlock/qbittorrent-mutation.lock"
 mutation_lock_version = "shared-qbittorrent-mutation/v1"
 mutation_lock_timeout_ms = 500
 
+[fence.video_candidate_health]
+poll_interval_seconds = 300
+metadata_timeout_seconds = 3600
+no_progress_timeout_seconds = 43200
+minimum_failure_observations = 3
+replacement_initial_delay_seconds = 1800
+replacement_multiplier = 2.0
+replacement_max_delay_seconds = 21600
+
 [publisher]
 state_dir = "/var/lib/media-interlock/publisher"
 socket_path = "/run/media-interlock/publisher.sock"
@@ -230,6 +239,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(-(2**31), config.reconciler.movie.minimum_candidate_score)
         self.assertEqual(-(2**31), config.reconciler.movie.minimum_score_gain)
         self.assertEqual("env", config.adapters["prowlarr"].secrets["api_key"].source)
+        self.assertEqual(3, config.fence.video_candidate_health.minimum_failure_observations)
         self.assertNotIn("PROWLARR_API_KEY", repr(config.redacted()))
         self.assertEqual("env:<redacted>", config.redacted()["adapters"]["prowlarr"]["api_key"])
 

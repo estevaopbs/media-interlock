@@ -28,6 +28,7 @@ class ReservationState(StrEnum):
     TERMINAL = "terminal"
     FREEZE_INTENT_RECORDED = "freeze_intent_recorded"
     QBITTORRENT_FROZEN = "qbittorrent_frozen"
+    INVALIDATED = "invalidated"
     RELEASED = "released"
 
 
@@ -122,6 +123,19 @@ class Reservation:
     remaining_download_bytes: int | None = None
 
 
+@dataclass
+class VideoCandidate:
+    operation_id: str
+    probe_started_at: int
+    last_progress_at: int
+    metadata_observed_at: int | None = None
+    last_downloaded_bytes: int = 0
+    failure_observations: int = 0
+    status: str = "probing"
+    invalidated_at: int | None = None
+    reason: str | None = None
+
+
 @dataclass(frozen=True)
 class AdmissionDecision:
     admitted: bool
@@ -194,10 +208,11 @@ class FenceState:
         self._post_pnr_adoptions: dict[str, PostPnrAdoptionIntent] = {}
         self._post_pnr_historical_adoptions: dict[str, PostPnrHistoricalAdoptionIntent] = {}
         self._post_pnr_historical_activations: dict[str, str] = {}
+        self._video_candidates: dict[str, VideoCandidate] = {}
 
     @property
     def reserved_bytes(self) -> int:
-        return sum(item.bytes_reserved for item in self._reservations.values() if item.state is not ReservationState.RELEASED)
+        return sum(item.bytes_reserved for item in self._reservations.values() if item.state not in {ReservationState.RELEASED, ReservationState.INVALIDATED})
 
     @property
     def within_capacity(self) -> bool:
@@ -244,7 +259,7 @@ class FenceState:
 
     def _inflight(self) -> int:
         return sum(
-            item.state is not ReservationState.RELEASED
+            item.state not in {ReservationState.RELEASED, ReservationState.INVALIDATED}
             and not (item.operation_id in self._post_pnr_historical_adoptions and self.historical_activation_managed(item.operation_id))
             for item in self._reservations.values()
         )
@@ -389,18 +404,24 @@ class FenceState:
         self._post_pnr_historical_adoptions[intent.operation_id] = intent
         return AdmissionDecision(True, "admitted")
 
-    def bind_observed_grab(self, operation_id: str, *, download_id: str, torrent_hash: str) -> None:
+    def bind_observed_grab(self, operation_id: str, *, download_id: str, torrent_hash: str, history_id: int | None = None) -> None:
         reservation = self.reservation(operation_id)
-        if not isinstance(download_id, str) or len(download_id) != 40 or any(character not in "0123456789abcdefABCDEF" for character in download_id) or not _torrent_hash(torrent_hash) or download_id.lower() != torrent_hash:
+        if not isinstance(download_id, str) or len(download_id) != 40 or any(character not in "0123456789abcdefABCDEF" for character in download_id) or not _torrent_hash(torrent_hash) or download_id.lower() != torrent_hash or (history_id is not None and (isinstance(history_id, bool) or not isinstance(history_id, int) or history_id <= 0)):
             raise ContractError("observed Arr grab identity is invalid")
         if reservation.state is ReservationState.GRAB_BOUND:
             if reservation.download_id == download_id and reservation.torrent_hash == torrent_hash:
+                if history_id is not None and reservation.external_history_id not in {None, history_id}:
+                    raise ContractError("observed Arr grab conflicts with reservation")
+                if history_id is not None:
+                    reservation.external_history_id = history_id
                 return
             raise ContractError("observed Arr grab conflicts with reservation")
         if reservation.state is not ReservationState.PRE_ADMITTED:
             raise ContractError("observed Arr grab transition is invalid")
         reservation.download_id = download_id
         reservation.torrent_hash = torrent_hash
+        if history_id is not None:
+            reservation.external_history_id = history_id
         reservation.state = ReservationState.GRAB_BOUND
 
     def request_tag(self, operation_id: str) -> None:
@@ -510,6 +531,70 @@ class FenceState:
         reservation.state = ReservationState.RELEASED
         return True
 
+    def ensure_video_candidate(self, operation_id: str, *, now: int) -> None:
+        reservation = self.reservation(operation_id)
+        if reservation.source not in {"radarr", "sonarr"} or reservation.state is not ReservationState.QBITTORRENT_ACTIVE or not reservation.torrent_hash or isinstance(now, bool) or not isinstance(now, int) or now < 0:
+            raise ContractError("video candidate is unavailable")
+        existing = self._video_candidates.get(operation_id)
+        if existing is None:
+            self._video_candidates[operation_id] = VideoCandidate(operation_id, now, now)
+
+    def _video_candidate(self, operation_id: str) -> VideoCandidate:
+        candidate = self._video_candidates.get(operation_id)
+        reservation = self._reservations.get(operation_id)
+        if candidate is None or reservation is None or reservation.source not in {"radarr", "sonarr"}:
+            raise ContractError("video candidate is unavailable")
+        return candidate
+
+    def record_video_candidate_failure(self, operation_id: str, *, now: int) -> None:
+        candidate = self._video_candidate(operation_id)
+        if candidate.status != "probing" or isinstance(now, bool) or not isinstance(now, int) or now < candidate.probe_started_at:
+            raise ContractError("video candidate health is invalid")
+        candidate.failure_observations += 1
+
+    def record_video_candidate_metadata(self, operation_id: str, *, downloaded_bytes: int, now: int) -> None:
+        candidate = self._video_candidate(operation_id)
+        if candidate.status != "probing" or isinstance(now, bool) or not isinstance(now, int) or now < candidate.probe_started_at or isinstance(downloaded_bytes, bool) or not isinstance(downloaded_bytes, int) or downloaded_bytes < 0:
+            raise ContractError("video candidate health is invalid")
+        if candidate.metadata_observed_at is None:
+            candidate.metadata_observed_at = now
+            candidate.last_progress_at = now
+            candidate.last_downloaded_bytes = downloaded_bytes
+        elif downloaded_bytes > candidate.last_downloaded_bytes:
+            candidate.last_downloaded_bytes = downloaded_bytes
+            candidate.last_progress_at = now
+        candidate.failure_observations = 0
+
+    def invalidate_video_candidate(self, operation_id: str, *, reason: str, now: int) -> bool:
+        candidate = self._video_candidate(operation_id)
+        if reason not in {"metadata_timeout", "no_progress_timeout"} or isinstance(now, bool) or not isinstance(now, int) or now < candidate.probe_started_at:
+            raise ContractError("video candidate invalidation is invalid")
+        if candidate.status == "invalidated":
+            return candidate.reason == reason
+        if candidate.status != "probing":
+            raise ContractError("video candidate invalidation is invalid")
+        candidate.status, candidate.reason, candidate.invalidated_at = "invalidated", reason, now
+        return True
+
+    def release_invalidated_video_candidate(self, operation_id: str) -> None:
+        candidate = self._video_candidate(operation_id)
+        reservation = self.reservation(operation_id)
+        if candidate.status != "invalidated" or reservation.state is not ReservationState.QBITTORRENT_ACTIVE or reservation.external_history_id is None:
+            raise ContractError("video candidate cannot be released")
+        reservation.state = ReservationState.INVALIDATED
+
+    def video_candidate(self, operation_id: str) -> dict[str, object]:
+        candidate = self._video_candidate(operation_id)
+        return {
+            "operation_id": candidate.operation_id, "probe_started_at": candidate.probe_started_at,
+            "last_progress_at": candidate.last_progress_at, "metadata_observed_at": candidate.metadata_observed_at, "last_downloaded_bytes": candidate.last_downloaded_bytes,
+            "failure_observations": candidate.failure_observations, "status": candidate.status,
+            "invalidated_at": candidate.invalidated_at, "reason": candidate.reason,
+        }
+
+    def video_candidate_records(self) -> tuple[dict[str, object], ...]:
+        return tuple(self.video_candidate(operation_id) for operation_id in self._video_candidates)
+
     def records(self) -> tuple[dict[str, object], ...]:
         return tuple(
             {
@@ -566,7 +651,7 @@ class FenceState:
                 raise ContractError("durable Fence reservation is invalid") from exc
             bound_state = item.state is not ReservationState.PRE_ADMITTED
             external = item.observation_fingerprint is not None
-            if not isinstance(item.bytes_reserved, int) or isinstance(item.bytes_reserved, bool) or item.bytes_reserved <= 0 or not isinstance(item.requested_bytes, int) or isinstance(item.requested_bytes, bool) or item.requested_bytes <= 0 or item.bytes_reserved < item.requested_bytes or (item.remaining_download_bytes is not None and (not isinstance(item.remaining_download_bytes, int) or isinstance(item.remaining_download_bytes, bool) or not 0 <= item.remaining_download_bytes <= item.bytes_reserved)) or (item.publisher_reservation_id is not None and not isinstance(item.publisher_reservation_id, str)) or (item.torrent_hash is not None and not _torrent_hash(item.torrent_hash)) or (item.selector_fingerprint is not None and (not isinstance(item.selector_fingerprint, str) or len(item.selector_fingerprint) != 64 or any(character not in "0123456789abcdef" for character in item.selector_fingerprint))) or (item.observation_fingerprint is not None and (not isinstance(item.observation_fingerprint, str) or len(item.observation_fingerprint) != 64 or any(character not in "0123456789abcdef" for character in item.observation_fingerprint))) or (item.external_history_id is not None and (not isinstance(item.external_history_id, int) or isinstance(item.external_history_id, bool) or item.external_history_id <= 0)) or (item.watermark is not None and (not isinstance(item.watermark, str) or not item.watermark)) or (item.download_id is not None and (not isinstance(item.download_id, str) or len(item.download_id) != 40 or any(character not in "0123456789abcdefABCDEF" for character in item.download_id))) or (item.download_id is not None and item.torrent_hash is not None and item.download_id.lower() != item.torrent_hash) or (external and (item.selector_fingerprint is not None or item.watermark is not None or item.external_history_id is None or not item.torrent_hash or not item.download_id)) or (not external and (not item.selector_fingerprint or not item.watermark or item.external_history_id is not None)) or (item.state is ReservationState.PRE_ADMITTED and not external and (item.torrent_hash is not None or item.download_id is not None)) or (bound_state and (not item.torrent_hash or not item.download_id)) or (item.state is ReservationState.RELEASED and not item.publisher_reservation_id):
+            if not isinstance(item.bytes_reserved, int) or isinstance(item.bytes_reserved, bool) or item.bytes_reserved <= 0 or not isinstance(item.requested_bytes, int) or isinstance(item.requested_bytes, bool) or item.requested_bytes <= 0 or item.bytes_reserved < item.requested_bytes or (item.remaining_download_bytes is not None and (not isinstance(item.remaining_download_bytes, int) or isinstance(item.remaining_download_bytes, bool) or not 0 <= item.remaining_download_bytes <= item.bytes_reserved)) or (item.publisher_reservation_id is not None and not isinstance(item.publisher_reservation_id, str)) or (item.torrent_hash is not None and not _torrent_hash(item.torrent_hash)) or (item.selector_fingerprint is not None and (not isinstance(item.selector_fingerprint, str) or len(item.selector_fingerprint) != 64 or any(character not in "0123456789abcdef" for character in item.selector_fingerprint))) or (item.observation_fingerprint is not None and (not isinstance(item.observation_fingerprint, str) or len(item.observation_fingerprint) != 64 or any(character not in "0123456789abcdef" for character in item.observation_fingerprint))) or (item.external_history_id is not None and (not isinstance(item.external_history_id, int) or isinstance(item.external_history_id, bool) or item.external_history_id <= 0)) or (item.watermark is not None and (not isinstance(item.watermark, str) or not item.watermark)) or (item.download_id is not None and (not isinstance(item.download_id, str) or len(item.download_id) != 40 or any(character not in "0123456789abcdefABCDEF" for character in item.download_id))) or (item.download_id is not None and item.torrent_hash is not None and item.download_id.lower() != item.torrent_hash) or (external and (item.selector_fingerprint is not None or item.watermark is not None or item.external_history_id is None or not item.torrent_hash or not item.download_id)) or (not external and (not item.selector_fingerprint or not item.watermark)) or (item.state is ReservationState.PRE_ADMITTED and not external and (item.torrent_hash is not None or item.download_id is not None)) or (bound_state and (not item.torrent_hash or not item.download_id)) or (item.state is ReservationState.RELEASED and not item.publisher_reservation_id) or (item.state is ReservationState.INVALIDATED and item.external_history_id is None):
                 raise ContractError("durable Fence reservation is invalid")
             if item.operation_id in result._reservations:
                 raise ContractError("durable Fence reservation operation is duplicated")
@@ -574,7 +659,7 @@ class FenceState:
         return result
 
     def clone(self) -> "FenceState":
-        result = FenceState.from_records(self._policy, self.records())
+        result = FenceState.from_snapshot(self._policy, self.records(), {}, video_candidates=self.video_candidate_records())
         result._watermarks = dict(self._watermarks)
         result._quiescing = self._quiescing
         result._post_pnr_adoptions = dict(self._post_pnr_adoptions)
@@ -589,6 +674,7 @@ class FenceState:
         self._post_pnr_adoptions = other._post_pnr_adoptions
         self._post_pnr_historical_adoptions = other._post_pnr_historical_adoptions
         self._post_pnr_historical_activations = other._post_pnr_historical_activations
+        self._video_candidates = other._video_candidates
 
     def watermarks(self) -> dict[str, int]:
         return dict(self._watermarks)
@@ -623,7 +709,7 @@ class FenceState:
         return tuple({"operation_id": operation_id, "state": state} for operation_id, state in self._post_pnr_historical_activations.items())
 
     @classmethod
-    def from_snapshot(cls, policy: FencePolicy, records: Iterable[Mapping[str, object]], watermarks: Mapping[str, object], *, quiescing: bool = False, post_pnr_adoptions: Iterable[Mapping[str, object]] = (), post_pnr_historical_adoptions: Iterable[Mapping[str, object]] = (), post_pnr_historical_activations: Iterable[Mapping[str, object]] = ()) -> "FenceState":
+    def from_snapshot(cls, policy: FencePolicy, records: Iterable[Mapping[str, object]], watermarks: Mapping[str, object], *, quiescing: bool = False, post_pnr_adoptions: Iterable[Mapping[str, object]] = (), post_pnr_historical_adoptions: Iterable[Mapping[str, object]] = (), post_pnr_historical_activations: Iterable[Mapping[str, object]] = (), video_candidates: Iterable[Mapping[str, object]] = ()) -> "FenceState":
         result = cls.from_records(policy, records)
         for source, watermark in watermarks.items():
             result.record_watermark(source, watermark)  # type: ignore[arg-type]
@@ -684,4 +770,37 @@ class FenceState:
             if (state == "intent" and reservation.state is not ReservationState.ACTIVATION_INTENT_RECORDED) or (state == "managed" and reservation.state not in {ReservationState.QBITTORRENT_MANAGED, ReservationState.PAUSE_INTENT_RECORDED, ReservationState.QBITTORRENT_PAUSED, ReservationState.RESUME_INTENT_RECORDED}):
                 raise ContractError("durable historical post-PNR activation is invalid")
             result._post_pnr_historical_activations[operation_id] = state
+        candidate_expected = {"operation_id", "probe_started_at", "last_progress_at", "metadata_observed_at", "last_downloaded_bytes", "failure_observations", "status", "invalidated_at", "reason"}
+        for record in video_candidates:
+            if set(record) != candidate_expected:
+                raise ContractError("durable video candidate is invalid")
+            try:
+                candidate = VideoCandidate(**record)  # type: ignore[arg-type]
+                reservation = result.reservation(candidate.operation_id)
+            except (KeyError, TypeError) as exc:
+                raise ContractError("durable video candidate is invalid") from exc
+            valid = (
+                reservation.source in {"radarr", "sonarr"}
+                and reservation.state in {ReservationState.QBITTORRENT_ACTIVE, ReservationState.INVALIDATED}
+                and isinstance(candidate.probe_started_at, int)
+                and not isinstance(candidate.probe_started_at, bool)
+                and candidate.probe_started_at >= 0
+                and isinstance(candidate.last_progress_at, int)
+                and not isinstance(candidate.last_progress_at, bool)
+                and candidate.probe_started_at <= candidate.last_progress_at
+                and (candidate.metadata_observed_at is None or (isinstance(candidate.metadata_observed_at, int) and not isinstance(candidate.metadata_observed_at, bool) and candidate.probe_started_at <= candidate.metadata_observed_at <= candidate.last_progress_at))
+                and isinstance(candidate.last_downloaded_bytes, int)
+                and not isinstance(candidate.last_downloaded_bytes, bool)
+                and candidate.last_downloaded_bytes >= 0
+                and isinstance(candidate.failure_observations, int)
+                and not isinstance(candidate.failure_observations, bool)
+                and candidate.failure_observations >= 0
+                and candidate.status in {"probing", "invalidated"}
+                and (candidate.status == "probing") == (candidate.invalidated_at is None and candidate.reason is None)
+                and (candidate.status != "invalidated" or (candidate.reason in {"metadata_timeout", "no_progress_timeout"} and isinstance(candidate.invalidated_at, int) and not isinstance(candidate.invalidated_at, bool) and candidate.invalidated_at >= candidate.probe_started_at))
+                and candidate.operation_id not in result._video_candidates
+            )
+            if not valid:
+                raise ContractError("durable video candidate is invalid")
+            result._video_candidates[candidate.operation_id] = candidate
         return result
