@@ -21,6 +21,7 @@ class LidarrAdapterContractTests(unittest.TestCase):
             ],
             "totalRecords": 2,
         }
+        self.missing_pages: dict[str, object] = {}
         self.releases: object = [
             {
                 "approved": True,
@@ -96,7 +97,7 @@ class LidarrAdapterContractTests(unittest.TestCase):
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
-                    self.wfile.write(json.dumps(outer.missing).encode("utf-8"))
+                    self.wfile.write(json.dumps(outer.missing_pages.get(self.path, outer.missing)).encode("utf-8"))
                     return
                 if self.path == "/api/v1/release?albumId=42":
                     self.send_response(200)
@@ -157,6 +158,34 @@ class LidarrAdapterContractTests(unittest.TestCase):
             ("GET", "/api/v1/wanted/missing?page=1&pageSize=100", "fixture-key"),
             self.requests[-1],
         )
+
+    def test_reads_more_than_ten_wanted_pages_without_silently_stalling(self) -> None:
+        total = 1_001
+        for page in range(1, 12):
+            start = (page - 1) * 100 + 1
+            stop = min(page * 100 + 1, total + 1)
+            self.missing_pages[f"/api/v1/wanted/missing?page={page}&pageSize=100"] = {
+                "records": [
+                    {"id": identifier, "monitored": True, "releaseDate": "2020-01-01T00:00:00Z"}
+                    for identifier in range(start, stop)
+                ],
+                "totalRecords": total,
+            }
+        host, port = self.server.server_address
+        adapter = LidarrAdapter(
+            f"http://{host}:{port}",
+            SecretReference("env", "LIDARR_KEY"),
+            secret_resolver=lambda _: "fixture-key",
+        )
+
+        albums = adapter.missing_monitored_albums()
+
+        assert albums is not None
+        self.assertEqual(total, len(albums))
+        self.assertEqual(("1", "1001"), (albums[0].album_id, albums[-1].album_id))
+        pages = [path for method, path, _ in self.requests if method == "GET" and path.startswith("/api/v1/wanted/missing?")]
+        self.assertEqual(11, len(pages))
+        self.assertEqual("/api/v1/wanted/missing?page=11&pageSize=100", pages[-1])
 
     def test_selects_the_first_native_release_with_usable_seed_evidence(self) -> None:
         host, port = self.server.server_address

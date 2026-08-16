@@ -70,7 +70,13 @@ class LidarrAdapter:
 
     def _paged(self, endpoint: str) -> list[dict[str, object]] | None:
         records: list[dict[str, object]] = []
-        for page in range(1, 11):
+        expected_total: int | None = None
+        # A personal library can exceed one thousand albums.  Keep the request
+        # size stable for Lidarr, but derive completion from its declared
+        # total instead of silently turning a large wanted list into an
+        # unavailable source.  The finite ceiling still bounds a malformed
+        # server response to 100,000 records.
+        for page in range(1, 1_001):
             try:
                 response = self._get(f"{endpoint}?{urlencode({'page': page, 'pageSize': 100})}")
             except (HTTPError, URLError, OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
@@ -85,9 +91,15 @@ class LidarrAdapter:
                 or total < len(records)
             ):
                 return None
+            if expected_total is None:
+                expected_total = total
+            elif total != expected_total:
+                return None
             records.extend(page_records)
-            if len(records) >= total:
+            if len(records) == total:
                 return records
+            if len(records) > total or not page_records:
+                return None
         return None
 
     def missing_albums(self) -> tuple[LidarrAlbum, ...] | None:
