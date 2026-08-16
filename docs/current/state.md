@@ -1,6 +1,6 @@
 # Current state
 
-MediaInterlock 0.1.34 is the immutable public downstream-consumption release.
+MediaInterlock 0.1.35 is the immutable public downstream-consumption release.
 On a source without a durable Publisher import cursor, it applies the typed
 initial history lookback before accepting Arr imports, advances over older
 history records, and then resumes incremental history-ID intake. It publishes
@@ -14,6 +14,8 @@ an independent generation; one rejected historical item does not block the
 cursor from reaching later imports. Its deterministic UUIDv5 history operation
 is accepted as that generation's identity. The normal Publisher worker resumes
 a durable generation intent after restart, rather than leaving it pending.
+An older public route can be adopted only after its content exactly matches the
+verified generation; a different route remains blocked.
 
 This source repository has product tests only. It contains no deployment
 configuration, running service, live media-library proof, or authorization to

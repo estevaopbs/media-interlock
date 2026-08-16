@@ -502,6 +502,8 @@ class AssetGenerationPublisher:
                         )
                     elif stat.S_ISREG(current.st_mode):
                         owned = self._route_is_owned(current, allowed_root, member.name)
+                        if not owned:
+                            owned = self._legacy_route_matches(destination, member)
                     else:
                         owned = False
                     if not owned:
@@ -547,6 +549,16 @@ class AssetGenerationPublisher:
             if stat.S_ISREG(candidate.st_mode) and not stat.S_ISLNK(candidate.st_mode) and os.path.samestat(route, candidate):
                 return True
         return False
+
+    @staticmethod
+    def _legacy_route_matches(route: Path, member: Path) -> bool:
+        """Permit adoption only when an existing public file is byte-identical."""
+        try:
+            legacy = CandidateVerifier(route.parent).verify(route.name, allow_hardlinks=True)
+            generated = CandidateVerifier(member.parent).verify(member.name, allow_hardlinks=True)
+        except CandidateSafetyError:
+            return False
+        return legacy.bytes_verified == generated.bytes_verified and legacy.sha256 == generated.sha256
 
     def _remove_legacy_slot(self, asset_slot: str, generation_id: str) -> None:
         slot = self._slot_name(asset_slot)

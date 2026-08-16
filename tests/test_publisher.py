@@ -873,6 +873,50 @@ class CandidateFilesystemTests(unittest.TestCase):
             self.assertEqual(b"subtitle", payload.with_name("movie.en.srt").read_bytes())
             self.assertNotEqual((staging / "movie.mkv").stat().st_ino, payload.stat().st_ino)
 
+    def test_asset_publisher_adopts_an_exact_legacy_public_route(self) -> None:
+        from media_interlock.publisher.filesystem import BundleVerifier
+        from media_interlock.publisher.generation import AssetGenerationPublisher
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            canonical = Path(directory) / "canonical"
+            staging.mkdir()
+            canonical.mkdir()
+            source = staging / "movie.mkv"
+            source.write_bytes(b"video")
+            legacy = canonical / "library" / "movie.mkv"
+            legacy.parent.mkdir()
+            os.link(source, legacy)
+
+            payload = AssetGenerationPublisher(staging, canonical, namespace="library").publish(
+                "radarr:movie-a",
+                OPERATION_ID,
+                BundleVerifier(staging, settle_seconds=0).verify("movie.mkv", allow_hardlinks=True),
+                hardlink_frozen=True,
+            )
+
+            self.assertEqual(b"video", legacy.read_bytes())
+            self.assertEqual(payload.stat().st_ino, legacy.stat().st_ino)
+            self.assertNotEqual(source.stat().st_ino, legacy.stat().st_ino)
+
+    def test_asset_publisher_rejects_a_different_legacy_public_route(self) -> None:
+        from media_interlock.publisher.generation import AssetGenerationPublisher
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            canonical = Path(directory) / "canonical"
+            staging.mkdir()
+            canonical.mkdir()
+            (staging / "movie.mkv").write_bytes(b"video")
+            legacy = canonical / "library" / "movie.mkv"
+            legacy.parent.mkdir()
+            legacy.write_bytes(b"different")
+
+            with self.assertRaises(CandidateSafetyError):
+                AssetGenerationPublisher(staging, canonical, namespace="library").publish(
+                    "radarr:movie-a", OPERATION_ID, CandidateVerifier(staging).verify("movie.mkv")
+                )
+
     def test_asset_publisher_seals_provider_identity_as_jellyfin_nfo(self) -> None:
         from media_interlock.publisher.generation import AssetGenerationPublisher
 
