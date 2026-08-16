@@ -14,6 +14,17 @@ from media_interlock.runtime import MediaInterlockRuntime, RuntimeState
 
 
 class RuntimeStateTests(unittest.TestCase):
+    def test_music_reconciliation_runs_when_video_reconciliation_is_unavailable(self) -> None:
+        runtime = MediaInterlockRuntime.__new__(MediaInterlockRuntime)
+        runtime.scheduler = Mock()
+        runtime.scheduler.run.side_effect = OSError("Radarr unavailable")
+        runtime.music_scheduler = Mock()
+
+        runtime._reconciliation_tick()
+
+        runtime.scheduler.run.assert_called_once()
+        runtime.music_scheduler.run.assert_called_once()
+
     def test_startup_recovers_then_reopens_a_persisted_quiescent_fence(self) -> None:
         runtime = MediaInterlockRuntime.__new__(MediaInterlockRuntime)
         runtime.fence = Mock()

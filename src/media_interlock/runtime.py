@@ -544,9 +544,18 @@ class MediaInterlockRuntime:
 
     def _reconciliation_tick(self) -> None:
         now = int(time.time())
-        self.scheduler.run(now=now)
+        # Video and music share a process, not their availability boundary.  A
+        # temporarily unavailable video adapter must not defer a due Lidarr
+        # reconciliation cycle until the next timer interval.
+        try:
+            self.scheduler.run(now=now)
+        except (ContractError, KeyError, OSError, RuntimeError, ValueError):
+            pass
         if self.music_scheduler is not None:
-            self.music_scheduler.run(now=now)
+            try:
+                self.music_scheduler.run(now=now)
+            except (ContractError, KeyError, OSError, RuntimeError, ValueError):
+                pass
 
     async def run(self) -> None:
         await asyncio.to_thread(self._recover_fence_on_start)
