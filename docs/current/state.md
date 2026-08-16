@@ -1,6 +1,6 @@
 # Current state
 
-MediaInterlock 0.1.36 is the immutable public downstream-consumption release.
+MediaInterlock 0.1.37 is the immutable public downstream-consumption release.
 On a source without a durable Publisher import cursor, it applies the typed
 initial history lookback before accepting Arr imports, advances over older
 history records, and then resumes incremental history-ID intake. It publishes

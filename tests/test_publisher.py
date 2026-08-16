@@ -899,6 +899,30 @@ class CandidateFilesystemTests(unittest.TestCase):
             self.assertEqual(payload.stat().st_ino, legacy.stat().st_ino)
             self.assertNotEqual(source.stat().st_ino, legacy.stat().st_ino)
 
+    def test_asset_publisher_recovers_past_a_valid_abandoned_generation_temporary(self) -> None:
+        from media_interlock.publisher.generation import AssetGenerationPublisher
+
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory) / "staging"
+            canonical = Path(directory) / "canonical"
+            staging.mkdir()
+            canonical.mkdir()
+            (staging / "movie.mkv").write_bytes(b"video")
+            publisher = AssetGenerationPublisher(staging, canonical, namespace="library")
+            candidate = CandidateVerifier(staging).verify("movie.mkv")
+            payload = publisher.publish("radarr:movie-a", OPERATION_ID, candidate)
+
+            abandoned = (
+                canonical / ".publisher" / "assets" / "radarr-movie-a" / "generations"
+                / f".{OPERATION_ID}.{'a' * 32}.tmp"
+            )
+            abandoned.mkdir()
+            (abandoned / "partial.mkv").write_bytes(b"partial")
+
+            self.assertEqual(payload, publisher.publish("radarr:movie-a", OPERATION_ID, candidate))
+            publisher.garbage_collect("radarr:movie-a", set())
+            self.assertFalse(abandoned.exists())
+
     def test_asset_publisher_rejects_a_different_legacy_public_route(self) -> None:
         from media_interlock.publisher.generation import AssetGenerationPublisher
 

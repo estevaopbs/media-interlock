@@ -536,6 +536,13 @@ class AssetGenerationPublisher:
                 generation_metadata = generation.lstat()
             except FileNotFoundError:
                 continue
+            if GenerationPublisher._temporary_generation_name(generation.name):
+                if not stat.S_ISDIR(generation_metadata.st_mode) or stat.S_ISLNK(generation_metadata.st_mode):
+                    raise CandidateSafetyError("asset generation directory is unsafe")
+                # A crash can leave this per-generation staging directory
+                # behind.  It is not a published generation and must not
+                # prevent recovery of the durable generation beside it.
+                continue
             if (
                 not stat.S_ISDIR(generation_metadata.st_mode)
                 or stat.S_ISLNK(generation_metadata.st_mode)
@@ -647,6 +654,11 @@ class AssetGenerationPublisher:
             return
         for generation in entries:
             metadata = generation.lstat()
+            if GenerationPublisher._temporary_generation_name(generation.name):
+                if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                    raise CandidateSafetyError("asset generation directory is unsafe")
+                shutil.rmtree(generation)
+                continue
             if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or not GenerationPublisher._valid_generation_id(generation.name):
                 raise CandidateSafetyError("asset generation directory is unsafe")
             if generation.name not in retained:
