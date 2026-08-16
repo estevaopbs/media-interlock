@@ -10,7 +10,9 @@ OCI final image. Tests cover unified state adoption, no component socket or
 subprocess in the runtime path, isolated periodic task failures, release
 response bounds and technical retry, stable completed-search cooldowns, fair
 series scheduling, bounded initial Arr import reconciliation with a durable cursor, and exact
-video-candidate health invalidation.
+video-candidate health invalidation. Music checks cover sealed native Lidarr
+release selection, independent durable cooldown state, and exact owned-candidate
+invalidation before the next native release is considered.
 
 Downstream acceptance is separate. It validates a public immutable digest,
 one container/PID/unit, its configured mounts and services, and live behavior

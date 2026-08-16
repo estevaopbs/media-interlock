@@ -1,6 +1,6 @@
 # Current state
 
-MediaInterlock 0.1.37 is the immutable public downstream-consumption release.
+MediaInterlock 0.1.38 is the immutable public downstream-consumption release.
 On a source without a durable Publisher import cursor, it applies the typed
 initial history lookback before accepting Arr imports, advances over older
 history records, and then resumes incremental history-ID intake. It publishes
@@ -18,6 +18,13 @@ An older public route can be adopted only after its content exactly matches the
 verified generation; a different route remains blocked.
 Publisher intake, recovery, and bounded Arr-history reconciliation are
 serialized through one in-process work gate.
+
+When configured with a Lidarr source, the same process also schedules new
+missing albums under an independent music policy. It preserves Lidarr's native
+release order, seals the selected release before the grab, and tracks only the
+exact qBittorrent candidate it owns. Failed metadata/progress checks can
+invalidate that candidate and advance to the next native release. Existing
+Lidarr queue items and music-library import remain outside this responsibility.
 
 This source repository has product tests only. It contains no deployment
 configuration, running service, live media-library proof, or authorization to

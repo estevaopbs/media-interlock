@@ -9,7 +9,7 @@ import uuid
 from typing import Iterable, Mapping
 
 
-_SOURCES = frozenset({"radarr", "sonarr"})
+_SOURCES = frozenset({"radarr", "sonarr", "lidarr"})
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ class SearchIntent:
         if str(parsed) != self.operation_id:
             raise ValueError("operation_id must be a canonical UUID")
         if self.source not in _SOURCES:
-            raise ValueError("source must be radarr or sonarr")
+            raise ValueError("source must be radarr, sonarr, or lidarr")
         if not self.entity_id.isdecimal() or str(int(self.entity_id)) != self.entity_id or int(self.entity_id) <= 0:
             raise ValueError("entity_id must be a positive public integer")
         if not isinstance(self.force, bool):

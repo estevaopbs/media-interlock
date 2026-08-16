@@ -1,13 +1,13 @@
 # MediaInterlock
 
 MediaInterlock is a provider-neutral, fail-closed controller for video
-acquisition and publication in self-hosted media libraries. It keeps native
-Arr ranking authoritative, admits only exact Fence-owned qBittorrent work, and
-publishes verified bundles for Jellyfin.
+acquisition/publication and new Lidarr music-candidate health in self-hosted
+media libraries. It keeps native Arr ranking authoritative, admits only exact
+Fence-owned qBittorrent work, and publishes verified video bundles for Jellyfin.
 
 ## Project status
 
-MediaInterlock 0.1.37 is the current immutable public release. It is one OCI
+MediaInterlock 0.1.38 is the current immutable public release. It is one OCI
 image, one container, one process, and one SQLite state database. Fence,
 Publisher, and Reconciler are internal modules that communicate in memory;
 there are no component images, daemon sockets, units, or recurring downstream
@@ -36,8 +36,10 @@ release-response limits and technical retries, generation based exponential
 cooldowns, fair series scheduling, and exact video-candidate health recovery.
 Publisher intake, recovery, and bounded Arr-history reconciliation share one
 in-process work gate, so they cannot race the same durable publication.
-It does not manage Lidarr, music torrents, stack lifecycle, backups, or one-off
-data migration.
+For configured new Lidarr requests, it can reject only its own unhealthy
+torrent candidate and ask Lidarr for the next native release. It does not adopt
+an existing Lidarr queue, select albums for Spotify/Aurral, manage stack
+lifecycle, backups, or one-off data migration.
 
 ## Principles
 

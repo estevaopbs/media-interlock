@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from ..adapters.arr import ArrGrabObservation, ArrRelease
+from ..adapters.lidarr import LidarrRelease
 from ..fence.model import AdmissionDecision, PreAdmissionIntent
 from .model import GrabIntent, ReconciliationState, SearchIntent
 
@@ -45,6 +46,19 @@ class ReconcilerService:
     def _persist(self) -> None:
         self._store.save(self._state)
 
+    @staticmethod
+    def _release_from_grab(adapter: ArrReleaseControl, intent: SearchIntent, grab: GrabIntent) -> ArrRelease | LidarrRelease | None:
+        if intent.source != "lidarr":
+            return ArrRelease(dict(grab.release_resource), grab.selector_fingerprint, grab.expected_bytes)
+        restore = getattr(adapter, "release_from_record", None)
+        if not callable(restore):
+            return None
+        try:
+            release = restore(dict(grab.release_resource), intent.entity_id)
+        except Exception:
+            return None
+        return release if isinstance(release, LidarrRelease) else None
+
     def _recover_intent(self, intent: SearchIntent, *, now: int) -> str:
         adapter = self._adapters.get(intent.source)
         source = self._sources.get(intent.source)
@@ -53,6 +67,8 @@ class ReconcilerService:
         try:
             grab = self._state.grab_intent(intent.operation_id)
         except KeyError:
+            if intent.source == "lidarr":
+                return "inhibited"
             try:
                 if not adapter.stopped_qbittorrent_client(source.category, source.download_client_id):
                     return "inhibited"
@@ -68,6 +84,9 @@ class ReconcilerService:
                 return "inhibited"
             self._state.record_grab_intent(grab)
             self._persist()
+        release = self._release_from_grab(adapter, intent, grab)
+        if release is None:
+            return "unavailable"
         if not self._state.grab_attempted(intent.operation_id):
             try:
                 if not adapter.stopped_qbittorrent_client(source.category, source.download_client_id):
@@ -80,10 +99,12 @@ class ReconcilerService:
             self._state.mark_grab_attempted(intent.operation_id)
             self._persist()
             try:
-                adapter.grab_release(ArrRelease(dict(grab.release_resource), grab.selector_fingerprint, grab.expected_bytes))
+                adapter.grab_release(release)
             except Exception:
                 pass
-        release = ArrRelease(dict(grab.release_resource), grab.selector_fingerprint, grab.expected_bytes)
+        release = self._release_from_grab(adapter, intent, grab)
+        if release is None:
+            return "unavailable"
         try:
             observation = adapter.observe_grab(intent.entity_id, release, watermark=grab.watermark)
         except Exception:
@@ -134,6 +155,8 @@ class ReconcilerService:
         try:
             grab = self._state.grab_intent(intent.operation_id)
         except KeyError:
+            if intent.source == "lidarr":
+                return "inhibited"
             try:
                 watermark = adapter.history_watermark()
                 release = adapter.first_approved_release(intent.entity_id)
@@ -147,7 +170,9 @@ class ReconcilerService:
                 return "inhibited"
             self._state.record_grab_intent(grab)
             self._persist()
-        release = ArrRelease(dict(grab.release_resource), grab.selector_fingerprint, grab.expected_bytes)
+        release = self._release_from_grab(adapter, intent, grab)
+        if release is None:
+            return "unavailable"
         if not self._state.grab_attempted(intent.operation_id):
             try:
                 admission = self._fence.pre_admit(PreAdmissionIntent(intent.operation_id, intent.source, intent.entity_id, grab.selector_fingerprint, grab.expected_bytes, str(grab.watermark)))
@@ -181,7 +206,7 @@ class ReconcilerService:
         self._persist()
         return "bound"
 
-    def execute_selected(self, intent: SearchIntent, release: ArrRelease, *, now: int) -> str:
+    def execute_selected(self, intent: SearchIntent, release: ArrRelease | LidarrRelease, *, now: int) -> str:
         """Execute one already selected native Arr decision without a second search."""
         try:
             existing = self._state.intent(intent.operation_id)
@@ -192,16 +217,18 @@ class ReconcilerService:
                 return "inhibited"
         adapter = self._adapters.get(intent.source)
         source = self._sources.get(intent.source)
-        if adapter is None or source is None or not isinstance(release, ArrRelease):
+        if adapter is None or source is None or not isinstance(release, (ArrRelease, LidarrRelease)):
             return "inhibited"
         if existing is not None:
             try:
                 grab = self._state.grab_intent(intent.operation_id)
             except KeyError:
-                return "unavailable"
-            if grab.selector_fingerprint != release.selector_fingerprint:
-                return "inhibited"
-            return self._recover_intent(intent, now=now)
+                if intent.source != "lidarr":
+                    return "unavailable"
+            else:
+                if grab.selector_fingerprint != release.selector_fingerprint:
+                    return "inhibited"
+                return self._recover_intent(intent, now=now)
         try:
             if not adapter.stopped_qbittorrent_client(source.category, source.download_client_id):
                 return "inhibited"
@@ -214,7 +241,8 @@ class ReconcilerService:
             grab = GrabIntent(intent.operation_id, intent.source, intent.entity_id, release.selector_fingerprint, release.expected_bytes, watermark, release.resource)
         except ValueError:
             return "inhibited"
-        self._state.record_intent(intent, now=now)
+        if existing is None:
+            self._state.record_intent(intent, now=now)
         self._state.record_grab_intent(grab)
         self._persist()
         return self._recover_intent(intent, now=now)

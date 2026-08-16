@@ -21,14 +21,20 @@ dated within that many days; older records advance the cursor without becoming
 publication candidates. A value of `0` creates a forward-only baseline. Later
 polls are incremental by durable history ID.
 `[fence.video_candidate_health]` separately controls video metadata/progress
-deadlines and replacement backoff; it does not grant any music authority.
+deadlines and replacement backoff. When `[sources.lidarr]` is present,
+`[fence.music]` controls only new Lidarr candidate health: seed evidence,
+metadata and progress deadlines, per-cycle candidate limit, and invalid-payload
+deletion. `[reconciler.music]` has its own age gate, cooldown scale, horizon,
+budgets, scoring, and format requirements. These policies neither adopt an
+existing Lidarr queue nor select Spotify/Aurral albums.
 
 Deployment owns the Quadlet/systemd lifecycle, paths, mounts, networks,
 secrets, backups, and live acceptance. It pins an immutable public image digest
 and must not build from or bind mount a product checkout. MediaInterlock does
 not install units, run a one-shot migration, or scan/copy a full media library.
 
-The process requires source-specific Arr clients to add torrents stopped and
-configured staging/canonical roots to be disjoint. qBittorrent mutations are
+The process requires source-specific Arr clients to add torrents stopped.
+Video staging/canonical roots must be disjoint; the Lidarr source has only its
+configured download root. qBittorrent mutations are
 serialized by the configured shared lease and are always revalidated against
 the exact Fence tag, category, save path, and hash.

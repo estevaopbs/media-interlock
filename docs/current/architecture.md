@@ -7,9 +7,10 @@ records and explicit service calls, but never use a socket, subprocess, or
 component-specific store.
 
 ```text
-Arr inventory and release API --> Reconciler --> Fence --> qBittorrent
+Radarr/Sonarr inventory --> Reconciler --> Fence --> qBittorrent
                                            |          |
                                            +-----> Publisher --> Jellyfin
+Lidarr missing albums -----> Reconciler --> Fence --> qBittorrent
 ```
 
 The runtime starts bounded internal tasks for Fence observation, Publisher
@@ -18,11 +19,12 @@ isolated and retried; invalid configuration or unreadable state stops startup
 before an external effect. Synchronous adapter I/O is run outside the event
 loop.
 
-Fence owns only exact tagged video transfers. It records an admission before an
-Arr grab can be resumed, validates qBittorrent hash/category/save path/tag
-before every mutation, and holds capacity until custody or an invalidation is
-durably resolved. It has no authority over Lidarr, music categories, or
-untagged transfers.
+Fence owns only exact tagged transfers. Video custody remains bound to
+Publisher and Jellyfin. A configured Lidarr source has no Publisher path: it
+tracks only new candidates selected by the music Reconciler, validates the same
+hash/category/save-path/tag identity, and releases capacity after Lidarr
+imports or the candidate is invalidated. It never adopts an existing Lidarr
+queue, music category, or untagged transfer.
 
 Publisher verifies one Arr-correlated staging bundle, publishes independent
 canonical files, and confirms the selected Jellyfin item. Its bounded import
@@ -35,6 +37,12 @@ the ranker. The scheduler records completed searches separately from technical
 failures: completed attempts receive a stable cooldown calculated from their
 count and policy revision; transient failures receive a separate bounded retry.
 Episode scheduling retains priority but round-robins series scopes.
+
+The independent Lidarr scheduler inventories monitored albums without files.
+Its search budgets, release-age cooldown, maximum attempts, format filters, and
+candidate limit are separate from video policy. It asks Lidarr for releases in
+native order and may reject a release only for its configured score, format, or
+seed evidence; it never ranks trackers itself.
 
 An owned video candidate with no metadata past its configured deadline, or with
 known metadata but no bytes/prospects, is persisted as invalid before any

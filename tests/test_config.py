@@ -220,6 +220,47 @@ SOURCE_PROFILE_CONFIG = UNIFIED_CONFIG
 VALID_CONFIG = UNIFIED_CONFIG
 
 
+MUSIC_RECONCILIATION_POLICY = """
+[reconciler.music]
+minimum_age_days = 0
+terminal_horizon_days = 730
+cooldown_seconds = 86400
+max_attempts = 8
+max_searches_per_run = 6
+schedule_policy_revision = "music-acquisition-v1"
+release_timeout_seconds = 150
+max_release_response_bytes = 8388608
+transient_retry_seconds = 1800
+transient_retry_multiplier = 2.0
+maximum_transient_retry_seconds = 21600
+"""
+
+
+MUSIC_FENCE_POLICY = """
+[fence.music]
+minimum_reported_seeders = 1
+unknown_seeders_policy = "reject"
+probe_only_indexers = []
+metadata_probe_seconds = 900
+no_progress_seconds = 3600
+max_candidates_per_cycle = 3
+delete_invalid_payload = true
+"""
+
+
+LIDARR_SOURCE = """
+[sources.lidarr]
+kind = "music-album"
+download_client_id = 9
+category = "media-interlock-lidarr"
+qbittorrent_save_path = "/srv/downloads/music"
+download_pool = "download"
+"""
+
+
+LIDARR_SOURCE_CONFIG = SOURCE_PROFILE_CONFIG + MUSIC_RECONCILIATION_POLICY + MUSIC_FENCE_POLICY + LIDARR_SOURCE
+
+
 class ConfigurationTests(unittest.TestCase):
     def write(self, content: str) -> Path:
         directory = tempfile.TemporaryDirectory()
@@ -308,6 +349,19 @@ forbidden_candidate_formats = [\"AI upscale\"]""",
         self.assertEqual("/srv/downloads/episodes", str(config.sources["sonarr"].qbittorrent_save_path))
         self.assertEqual("shared-qbittorrent-mutation/v1", config.fence.mutation_lock.version)
         self.assertEqual(2, config.publisher.sources["radarr"].bundle_settle_seconds)
+
+    def test_projects_acquisition_only_lidarr_source_and_independent_music_policies(self) -> None:
+        config = load_config(self.write(LIDARR_SOURCE_CONFIG))
+
+        assert config.reconciler is not None
+        assert config.fence is not None
+        assert config.publisher is not None
+        self.assertEqual("music-album", config.sources["lidarr"].kind)
+        self.assertEqual("music-album", config.reconciler.sources["lidarr"].kind)
+        self.assertEqual(86_400, config.reconciler.music.cooldown_seconds)
+        self.assertEqual(1, config.fence.music.minimum_reported_seeders)
+        self.assertEqual(900, config.fence.music.metadata_probe_seconds)
+        self.assertNotIn("lidarr", config.publisher.sources)
 
     def test_download_client_ids_are_scoped_to_each_arr(self) -> None:
         content = SOURCE_PROFILE_CONFIG.replace("download_client_id = 8", "download_client_id = 7")

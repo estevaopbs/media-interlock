@@ -25,3 +25,10 @@ class PhysicalHeadroomTests(unittest.TestCase):
 
         self.assertFalse(PhysicalHeadroom(pools, free_bytes=lambda _: None).allows(records, sources))
         self.assertFalse(PhysicalHeadroom(pools, free_bytes=lambda _: 2**63 - 1).allows(records, sources))
+
+    def test_music_candidate_uses_only_its_download_pool(self) -> None:
+        pools = {"music": HeadroomPool("music", minimum_free_bytes=100, safety_margin_bytes=10)}
+        records = ({"state": "pre_admitted", "requested_bytes": 400, "remaining_download_bytes": None, "source": "lidarr"},)
+
+        self.assertTrue(PhysicalHeadroom(pools, free_bytes=lambda _: 510).allows(records, {"lidarr": ("music",)}))
+        self.assertFalse(PhysicalHeadroom(pools, free_bytes=lambda _: 509).allows(records, {"lidarr": ("music",)}))

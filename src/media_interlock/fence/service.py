@@ -7,11 +7,12 @@ from contextlib import nullcontext
 import hashlib
 import json
 from pathlib import Path
+import time
 from typing import Callable, Mapping, Protocol
 import uuid
 
 from ..adapters.arr import ArrExternalGrab
-from ..config import VideoCandidateHealthConfig
+from ..config import MusicFencePolicy, VideoCandidateHealthConfig
 from ..contracts import Envelope, post_pnr_adoption_receipt, post_pnr_historical_activation_receipt, post_pnr_historical_adoption_receipt
 from .headroom import PhysicalHeadroom
 from .model import AdmissionDecision, ExternalAdoptionIntent, FenceState, PostPnrAdoptionIntent, PostPnrHistoricalActivationIntent, PostPnrHistoricalAdoptionIntent, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentHealthObservation, QbittorrentObservation, ReservationState
@@ -71,10 +72,12 @@ class FenceSource:
     download_pool: str | None = None
     staging_pool: str | None = None
     canonical_pool: str | None = None
+    publication_managed: bool = True
+    music_policy: MusicFencePolicy | None = None
 
 
 class FenceService:
-    def __init__(self, state: FenceState, store: ReservationStore, qbittorrent: QbittorrentControl, prowlarr: ProwlarrReadiness | None, *, sources: Mapping[str, FenceSource], observers: Mapping[str, ArrExternalObserver] | None = None, headroom: PhysicalHeadroom | None = None, lease: MutationLease | None = None, resume_ready: Callable[[], bool] | None = None, video_candidate_health: VideoCandidateHealthConfig | None = None) -> None:
+    def __init__(self, state: FenceState, store: ReservationStore, qbittorrent: QbittorrentControl, prowlarr: ProwlarrReadiness | None, *, sources: Mapping[str, FenceSource], observers: Mapping[str, ArrExternalObserver] | None = None, headroom: PhysicalHeadroom | None = None, lease: MutationLease | None = None, resume_ready: Callable[[], bool] | None = None, video_candidate_health: VideoCandidateHealthConfig | None = None, clock: Callable[[], int | float] | None = None) -> None:
         self._state = state
         self._store = store
         self._qbittorrent = qbittorrent
@@ -85,6 +88,7 @@ class FenceService:
         self._lease = lease
         self._resume_ready = resume_ready
         self._video_candidate_health = video_candidate_health
+        self._clock = time.time if clock is None else clock
 
     def poll_video_candidate_health(self, *, now: int) -> tuple[tuple[str, str, int], ...]:
         """Invalidate only stalled exact video custody, then emit replacement work."""
@@ -151,6 +155,161 @@ class FenceService:
                 continue
         return tuple(replacements)
 
+    def _ensure_music_candidate(self, operation_id: str) -> bool:
+        try:
+            reservation = self._state.reservation(operation_id)
+            source = self._sources.get(reservation.source)
+            if source is None or source.publication_managed:
+                return True
+            if source.music_policy is None:
+                return False
+            now = self._now()
+            if now is None:
+                return False
+            candidate = self._state.clone()
+            candidate.ensure_music_candidate(operation_id, now=now)
+            self._persist(candidate)
+            return True
+        except Exception:
+            return False
+
+    def _release_invalid_music_candidate(self, operation_id: str) -> bool:
+        try:
+            reservation = self._state.reservation(operation_id)
+            source = self._sources.get(reservation.source)
+            candidate_record = self._state.music_candidate(operation_id)
+            if source is None or source.music_policy is None or not isinstance(reservation.torrent_hash, str):
+                return False
+            if candidate_record["status"] != "invalidated":
+                return candidate_record["status"] == "released"
+            delete_payload = candidate_record["delete_invalid_payload"]
+            if not isinstance(delete_payload, bool):
+                return False
+            with self._hold_mutation_lease():
+                deleted = self._qbittorrent.delete_owned_incomplete(
+                    reservation.torrent_hash, reservation.reservation_id, source.category,
+                    save_path=source.qbittorrent_save_path, delete_files=delete_payload,
+                )
+        except Exception:
+            return False
+        if not deleted:
+            return False
+        candidate = self._state.clone()
+        try:
+            candidate.mark_music_candidate_deleted(operation_id)
+        except Exception:
+            return False
+        self._persist(candidate)
+        return True
+
+    def _invalidate_music_candidate(self, operation_id: str, *, reason: str, now: int) -> bool:
+        try:
+            reservation = self._state.reservation(operation_id)
+            source = self._sources.get(reservation.source)
+            if source is None or source.music_policy is None:
+                return False
+            candidate = self._state.clone()
+            candidate.invalidate_music_candidate(
+                operation_id, reason=reason, now=now,
+                delete_invalid_payload=source.music_policy.delete_invalid_payload,
+            )
+            self._persist(candidate)
+        except Exception:
+            return False
+        return self._release_invalid_music_candidate(operation_id)
+
+    def poll_music_candidates(self) -> bool:
+        """Probe only Fence-owned Lidarr hashes and durably reject dead candidates."""
+        now = self._now()
+        if now is None:
+            return False
+        success = True
+        for record in self._state.music_candidate_records():
+            operation_id, status = record["operation_id"], record["status"]
+            if not isinstance(operation_id, str) or not isinstance(status, str):
+                return False
+            if status == "invalidated":
+                success = self._release_invalid_music_candidate(operation_id) and success
+                continue
+            if status != "probing":
+                continue
+            try:
+                reservation = self._state.reservation(operation_id)
+                source = self._sources.get(reservation.source)
+                if source is None or source.music_policy is None or not isinstance(reservation.torrent_hash, str):
+                    success = False
+                    continue
+                health = self._qbittorrent.observe_candidate_health(
+                    reservation.torrent_hash, reservation.reservation_id, source.category,
+                    save_path=source.qbittorrent_save_path,
+                )
+            except Exception:
+                success = False
+                continue
+            if health.kind != "observed" or health.metadata_known is None or health.downloaded_bytes is None or health.peers is None:
+                success = False
+                continue
+            if health.metadata_known and health.remaining_bytes == 0:
+                candidate = self._state.clone()
+                try:
+                    candidate.complete_music_candidate(operation_id)
+                except Exception:
+                    success = False
+                    continue
+                self._persist(candidate)
+                continue
+            if health.downloaded_bytes > int(record["last_downloaded_bytes"]):
+                candidate = self._state.clone()
+                try:
+                    candidate.record_music_progress(operation_id, downloaded_bytes=health.downloaded_bytes, now=now)
+                except Exception:
+                    success = False
+                    continue
+                self._persist(candidate)
+                continue
+            probe_started, last_progress = record["probe_started_at"], record["last_progress_at"]
+            if not isinstance(probe_started, int) or not isinstance(last_progress, int):
+                success = False
+                continue
+            if not health.metadata_known and now - probe_started >= source.music_policy.metadata_probe_seconds:
+                success = self._invalidate_music_candidate(operation_id, reason="metadata-timeout", now=now) and success
+            elif health.metadata_known and health.downloaded_bytes == 0 and health.peers == 0 and now - probe_started >= source.music_policy.metadata_probe_seconds:
+                success = self._invalidate_music_candidate(operation_id, reason="no-peer-progress", now=now) and success
+            elif health.metadata_known and now - last_progress >= source.music_policy.no_progress_seconds:
+                success = self._invalidate_music_candidate(operation_id, reason="no-progress", now=now) and success
+        return success
+
+    def music_invalidations(self) -> tuple[dict[str, object], ...]:
+        return tuple(
+            {
+                "source": "lidarr", "operation_id": record["operation_id"], "album_id": record["album_id"],
+                "selector_fingerprint": record["selector_fingerprint"], "canonical_hash": record["torrent_hash"],
+                "invalidation_id": record["invalidation_id"], "invalidated_at": record["invalidated_at"],
+                "reason": record["reason"],
+            }
+            for record in self._state.pending_music_invalidations()
+        )[:100]
+
+    def acknowledge_music_invalidation(self, operation_id: str, invalidation_id: str) -> bool:
+        candidate = self._state.clone()
+        try:
+            accepted = candidate.acknowledge_music_invalidation(operation_id, invalidation_id)
+        except Exception:
+            return False
+        if not accepted:
+            return False
+        self._persist(candidate)
+        return True
+
+    def complete_music_candidate(self, operation_id: str) -> bool:
+        candidate = self._state.clone()
+        try:
+            candidate.complete_music_candidate(operation_id)
+        except Exception:
+            return False
+        self._persist(candidate)
+        return True
+
     def _hold_mutation_lease(self):
         return nullcontext() if self._lease is None else self._lease.acquire()
 
@@ -161,12 +320,28 @@ class FenceService:
     def _physical_ready(self, state: FenceState) -> bool:
         if self._headroom is None:
             return True
-        pools: dict[str, tuple[str, str, str]] = {}
+        pools: dict[str, tuple[str, ...]] = {}
         for name, source in self._sources.items():
-            if not isinstance(source.download_pool, str) or not isinstance(source.staging_pool, str) or not isinstance(source.canonical_pool, str):
+            if not isinstance(source.download_pool, str):
                 return False
-            pools[name] = (source.download_pool, source.staging_pool, source.canonical_pool)
+            if source.publication_managed:
+                if not isinstance(source.staging_pool, str) or not isinstance(source.canonical_pool, str):
+                    return False
+                pools[name] = (source.download_pool, source.staging_pool, source.canonical_pool)
+            elif source.music_policy is not None:
+                pools[name] = (source.download_pool,)
+            else:
+                return False
         return self._headroom.allows(state.records(), pools)
+
+    def _now(self) -> int | None:
+        try:
+            now = self._clock()
+        except Exception:
+            return None
+        if isinstance(now, bool) or not isinstance(now, (int, float)) or now < 0:
+            return None
+        return int(now)
 
     def _ready_for_resume(self, state: FenceState) -> bool:
         if not state.within_capacity or not self._physical_ready(state):
@@ -180,6 +355,9 @@ class FenceService:
 
     def pre_admit(self, intent: PreAdmissionIntent, *, publisher_ready: bool) -> AdmissionDecision:
         """Reserve capacity before Arr is allowed to issue the exact release grab."""
+        source = self._sources.get(intent.source)
+        if source is None:
+            return AdmissionDecision(False, "invalid_intent")
         try:
             qbittorrent_ready = self._qbittorrent.ready()
             prowlarr_ready = self._prowlarr is None or self._prowlarr.ready()
@@ -187,7 +365,7 @@ class FenceService:
             qbittorrent_ready = False
             prowlarr_ready = False
         candidate = self._state.clone()
-        decision = candidate.pre_admit(intent, qbittorrent_ready=qbittorrent_ready, prowlarr_ready=prowlarr_ready, publisher_ready=publisher_ready)
+        decision = candidate.pre_admit(intent, qbittorrent_ready=qbittorrent_ready, prowlarr_ready=prowlarr_ready, publisher_ready=publisher_ready if source.publication_managed else True)
         if decision.admitted and decision.reason == "admitted" and not self._physical_ready(candidate):
             return AdmissionDecision(False, "physical_headroom")
         if decision.admitted and decision.reason == "admitted":
@@ -226,6 +404,8 @@ class FenceService:
     def poll_external(self, *, publisher_ready: bool) -> bool:
         """Adopt only post-baseline public Arr observations, one source at a time."""
         for source_name, source in self._sources.items():
+            if not source.publication_managed:
+                continue
             observer = self._observers.get(source_name)
             if observer is None:
                 continue
@@ -560,7 +740,7 @@ class FenceService:
                     ReservationState.QBITTORRENT_ACTIVE,
                     ReservationState.TERMINAL,
                     ReservationState.RELEASED,
-                }
+                } and self._ensure_music_candidate(operation_id)
         try:
             observed_bytes = self._qbittorrent.observe_existing_stopped(torrent_hash, source.category, save_path=source.qbittorrent_save_path)
         except Exception:
@@ -623,7 +803,7 @@ class FenceService:
         except Exception:
             return False
         self._persist(candidate)
-        return True
+        return self._ensure_music_candidate(operation_id)
 
     def recover(self) -> None:
         """Reconcile durable effects; an uncertain add is never replayed."""
@@ -687,6 +867,8 @@ class FenceService:
             elif state == ReservationState.RESUME_INTENT_RECORDED.value:
                 if not self._state.quiescing:
                     self._recover_resume(operation_id, reservation_id, torrent_hash, self._state.reservation(operation_id).source)
+            elif state == ReservationState.QBITTORRENT_ACTIVE.value:
+                self._ensure_music_candidate(operation_id)
             elif state == ReservationState.PAUSE_INTENT_RECORDED.value:
                 self._recover_pause(operation_id)
             elif state == ReservationState.FREEZE_INTENT_RECORDED.value:
@@ -718,12 +900,14 @@ class FenceService:
             reservation = self._state.reservation(operation_id)
         except KeyError:
             return None
+        source = self._sources.get(reservation.source)
+        if source is not None and not source.publication_managed:
+            return None
         if reservation.state in {ReservationState.TERMINAL, ReservationState.QBITTORRENT_FROZEN}:
             return self._state.terminal_observation(operation_id)
         if reservation.state is not ReservationState.QBITTORRENT_ACTIVE or reservation.torrent_hash is None:
             return None
         try:
-            source = self._sources.get(reservation.source)
             terminal = None if source is None else self._qbittorrent.terminal_observed(reservation.torrent_hash, reservation.reservation_id, source.category, save_path=source.qbittorrent_save_path)
         except Exception:
             terminal = None
@@ -738,6 +922,9 @@ class FenceService:
         """Return durable completed acquisitions until Publisher accepts custody."""
         terminals: list[Envelope] = []
         for record in self._state.records():
+            source = self._sources.get(record["source"])
+            if source is not None and not source.publication_managed:
+                continue
             if record["state"] not in {
                 ReservationState.QBITTORRENT_ACTIVE.value,
                 ReservationState.TERMINAL.value,

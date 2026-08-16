@@ -8,6 +8,7 @@ import uuid
 import _source_tree  # noqa: F401
 
 from media_interlock.adapters.arr import ArrGrabObservation, ArrRelease
+from media_interlock.adapters.lidarr import LidarrRelease
 from media_interlock.fence.model import AdmissionDecision, PreAdmissionIntent
 from media_interlock.reconciler.model import AttemptPolicy, ReconciliationState, SearchIntent
 from media_interlock.reconciler.service import ReconcilerService, ReconcilerSource
@@ -198,3 +199,40 @@ class ReconcilerServiceTests(unittest.TestCase):
 
         self.assertEqual("inhibited", service.execute_selected(intent, release, now=100))
         self.assertEqual((), state.intents())
+
+    def test_selected_lidarr_release_is_recovered_from_its_sealed_resource_without_reselection(self) -> None:
+        resource = {
+            "approved": True, "downloadAllowed": True, "protocol": "torrent", "guid": "music-42",
+            "title": "fixture.album", "size": 400, "magnetUrl": "magnet:?xt=urn:btih:" + "a" * 40,
+            "albumId": 42, "seeders": 2, "indexer": "reliable", "infoHash": "a" * 40,
+        }
+        release = LidarrRelease(
+            resource, hashlib.sha256(json.dumps(resource, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            400, "42", 2, "reliable", "a" * 40, 0, (),
+        )
+        events: list[str] = []
+
+        class Store:
+            def save(self, _: ReconciliationState) -> None: events.append("save")
+        class Lidarr:
+            def stopped_qbittorrent_client(self, _: str, __: int) -> bool: events.append("client"); return True
+            def history_watermark(self) -> int | None: events.append("watermark"); return 7
+            def first_approved_release(self, _: str) -> ArrRelease | None: raise AssertionError("music must not reselect")
+            def release_from_record(self, raw: dict[str, object], album_id: str) -> LidarrRelease | None:
+                self_outer.assertEqual((resource, "42"), (raw, album_id)); return release
+            def grab_release(self, selected: LidarrRelease) -> bool: self_outer.assertEqual(release, selected); events.append("post"); return True
+            def observe_grab(self, _: str, __: LidarrRelease, *, watermark: int) -> ArrGrabObservation:
+                self_outer.assertEqual(7, watermark); events.append("observe"); return ArrGrabObservation("absent")
+        class Fence:
+            def pre_admit(self, _: PreAdmissionIntent) -> AdmissionDecision: events.append("preadmit"); return AdmissionDecision(True, "admitted")
+            def bind_grab(self, *_: object) -> bool: raise AssertionError("absence cannot bind")
+
+        self_outer = self
+        service = ReconcilerService(
+            ReconciliationState(), Store(), {"lidarr": Lidarr()}, Fence(),
+            {"lidarr": ReconcilerSource("media-interlock-lidarr", 9)},
+        )
+        intent = SearchIntent(str(uuid.uuid4()), "lidarr", "42", False, "music-v1:selected")
+
+        self.assertEqual("pending", service.execute_selected(intent, release, now=100))
+        self.assertEqual(["client", "watermark", "save", "client", "preadmit", "save", "post", "observe"], events)

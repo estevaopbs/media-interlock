@@ -21,3 +21,11 @@ Movies use their own movie ID. An invalidated Fence candidate creates a
 replacement event for the exact Arr entity; it outranks ordinary upgrade work
 only after its configured video replacement delay and keeps normal budgets and
 grab limits.
+
+When `[sources.lidarr]` is configured, music uses a separate durable schedule.
+It considers only monitored albums that Lidarr still reports without files,
+then asks Lidarr for releases in its native order. The configured music policy
+controls its own age gate, completed-search cooldown, retries, budgets, score,
+and format requirements. A Fence invalidation rejects that exact sealed release
+before the next native candidate is considered. A successful import converges
+only after Lidarr stops reporting the album missing.

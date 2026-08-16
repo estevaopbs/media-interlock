@@ -48,7 +48,7 @@ class PhysicalHeadroom:
             return None
         return current + value
 
-    def allows(self, records: Iterable[Mapping[str, object]], sources: Mapping[str, tuple[str, str, str]]) -> bool:
+    def allows(self, records: Iterable[Mapping[str, object]], sources: Mapping[str, tuple[str, ...]]) -> bool:
         liabilities = {name: 0 for name in self._pools}
         for record in records:
             if record.get("state") == "released":
@@ -59,7 +59,10 @@ class PhysicalHeadroom:
                 return False
             remaining = requested if record.get("remaining_download_bytes") is None else record.get("remaining_download_bytes")
             pools = sources[source]
-            for pool_name, liability in zip(pools, (remaining, requested, requested), strict=True):
+            if not 1 <= len(pools) <= 3:
+                return False
+            for index, pool_name in enumerate(pools):
+                liability = remaining if index == 0 else requested
                 if pool_name not in liabilities:
                     return False
                 updated = self._add(liabilities[pool_name], liability)

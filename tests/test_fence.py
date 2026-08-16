@@ -9,7 +9,7 @@ import _source_tree  # noqa: F401
 
 from media_interlock.contracts import ContractError, custody_receipt
 from media_interlock.adapters.arr import ArrExternalGrab, ArrExternalObservation
-from media_interlock.config import VideoCandidateHealthConfig
+from media_interlock.config import MusicFencePolicy, VideoCandidateHealthConfig
 from media_interlock.fence.model import ExternalAdoptionIntent, FencePolicy, FenceState, PostPnrAdoptionIntent, PostPnrHistoricalActivationIntent, PostPnrHistoricalAdoptionIntent, PreAdmissionIntent, QbittorrentActivityObservation, QbittorrentObservation, ReservationState
 from media_interlock.fence.headroom import HeadroomPool, PhysicalHeadroom
 from media_interlock.fence.service import FenceService, FenceSource
@@ -57,6 +57,24 @@ class FenceStateTests(unittest.TestCase):
             video_candidates=state.video_candidate_records(),
         )
         self.assertEqual(candidate, restored.video_candidate(OPERATION_ID))
+
+    def test_music_candidate_invalidation_is_durable_and_releases_only_its_lidarr_reservation(self) -> None:
+        state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
+        music = PreAdmissionIntent(OPERATION_ID, "lidarr", "42", "b" * 64, 400, "7")
+        self.assertTrue(state.pre_admit(music, qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True).admitted)
+        state.bind_observed_grab(OPERATION_ID, download_id=HASH, torrent_hash=HASH)
+        state.request_tag(OPERATION_ID); self.assertTrue(state.mark_qbittorrent_tagged(OPERATION_ID, observed_bytes=400))
+        state.request_resume(OPERATION_ID); state.mark_qbittorrent_active(OPERATION_ID)
+        state.ensure_music_candidate(OPERATION_ID, now=100)
+        self.assertTrue(state.invalidate_music_candidate(OPERATION_ID, reason="metadata-timeout", now=200, delete_invalid_payload=True))
+        state.mark_music_candidate_deleted(OPERATION_ID)
+
+        restored = FenceState.from_snapshot(
+            FencePolicy(capacity_bytes=1_000, max_inflight=1), state.records(), {},
+            music_candidates=state.music_candidate_records(),
+        )
+        self.assertEqual("released", restored.music_candidate(OPERATION_ID)["status"])
+        self.assertEqual(0, restored.reserved_bytes)
 
     def test_completed_candidate_is_discarded_and_legacy_terminal_snapshot_recovers(self) -> None:
         state = FenceState(FencePolicy(capacity_bytes=1_000, max_inflight=1))
@@ -188,6 +206,60 @@ class FenceStateTests(unittest.TestCase):
 
 
 class FenceServiceTests(unittest.TestCase):
+    def test_music_candidate_without_metadata_is_deleted_then_exposed_for_one_replacement(self) -> None:
+        events: list[str] = []
+        class Store:
+            def save(self, _: FenceState) -> None: events.append("save")
+        class Qbittorrent:
+            def observe_candidate_health(self, *_: object, **__: object):
+                from media_interlock.fence.model import QbittorrentHealthObservation
+                return QbittorrentHealthObservation("observed", metadata_known=False, downloaded_bytes=0, availability=0.0, peers=0)
+            def delete_owned_incomplete(self, *_: object, **__: object) -> bool: events.append("delete"); return True
+
+        state = FenceState(FencePolicy(1_000, 1))
+        music = PreAdmissionIntent(OPERATION_ID, "lidarr", "42", "b" * 64, 400, "7")
+        self.assertTrue(state.pre_admit(music, qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True).admitted)
+        state.bind_observed_grab(OPERATION_ID, download_id=HASH, torrent_hash=HASH)
+        state.request_tag(OPERATION_ID); state.mark_qbittorrent_tagged(OPERATION_ID, observed_bytes=400)
+        state.request_resume(OPERATION_ID); state.mark_qbittorrent_active(OPERATION_ID); state.ensure_music_candidate(OPERATION_ID, now=0)
+        policy = MusicFencePolicy(1, "reject", (), 60, 600, 3, True)
+        service = FenceService(
+            state, Store(), Qbittorrent(), prowlarr=None,
+            sources={"lidarr": FenceSource("media-interlock-lidarr", Path("/downloads/music"), publication_managed=False, music_policy=policy)},
+            clock=lambda: 61,
+        )
+
+        self.assertTrue(service.poll_music_candidates())
+        invalidations = service.music_invalidations()
+        self.assertEqual(1, len(invalidations))
+        self.assertEqual(("lidarr", "42", "metadata-timeout"), (invalidations[0]["source"], invalidations[0]["album_id"], invalidations[0]["reason"]))
+        self.assertTrue(service.acknowledge_music_invalidation(OPERATION_ID, str(invalidations[0]["invalidation_id"])))
+        self.assertEqual(["delete"], [event for event in events if event != "save"])
+
+    def test_completed_music_candidate_is_released_without_a_false_no_progress_invalidation(self) -> None:
+        class Store:
+            def save(self, _: FenceState) -> None: pass
+        class Qbittorrent:
+            def observe_candidate_health(self, *_: object, **__: object):
+                from media_interlock.fence.model import QbittorrentHealthObservation
+                return QbittorrentHealthObservation("observed", metadata_known=True, downloaded_bytes=400, availability=1.0, peers=0, remaining_bytes=0)
+
+        state = FenceState(FencePolicy(1_000, 1))
+        music = PreAdmissionIntent(OPERATION_ID, "lidarr", "42", "b" * 64, 400, "7")
+        self.assertTrue(state.pre_admit(music, qbittorrent_ready=True, prowlarr_ready=True, publisher_ready=True).admitted)
+        state.bind_observed_grab(OPERATION_ID, download_id=HASH, torrent_hash=HASH)
+        state.request_tag(OPERATION_ID); state.mark_qbittorrent_tagged(OPERATION_ID, observed_bytes=400)
+        state.request_resume(OPERATION_ID); state.mark_qbittorrent_active(OPERATION_ID); state.ensure_music_candidate(OPERATION_ID, now=0)
+        policy = MusicFencePolicy(1, "reject", (), 60, 60, 3, True)
+        service = FenceService(
+            state, Store(), Qbittorrent(), prowlarr=None,
+            sources={"lidarr": FenceSource("media-interlock-lidarr", Path("/downloads/music"), publication_managed=False, music_policy=policy)},
+            clock=lambda: 600,
+        )
+
+        self.assertTrue(service.poll_music_candidates())
+        self.assertEqual("succeeded", state.music_candidate(OPERATION_ID)["status"])
+        self.assertEqual((), service.music_invalidations())
     def test_owned_video_candidate_without_metadata_is_invalidated_once_after_deadline(self) -> None:
         events: list[str] = []
 

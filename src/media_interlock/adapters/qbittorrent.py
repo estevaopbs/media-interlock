@@ -248,11 +248,12 @@ class QbittorrentAdapter:
         torrent = torrents[0]
         if torrent.get("hash") != torrent_hash or torrent.get("category") != category or torrent.get("save_path") != expected_save_path or _fence_tags(torrent.get("tags")) != {reservation_id}:
             return QbittorrentHealthObservation("unknown")
-        size, total_size, downloaded = torrent.get("size"), torrent.get("total_size"), torrent.get("downloaded")
+        size, total_size, downloaded, amount_left = torrent.get("size"), torrent.get("total_size"), torrent.get("downloaded"), torrent.get("amount_left")
         availability, seeds, leeches = torrent.get("availability"), torrent.get("num_seeds"), torrent.get("num_leechs")
-        if any(isinstance(value, bool) for value in (size, total_size, downloaded, availability, seeds, leeches)) or not isinstance(size, int) or not isinstance(total_size, int) or not isinstance(downloaded, int) or downloaded < 0 or not isinstance(availability, (int, float)) or availability < 0 or not isinstance(seeds, int) or not isinstance(leeches, int) or seeds < 0 or leeches < 0:
+        if any(isinstance(value, bool) for value in (size, total_size, downloaded, availability, seeds, leeches, amount_left)) or not isinstance(size, int) or not isinstance(total_size, int) or not isinstance(downloaded, int) or downloaded < 0 or not isinstance(availability, (int, float)) or availability < 0 or not isinstance(seeds, int) or not isinstance(leeches, int) or seeds < 0 or leeches < 0 or amount_left is not None and (not isinstance(amount_left, int) or amount_left < 0):
             return QbittorrentHealthObservation("unknown")
-        return QbittorrentHealthObservation("observed", metadata_known=size > 0 and total_size > 0, downloaded_bytes=downloaded, availability=float(availability), peers=seeds + leeches)
+        remaining = amount_left if isinstance(amount_left, int) else max(0, (total_size if total_size > 0 else size) - downloaded)
+        return QbittorrentHealthObservation("observed", metadata_known=size > 0 and total_size > 0, downloaded_bytes=downloaded, availability=float(availability), peers=seeds + leeches, remaining_bytes=remaining)
 
     def delete_owned_incomplete(self, torrent_hash: str, reservation_id: str, category: str, *, save_path: Path, delete_files: bool) -> bool:
         """Delete one exact Fence-owned transfer; never operate on a path."""

@@ -173,7 +173,7 @@ class QbittorrentAdapterTests(unittest.TestCase):
             "a" * 40, reservation_id, "media-interlock-radarr", save_path=Path("/downloads/radarr")
         )
 
-        self.assertEqual(QbittorrentHealthObservation("observed", metadata_known=False, downloaded_bytes=0, availability=0.0, peers=0), observed)
+        self.assertEqual(QbittorrentHealthObservation("observed", metadata_known=False, downloaded_bytes=0, availability=0.0, peers=0, remaining_bytes=0), observed)
         self.assertEqual(
             "unknown",
             adapter.observe_candidate_health("a" * 40, reservation_id, "music", save_path=Path("/downloads/radarr")).kind,

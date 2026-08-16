@@ -127,6 +127,30 @@ class FenceDaemon:
         except Exception:
             return ()
 
+    def poll_music_candidate_health(self) -> bool:
+        try:
+            return self._service.poll_music_candidates()
+        except Exception:
+            return False
+
+    def music_invalidations(self) -> tuple[dict[str, object], ...]:
+        try:
+            return self._service.music_invalidations()
+        except Exception:
+            return ()
+
+    def acknowledge_music_invalidation(self, operation_id: str, invalidation_id: str) -> bool:
+        try:
+            return self._service.acknowledge_music_invalidation(operation_id, invalidation_id)
+        except Exception:
+            return False
+
+    def complete_music_candidate(self, operation_id: str) -> bool:
+        try:
+            return self._service.complete_music_candidate(operation_id)
+        except Exception:
+            return False
+
     def pending_terminals(self) -> tuple[Envelope, ...]:
         return self._service.pending_terminals()
 

@@ -7,12 +7,14 @@ from pathlib import Path
 
 from .._infra.state import SqliteStore
 from .model import ReconciliationState
+from .music import MusicScheduleState
 from .scheduler import ScheduleState
 
 
 class ReconcilerStore:
     _KEY = "reconciler.intents.v1"
     _SCHEDULE_KEY = "reconciler.schedule.v1"
+    _MUSIC_SCHEDULE_KEY = "reconciler.music_schedule.v1"
 
     def __init__(self, store: SqliteStore) -> None:
         self._store = store
@@ -56,6 +58,19 @@ class ReconcilerStore:
 
     def save_schedule(self, state: ScheduleState) -> None:
         self._store.put(self._SCHEDULE_KEY, json.dumps(state.record(), sort_keys=True, separators=(",", ":"), allow_nan=False))
+
+    def load_music_schedule(self) -> MusicScheduleState:
+        raw = self._store.get(self._MUSIC_SCHEDULE_KEY)
+        if raw is None:
+            return MusicScheduleState()
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("durable music schedule is not valid JSON") from exc
+        return MusicScheduleState.from_record(record)
+
+    def save_music_schedule(self, state: MusicScheduleState) -> None:
+        self._store.put(self._MUSIC_SCHEDULE_KEY, json.dumps(state.record(), sort_keys=True, separators=(",", ":"), allow_nan=False))
 
     def close(self) -> None:
         self._store.close()

@@ -19,6 +19,7 @@ from .config import ConfigError, ProductConfig, VideoCandidateHealthConfig
 from ._infra.advisory_lease import AdvisoryLease
 from .adapters.bazarr import BazarrAdapter
 from .adapters.jellyfin import JellyfinAdapter
+from .adapters.lidarr import LidarrAdapter
 from .adapters.prowlarr import ProwlarrAdapter
 from .adapters.qbittorrent import QbittorrentAdapter
 from .adapters.radarr import RadarrAdapter
@@ -37,6 +38,7 @@ from .publisher.observability import PublisherObservability
 from .publisher.service import AssetPublisherWorkProcessor, PathTranslation, PublisherService, verified_bundle_from_manifest
 from .publisher.store import PublisherStore
 from .reconciler.model import SearchIntent
+from .reconciler.music import MusicScheduler
 from .reconciler.scheduler import UpgradeScheduler
 from .reconciler.service import ReconcilerService, ReconcilerSource
 from .reconciler.store import ReconcilerStore
@@ -57,7 +59,7 @@ class RuntimeState:
     _LEGACY_KEYS = {
         "fence": ("fence.reservations.v2",),
         "publisher": ("publisher.publications.v3",),
-        "reconciler": ("reconciler.intents.v1", "reconciler.schedule.v1"),
+        "reconciler": ("reconciler.intents.v1", "reconciler.schedule.v1", "reconciler.music_schedule.v1"),
     }
 
     @classmethod
@@ -146,6 +148,7 @@ class MediaInterlockRuntime:
     fence: FenceDaemon
     publisher: PublisherDaemon
     scheduler: UpgradeScheduler
+    music_scheduler: MusicScheduler | None
     lease: AdvisoryLease
     writer_locks: tuple[CanonicalWriterLock, ...]
     _reconciler_interval_seconds: int
@@ -169,6 +172,9 @@ class MediaInterlockRuntime:
         lease: AdvisoryLease | None = None
         writer_locks: tuple[CanonicalWriterLock, ...] = ()
         try:
+            lidarr_config = config.adapters.get("lidarr")
+            if "lidarr" in config.sources and lidarr_config is None:
+                raise ConfigError("MediaInterlock requires a Lidarr adapter for sources.lidarr")
             qbittorrent = QbittorrentAdapter(
                 qbittorrent_config.base_url,
                 qbittorrent_config.secrets.get("username"),
@@ -183,12 +189,19 @@ class MediaInterlockRuntime:
                 "radarr": RadarrAdapter(radarr_config.base_url, radarr_config.secrets["api_key"], staging_root=None),
                 "sonarr": SonarrAdapter(sonarr_config.base_url, sonarr_config.secrets["api_key"], staging_root=None),
             }
+            if lidarr_config is not None and "lidarr" in config.sources:
+                observers["lidarr"] = LidarrAdapter(lidarr_config.base_url, lidarr_config.secrets["api_key"])
             pools = {
                 name: HeadroomPool(name, pool.minimum_free_bytes, pool.safety_margin_bytes, pool.probe_path)
                 for name, pool in config.capacity_pools.items()
             }
             fence_sources = {
-                name: FenceSource(profile.category, profile.qbittorrent_save_path, profile.download_client_id, profile.download_pool, profile.staging_pool, profile.canonical_pool)
+                name: FenceSource(
+                    profile.category, profile.qbittorrent_save_path, profile.download_client_id,
+                    profile.download_pool, profile.staging_pool, profile.canonical_pool,
+                    publication_managed=name in config.publisher.sources,
+                    music_policy=config.fence.music if name == "lidarr" else None,
+                )
                 for name, profile in config.fence.sources.items()
             }
 
@@ -425,26 +438,53 @@ class MediaInterlockRuntime:
                 "radarr": RadarrAdapter(radarr_config.base_url, radarr_config.secrets["api_key"], staging_root=None),
                 "sonarr": SonarrAdapter(sonarr_config.base_url, sonarr_config.secrets["api_key"], staging_root=None),
             }
+            if lidarr_config is not None and "lidarr" in config.reconciler.sources:
+                reconciler_adapters["lidarr"] = LidarrAdapter(lidarr_config.base_url, lidarr_config.secrets["api_key"])
+
+            class ReconcilerFence:
+                """Keep the in-process caller on Fence's explicit readiness path."""
+
+                def pre_admit(self, intent):
+                    return fence_service.pre_admit(intent, publisher_ready=publisher_ready())
+
+                def bind_grab(self, operation_id: str, download_id: str, torrent_hash: str, history_id: int | None = None) -> bool:
+                    return fence_service.bind_grab(operation_id, download_id, torrent_hash, history_id)
+
             reconciler = ReconcilerService(
                 reconciliation,
                 state.reconciler,
                 reconciler_adapters,
-                fence_service,
+                ReconcilerFence(),
                 {name: ReconcilerSource(profile.category, profile.download_client_id) for name, profile in config.reconciler.sources.items()},
             )
             scheduler = UpgradeScheduler(
                 state.reconciler.load_schedule(),
                 reconciliation,
                 state.reconciler.save_schedule,
-                reconciler_adapters,
+                {name: adapter for name, adapter in reconciler_adapters.items() if name in {"radarr", "sonarr"}},
                 {"radarr": config.reconciler.movie, "sonarr": config.reconciler.episode},
                 reconciler,
             )
+            music_scheduler = None
+            if config.reconciler.music is not None and config.fence.music is not None:
+                lidarr = reconciler_adapters.get("lidarr")
+                if not isinstance(lidarr, LidarrAdapter):
+                    raise ConfigError("MediaInterlock requires Lidarr reconciliation when music is configured")
+                music_scheduler = MusicScheduler(
+                    state.reconciler.load_music_schedule(),
+                    state.reconciler.save_music_schedule,
+                    lidarr,
+                    config.reconciler.music,
+                    config.fence.music,
+                    reconciler,
+                    on_imported=fence.complete_music_candidate,
+                )
             runtime = cls(
                 state,
                 fence,
                 publisher,
                 scheduler,
+                music_scheduler,
                 lease,
                 writer_locks,
                 config.reconciler.poll_interval_seconds,
@@ -473,6 +513,25 @@ class MediaInterlockRuntime:
                 multiplier=self._video_candidate_health.replacement_multiplier,
                 maximum_delay_seconds=self._video_candidate_health.replacement_max_delay_seconds,
             )
+        if self.music_scheduler is not None:
+            self.fence.poll_music_candidate_health()
+            for invalidation in self.fence.music_invalidations():
+                try:
+                    operation_id = invalidation["operation_id"]
+                    album_id = invalidation["album_id"]
+                    selector_fingerprint = invalidation["selector_fingerprint"]
+                    canonical_hash = invalidation["canonical_hash"]
+                    invalidation_id = invalidation["invalidation_id"]
+                    reason = invalidation["reason"]
+                    if not all(isinstance(value, str) for value in (operation_id, album_id, selector_fingerprint, canonical_hash, invalidation_id, reason)):
+                        continue
+                    if self.music_scheduler.apply_fence_invalidation(
+                        operation_id=operation_id, album_id=album_id, selector_fingerprint=selector_fingerprint,
+                        canonical_hash=canonical_hash, invalidation_id=invalidation_id, reason=reason, now=now,
+                    ):
+                        self.fence.acknowledge_music_invalidation(operation_id, invalidation_id)
+                except (KeyError, ValueError):
+                    continue
         for terminal in self.fence.pending_terminals():
             receipt = self.publisher._dispatch(terminal)
             if receipt.kind == "custody_receipt":
@@ -482,6 +541,12 @@ class MediaInterlockRuntime:
         """Finish a prior close, then reopen owned video work for this start."""
         self.fence.recover()
         self.fence.reopen()
+
+    def _reconciliation_tick(self) -> None:
+        now = int(time.time())
+        self.scheduler.run(now=now)
+        if self.music_scheduler is not None:
+            self.music_scheduler.run(now=now)
 
     async def run(self) -> None:
         await asyncio.to_thread(self._recover_fence_on_start)
@@ -512,7 +577,7 @@ class MediaInterlockRuntime:
             asyncio.create_task(periodic(5.0, self._fence_tick)),
             asyncio.create_task(periodic(1.0, self.publisher.retry_once)),
             asyncio.create_task(periodic(float(self._import_interval_seconds), self._reconcile_imports)),
-            asyncio.create_task(periodic(float(self._reconciler_interval_seconds), lambda: self.scheduler.run(now=int(time.time())))),
+            asyncio.create_task(periodic(float(self._reconciler_interval_seconds), self._reconciliation_tick)),
         )
         try:
             await stop.wait()

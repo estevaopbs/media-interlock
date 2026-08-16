@@ -76,6 +76,7 @@ class FenceConfig(ComponentConfig):
     mutation_lock: "MutationLockConfig"
     sources: Mapping[str, "FenceSourceProfile"]
     video_candidate_health: "VideoCandidateHealthConfig"
+    music: "MusicFencePolicy | None"
 
 
 @dataclass(frozen=True)
@@ -111,8 +112,8 @@ class FenceSourceProfile:
     download_client_id: int
     qbittorrent_save_path: Path
     download_pool: str
-    staging_pool: str
-    canonical_pool: str
+    staging_pool: str | None
+    canonical_pool: str | None
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,27 @@ class SourceProfile:
 
 
 @dataclass(frozen=True)
+class MusicSourceProfile:
+    name: str
+    kind: str
+    download_client_id: int
+    category: str
+    qbittorrent_save_path: Path
+    download_pool: str
+
+
+@dataclass(frozen=True)
+class MusicFencePolicy:
+    minimum_reported_seeders: int
+    unknown_seeders_policy: str
+    probe_only_indexers: tuple[str, ...]
+    metadata_probe_seconds: int
+    no_progress_seconds: int
+    max_candidates_per_cycle: int
+    delete_invalid_payload: bool
+
+
+@dataclass(frozen=True)
 class PublisherConfig(ComponentConfig):
     sources: Mapping[str, PublisherSourceProfile]
     import_reconciliation: ImportReconciliationConfig
@@ -208,6 +230,7 @@ class ReconcilerConfig(ComponentConfig):
     poll_interval_seconds: int
     movie: ReconciliationPolicy
     episode: ReconciliationPolicy
+    music: ReconciliationPolicy | None
     sources: Mapping[str, ReconcilerSourceProfile]
 
 
@@ -225,7 +248,7 @@ class ProductConfig:
     publisher: PublisherConfig | None
     reconciler: ReconcilerConfig | None
     adapters: Mapping[str, AdapterConfig]
-    sources: Mapping[str, SourceProfile]
+    sources: Mapping[str, SourceProfile | MusicSourceProfile]
     capacity_pools: Mapping[str, CapacityPool]
 
     def redacted(self) -> dict[str, object]:
@@ -239,8 +262,9 @@ class ProductConfig:
 
 
 _TOP_LEVEL = {"media_interlock", "fence", "publisher", "reconciler", "adapters", "sources", "capacity_pools"}
-_ADAPTERS = {"jellyfin", "radarr", "sonarr", "qbittorrent", "bazarr", "seerr", "prowlarr"}
-_SOURCE_KINDS = {"radarr": "movie", "sonarr": "episode"}
+_ADAPTERS = {"jellyfin", "radarr", "sonarr", "lidarr", "qbittorrent", "bazarr", "seerr", "prowlarr"}
+_VIDEO_SOURCE_KINDS = {"radarr": "movie", "sonarr": "episode"}
+_MUSIC_SOURCE_KIND = {"lidarr": "music-album"}
 _MUTATION_LOCK_VERSION = "shared-qbittorrent-mutation/v1"
 
 
@@ -347,6 +371,22 @@ def _optional_format_names(table: Mapping[str, object], name: str, location: str
         raise ConfigError(f"{location}.{name} must be a bounded list")
     if any(not isinstance(value, str) or not value or len(value) > 128 or "\x00" in value for value in raw):
         raise ConfigError(f"{location}.{name} has an invalid value")
+    if len(set(raw)) != len(raw):
+        raise ConfigError(f"{location}.{name} must not repeat values")
+    return tuple(raw)
+
+
+def _optional_indexer_names(table: Mapping[str, object], name: str, location: str) -> tuple[str, ...]:
+    raw = table.get(name, [])
+    if not isinstance(raw, list) or len(raw) > 64:
+        raise ConfigError(f"{location}.{name} must be a bounded list")
+    if any(
+        not isinstance(value, str)
+        or not value
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,127}", value) is None
+        for value in raw
+    ):
+        raise ConfigError(f"{location}.{name} has an invalid indexer identity")
     if len(set(raw)) != len(raw):
         raise ConfigError(f"{location}.{name} must not repeat values")
     return tuple(raw)
@@ -501,6 +541,37 @@ def _reconciliation_policy(table: Mapping[str, object], location: str) -> Reconc
     return policy
 
 
+def _music_fence_policy(table: Mapping[str, object], location: str) -> MusicFencePolicy:
+    _require_keys(
+        table,
+        {
+            "minimum_reported_seeders",
+            "unknown_seeders_policy",
+            "probe_only_indexers",
+            "metadata_probe_seconds",
+            "no_progress_seconds",
+            "max_candidates_per_cycle",
+            "delete_invalid_payload",
+        },
+        location,
+    )
+    unknown_seeders_policy = table.get("unknown_seeders_policy")
+    if unknown_seeders_policy not in {"reject", "probe_only"}:
+        raise ConfigError(f"{location}.unknown_seeders_policy must be reject or probe_only")
+    probe_only_indexers = _optional_indexer_names(table, "probe_only_indexers", location)
+    if unknown_seeders_policy == "probe_only" and not probe_only_indexers:
+        raise ConfigError(f"{location}.probe_only_indexers must name the allowed indexers")
+    return MusicFencePolicy(
+        _required_positive(table, "minimum_reported_seeders", location, 100_000),
+        unknown_seeders_policy,
+        probe_only_indexers,
+        _required_positive(table, "metadata_probe_seconds", location, 86_400),
+        _required_positive(table, "no_progress_seconds", location, 31_536_000),
+        _required_positive(table, "max_candidates_per_cycle", location, 1_000),
+        _optional_bool(table, "delete_invalid_payload", location, default=True),
+    )
+
+
 def _component(table: Mapping[str, object], name: str) -> ComponentConfig:
     if not table:
         return ComponentConfig(name)
@@ -603,19 +674,20 @@ def _video_candidate_health(value: object) -> VideoCandidateHealthConfig:
     return policy
 
 
-def _sources(value: object, pools: Mapping[str, CapacityPool]) -> dict[str, SourceProfile]:
+def _sources(value: object, pools: Mapping[str, CapacityPool]) -> dict[str, SourceProfile | MusicSourceProfile]:
     table = _table(value, "sources")
-    if set(table) != set(_SOURCE_KINDS):
-        raise ConfigError("sources must contain exactly radarr and sonarr")
-    profiles: dict[str, SourceProfile] = {}
-    allowed = {
+    allowed_sources = set(_VIDEO_SOURCE_KINDS) | set(_MUSIC_SOURCE_KIND)
+    if not set(_VIDEO_SOURCE_KINDS).issubset(table) or set(table) - allowed_sources:
+        raise ConfigError("sources must contain radarr and sonarr and may contain lidarr")
+    profiles: dict[str, SourceProfile | MusicSourceProfile] = {}
+    video_allowed = {
         "kind", "download_client_id", "category", "qbittorrent_save_path", "arr_import_path_prefix",
         "staging_root", "canonical_root", "download_pool", "staging_pool", "canonical_pool",
         "namespace", "jellyfin_library_id", "jellyfin_path_prefix", "bundle_settle_seconds", "bundle_sidecar_extensions", "bundle_required_languages", "bundle_required_subtitle_languages", "bundle_language_aliases", "bundle_required_container_evidence",
     }
-    for name, expected_kind in _SOURCE_KINDS.items():
+    for name, expected_kind in _VIDEO_SOURCE_KINDS.items():
         profile = _table(table[name], f"sources.{name}")
-        _require_keys(profile, allowed, f"sources.{name}")
+        _require_keys(profile, video_allowed, f"sources.{name}")
         kind = profile.get("kind")
         if kind != expected_kind:
             raise ConfigError(f"sources.{name}.kind must be {expected_kind}")
@@ -646,11 +718,32 @@ def _sources(value: object, pools: Mapping[str, CapacityPool]) -> dict[str, Sour
             _optional_bundle_aliases(profile, f"sources.{name}"),
             _optional_container_evidence(profile, f"sources.{name}"),
         )
+    if "lidarr" in table:
+        profile = _table(table["lidarr"], "sources.lidarr")
+        _require_keys(
+            profile,
+            {"kind", "download_client_id", "category", "qbittorrent_save_path", "download_pool"},
+            "sources.lidarr",
+        )
+        if profile.get("kind") != _MUSIC_SOURCE_KIND["lidarr"]:
+            raise ConfigError("sources.lidarr.kind must be music-album")
+        download_pool = _required_pool_name(profile, "download_pool", "sources.lidarr")
+        if download_pool not in pools:
+            raise ConfigError("sources.lidarr references a missing capacity pool")
+        profiles["lidarr"] = MusicSourceProfile(
+            "lidarr",
+            "music-album",
+            _required_positive(profile, "download_client_id", "sources.lidarr", 2**31 - 1),
+            _required_category(profile, "category", "sources.lidarr"),
+            _required_path(profile, "qbittorrent_save_path", "sources.lidarr"),
+            download_pool,
+        )
     if len({profile.category for profile in profiles.values()}) != len(profiles):
         raise ConfigError("source categories must be distinct")
-    if len({profile.namespace for profile in profiles.values()}) != len(profiles):
+    video_profiles = [profile for profile in profiles.values() if isinstance(profile, SourceProfile)]
+    if len({profile.namespace for profile in video_profiles}) != len(video_profiles):
         raise ConfigError("source namespaces must be distinct")
-    if len({profile.jellyfin_library_id for profile in profiles.values()}) != len(profiles):
+    if len({profile.jellyfin_library_id for profile in video_profiles}) != len(video_profiles):
         raise ConfigError("source Jellyfin library identities must be distinct")
     return profiles
 
@@ -669,14 +762,17 @@ def _materialized_device(path: Path, *, reject_symlink: bool = False) -> int | N
     return metadata.st_dev
 
 
-def _validate_materialized_pool_bindings(sources: Mapping[str, SourceProfile], pools: Mapping[str, CapacityPool]) -> None:
+def _validate_materialized_pool_bindings(sources: Mapping[str, SourceProfile | MusicSourceProfile], pools: Mapping[str, CapacityPool]) -> None:
     """Bind existing roots to their declared probe without creating any path."""
     pool_devices = {name: _materialized_device(pool.probe_path, reject_symlink=True) for name, pool in pools.items()}
     present = [(name, device) for name, device in pool_devices.items() if device is not None]
     if len({device for _, device in present}) != len(present):
         raise ConfigError("materialized capacity pools must not alias one filesystem")
     for source in sources.values():
-        for root, pool_name in ((source.qbittorrent_save_path, source.download_pool), (source.staging_root, source.staging_pool), (source.canonical_root, source.canonical_pool)):
+        bindings: list[tuple[Path, str]] = [(source.qbittorrent_save_path, source.download_pool)]
+        if isinstance(source, SourceProfile):
+            bindings.extend(((source.staging_root, source.staging_pool), (source.canonical_root, source.canonical_pool)))
+        for root, pool_name in bindings:
             root_device = _materialized_device(root)
             probe_device = pool_devices[pool_name]
             if root_device is not None and probe_device is not None and root_device != probe_device:
@@ -708,7 +804,11 @@ def load_config(path: Path) -> ProductConfig:
     fence: FenceConfig | None = None
     if components["fence"] is not None:
         table = _table(document["fence"], "fence")
-        _require_keys(table, {"capacity_bytes", "max_inflight", "mutation_lock_path", "mutation_lock_version", "mutation_lock_timeout_ms", "video_candidate_health"}, "fence")
+        _require_keys(table, {"capacity_bytes", "max_inflight", "mutation_lock_path", "mutation_lock_version", "mutation_lock_timeout_ms", "video_candidate_health", "music"}, "fence")
+        if "lidarr" in sources and "music" not in table:
+            raise ConfigError("missing required key: fence.music")
+        if "lidarr" not in sources and "music" in table:
+            raise ConfigError("fence.music requires sources.lidarr")
         base = components["fence"]
         assert base is not None
         version = table.get("mutation_lock_version")
@@ -724,10 +824,19 @@ def load_config(path: Path) -> ProductConfig:
                 _required_positive(table, "mutation_lock_timeout_ms", "fence", 60_000),
             ),
             {
-                name: FenceSourceProfile(name, source.category, source.download_client_id, source.qbittorrent_save_path, source.download_pool, source.staging_pool, source.canonical_pool)
+                name: FenceSourceProfile(
+                    name,
+                    source.category,
+                    source.download_client_id,
+                    source.qbittorrent_save_path,
+                    source.download_pool,
+                    source.staging_pool if isinstance(source, SourceProfile) else None,
+                    source.canonical_pool if isinstance(source, SourceProfile) else None,
+                )
                 for name, source in sources.items()
             },
             _video_candidate_health(_table(table.get("video_candidate_health"), "fence.video_candidate_health")),
+            _music_fence_policy(_table(table["music"], "fence.music"), "fence.music") if "lidarr" in sources else None,
         )
     publisher: PublisherConfig | None = None
     if components["publisher"] is not None:
@@ -739,28 +848,35 @@ def load_config(path: Path) -> ProductConfig:
             base.name,
             {
                 name: PublisherSourceProfile(name, source.arr_import_path_prefix, source.staging_root, source.canonical_root, source.namespace, source.jellyfin_library_id, source.jellyfin_path_prefix, source.bundle_settle_seconds, source.bundle_sidecar_extensions, source.bundle_required_languages, source.bundle_required_subtitle_languages, source.bundle_language_aliases, source.bundle_required_container_evidence)
-                for name, source in sources.items()
+                for name, source in sources.items() if isinstance(source, SourceProfile)
             },
             _import_reconciliation(_table(table.get("import_reconciliation"), "publisher.import_reconciliation")),
         )
     reconciler = components["reconciler"]
     if reconciler is not None:
         table = _table(document["reconciler"], "reconciler")
-        _require_keys(table, {"poll_interval_seconds", "movie", "episode"}, "reconciler")
+        _require_keys(table, {"poll_interval_seconds", "movie", "episode", "music"}, "reconciler")
+        if "lidarr" in sources and "music" not in table:
+            raise ConfigError("missing required key: reconciler.music")
+        if "lidarr" not in sources and "music" in table:
+            raise ConfigError("reconciler.music requires sources.lidarr")
         reconciler = ReconcilerConfig(
             reconciler.name,
             _optional_positive(table, "poll_interval_seconds", "reconciler", 86_400, default=300),
             _reconciliation_policy(_table(table.get("movie"), "reconciler.movie"), "reconciler.movie"),
             _reconciliation_policy(_table(table.get("episode"), "reconciler.episode"), "reconciler.episode"),
+            _reconciliation_policy(_table(table["music"], "reconciler.music"), "reconciler.music") if "lidarr" in sources else None,
             {name: ReconcilerSourceProfile(name, source.kind, source.category, source.download_client_id) for name, source in sources.items()},
         )
 
     writable_roots: list[tuple[str, Path]] = []
     for source in sources.values():
-        writable_roots.extend(((f"sources.{source.name}.qbittorrent_save_path", source.qbittorrent_save_path), (f"sources.{source.name}.staging_root", source.staging_root), (f"sources.{source.name}.canonical_root", source.canonical_root)))
-        _validate_disjoint(source.qbittorrent_save_path, source.staging_root, f"sources.{source.name}.qbittorrent_save_path", f"sources.{source.name}.staging_root")
-        _validate_disjoint(source.qbittorrent_save_path, source.canonical_root, f"sources.{source.name}.qbittorrent_save_path", f"sources.{source.name}.canonical_root")
-        _validate_disjoint(source.staging_root, source.canonical_root, f"sources.{source.name}.staging_root", f"sources.{source.name}.canonical_root")
+        writable_roots.append((f"sources.{source.name}.qbittorrent_save_path", source.qbittorrent_save_path))
+        if isinstance(source, SourceProfile):
+            writable_roots.extend(((f"sources.{source.name}.staging_root", source.staging_root), (f"sources.{source.name}.canonical_root", source.canonical_root)))
+            _validate_disjoint(source.qbittorrent_save_path, source.staging_root, f"sources.{source.name}.qbittorrent_save_path", f"sources.{source.name}.staging_root")
+            _validate_disjoint(source.qbittorrent_save_path, source.canonical_root, f"sources.{source.name}.qbittorrent_save_path", f"sources.{source.name}.canonical_root")
+            _validate_disjoint(source.staging_root, source.canonical_root, f"sources.{source.name}.staging_root", f"sources.{source.name}.canonical_root")
     for index, (left_name, left_root) in enumerate(writable_roots):
         for right_name, right_root in writable_roots[index + 1:]:
             _validate_disjoint(left_root, right_root, left_name, right_name)
