@@ -9,6 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
+import threading
 import time
 from typing import Callable
 import uuid
@@ -268,17 +269,23 @@ class MediaInterlockRuntime:
                 )
                 for profile in profiles
             }
+            publisher_work_lock = threading.RLock()
 
-            def process(operation_id: str) -> bool:
+            def process_unlocked(operation_id: str) -> bool:
                 publication = publisher_state.publication(operation_id)
                 processor = processors.get(publication.source)
                 return False if processor is None else processor(operation_id)
 
-            def retry_pending() -> None:
-                for record in tuple(publisher_state.records()):
-                    process(str(record["operation_id"]))
+            def process(operation_id: str) -> bool:
+                with publisher_work_lock:
+                    return process_unlocked(operation_id)
 
-            def reconcile_imports() -> None:
+            def retry_pending() -> None:
+                with publisher_work_lock:
+                    for record in tuple(publisher_state.records()):
+                        process_unlocked(str(record["operation_id"]))
+
+            def reconcile_imports_unlocked() -> None:
                 """Adopt only exact historical Arr imports still in staging.
 
                 History IDs become deterministic publication operation IDs, so
@@ -336,7 +343,11 @@ class MediaInterlockRuntime:
                     if next_cursor > (0 if cursor is None else cursor):
                         state.publisher.save_import_cursor(source, next_cursor)
 
-            def intake(envelope: Envelope) -> bool:
+            def reconcile_imports() -> None:
+                with publisher_work_lock:
+                    reconcile_imports_unlocked()
+
+            def intake_unlocked(envelope: Envelope) -> bool:
                 if envelope.kind == "publisher_assisted_intent":
                     publisher_service.record_assisted_intent(
                         operation_id=envelope.operation_id,
@@ -391,6 +402,10 @@ class MediaInterlockRuntime:
                     manifest_digest=arguments["manifest_digest"],
                 )
                 return True
+
+            def intake(envelope: Envelope) -> bool:
+                with publisher_work_lock:
+                    return intake_unlocked(envelope)
 
             publisher = PublisherDaemon(
                 publisher_service,
